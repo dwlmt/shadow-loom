@@ -956,6 +956,83 @@ class CausalPhysicsEngine:
             DoNarrativeObject,
         )
 
+        # Pre-flight: warn on cross-target inconsistencies the engine
+        # will silently apply but that almost always indicate operator
+        # error. Detects two classes of conflict:
+        #   1. PROP clamp + counter-concern clamp in the same query
+        #      whose polarity / active state contradict the truth being
+        #      written (e.g. clamp PROP_DUNCAN_DEAD=true while disarming
+        #      the desire-throne concern over the same proposition).
+        #   2. PROP clamp + DoConcern clamp on a concern anchored to the
+        #      inverse proposition whose effective truth contradicts.
+        # These remain warnings (not errors) because there are legitimate
+        # narrative cases for them (a character whose ambition has burned
+        # out before the regicide they once wanted is realised), but the
+        # operator should see them in the log.
+        prop_clamps: Dict[str, bool] = {
+            t.proposition_id: bool(t.truth)
+            for t in do_targets if isinstance(t, DoProposition)
+        }
+        if prop_clamps:
+            world = self.world_state
+            concern_owners: Dict[str, str] = {}
+            concern_by_id: Dict[str, Any] = {}
+            prop_by_id: Dict[str, Any] = {}
+            for eid, ent in (world.entities or {}).items():
+                for c in (ent.concerns or []):
+                    concern_owners[c.concern_id] = eid
+                    concern_by_id[c.concern_id] = c
+            for p in (world.propositions or []):
+                prop_by_id[p.proposition_id] = p
+            for t in do_targets:
+                if not isinstance(t, DoConcern):
+                    continue
+                c = concern_by_id.get(t.concern_id)
+                if c is None:
+                    continue
+                # Effective proposition truth this concern sees once
+                # the PROP clamps land: direct lookup, then inverse.
+                effective_truth: Optional[bool] = prop_clamps.get(c.proposition_id)
+                if effective_truth is None:
+                    p = prop_by_id.get(c.proposition_id)
+                    inv = getattr(p, "inverse_proposition_id", None) if p else None
+                    if inv and inv in prop_clamps:
+                        effective_truth = not prop_clamps[inv]
+                if effective_truth is None:
+                    continue
+                # A desire-concern realised (truth==True) should usually
+                # remain active (or be closed by the auto-closure pass)
+                # — explicitly disarming it in the same query is a smell.
+                disarming = (
+                    t.active is False
+                    or (t.salience is not None and t.salience < 0.1)
+                )
+                contradicts_polarity = (
+                    t.polarity is not None
+                    and ((t.polarity == "desire" and effective_truth is False)
+                         or (t.polarity == "fear" and effective_truth is True))
+                )
+                if disarming and effective_truth is True and c.polarity == "desire":
+                    logger.warning(
+                        "[CausalPhysics\u00b7do_targets] Consistency: clamping "
+                        "PROP %s=true while disarming desire-concern %s "
+                        "anchored to it (holder=%s). Auto-closure would "
+                        "normally fire on commit; the explicit disarm is "
+                        "applied but may double-close.",
+                        c.proposition_id, t.concern_id,
+                        concern_owners.get(t.concern_id, "?"),
+                    )
+                if contradicts_polarity:
+                    logger.warning(
+                        "[CausalPhysics\u00b7do_targets] Consistency: clamping "
+                        "concern %s polarity=%s while PROP %s effective "
+                        "truth resolves to %s (holder=%s). The polarity flip "
+                        "is applied but contradicts the truth surgery.",
+                        t.concern_id, t.polarity, c.proposition_id,
+                        effective_truth,
+                        concern_owners.get(t.concern_id, "?"),
+                    )
+
         legacy_dict: Dict[str, Any] = {}
         for t in do_targets:
             if isinstance(t, DoEvent):

@@ -143,10 +143,13 @@ class IntroducedConcernSpec(_IntroducedSpecBase):
     proposition_id: str = Field(
         description="Proposition id that the concern is about.",
     )
-    polarity: Literal["positive", "negative"] = Field(
+    polarity: Literal["desire", "fear", "positive", "negative"] = Field(
         description=(
-            "``positive`` if the holder wants the proposition to be true, "
-            "``negative`` if they want it false."
+            "Concern polarity. Prefer the canonical Concern vocabulary: "
+            "``desire`` (holder wants the proposition true) or "
+            "``fear`` (holder wants it false). The legacy aliases "
+            "``positive`` / ``negative`` are still accepted and mapped "
+            "to ``desire`` / ``fear`` respectively for back-compat."
         ),
     )
     salience: float = Field(

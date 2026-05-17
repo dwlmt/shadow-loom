@@ -829,11 +829,17 @@ def introduced_elements_to_spawns(
 
     for spec in getattr(introduced, "concerns", []) or []:
         try:
-            # Spec polarity is "positive" / "negative"; the canonical
-            # ``Concern`` model only accepts ``Literal["desire", "fear"]``.
-            # Map directly without an intermediate vocabulary so the
-            # validation error doesn't get swallowed silently below.
-            polarity_da = "desire" if spec.polarity == "positive" else "fear"
+            # Spec polarity accepts both the canonical Concern
+            # vocabulary (``desire`` / ``fear``) and the legacy LLM
+            # aliases (``positive`` / ``negative``). Map either down
+            # to the canonical ``Literal["desire", "fear"]`` the
+            # ``Concern`` model requires; an unrecognised value
+            # defaults to ``fear`` (safer than crashing).
+            spec_pol = spec.polarity
+            if spec_pol == "desire" or spec_pol == "positive":
+                polarity_da = "desire"
+            else:
+                polarity_da = "fear"
             concern = Concern(
                 world_id=world_id,
                 concern_id=spec.id,

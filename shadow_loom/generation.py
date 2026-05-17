@@ -3673,19 +3673,19 @@ def assemble_rendering_prompt(
     )
     sections.append(
         "Before introducing ANY new element, scan the SCENE CONTEXT "
-        "above for an existing ENT_/LOC_/OBJ_/WT_/CHN_/PROP_/CCN_ "
+        "above for an existing ENT_/LOC_/OBJ_/WORLD_/CHN_/PROP_/CCN_ "
         "that fits the role, place, object, capability, or proposition "
         "the constraints demand. Reuse it. Only declare a new element "
         "in ``introduced_elements`` when no existing element matches. "
         "When you do declare one, the ``justification`` field MUST "
         "name the existing candidate(s) you considered (by id or "
-        "display name) and explain why each was insufficient (e.g. "
+        "name) and explain why each was insufficient (e.g. "
         "\"considered ENT_FOO but their reconstructed location at "
         "this fabula tick is the bedchamber, not the great hall\"). "
         "Empty, generic, or boilerplate justifications "
         "(\"needed for the scene\", \"required by the prompt\", \"to "
         "advance the plot\") are a hard ``unjustified_introduction`` "
-        "audit violation. Reusing an existing display name for a new "
+        "audit violation. Reusing an existing name for a new "
         "id is also a hard violation — disambiguate or reuse."
     )
     sections.append("")

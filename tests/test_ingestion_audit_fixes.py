@@ -21,6 +21,7 @@ from shadow_loom.models import (
     Channel,
     Entity,
     EventNode,
+    Location,
     WorldStateV1,
 )
 
@@ -73,7 +74,7 @@ def _is_patch_empty(patch: WorldStatePatch) -> bool:
     _NON_ACTIONABLE = {"notes"}
     return all(
         not getattr(patch, name)
-        for name in patch.model_fields
+        for name in type(patch).model_fields
         if name not in _NON_ACTIONABLE
     )
 
@@ -168,14 +169,15 @@ def _sentinel_for_field(name, annotation):
 def _make_minimal_proposition():
     from shadow_loom.models import Proposition
     return Proposition(
-        id="PROP_X", kind="outcome", description="x", referent_ids=[],
+        proposition_id="PROP_X", kind="outcome", description="x", referent_ids=[],
     )
 
 
 def _make_minimal_channel():
     return Channel(
         id="CHN_X",
-        kind="speech",
+        name="X channel",
+        medium="speech",
         participant_ids=["ENT_A", "ENT_B"],
         intelligibility={"ENT_A": 1.0, "ENT_B": 1.0},
     )
@@ -196,6 +198,7 @@ def _make_edge_for_field(name: str):
             source_id="EVT_A", target_id="EVT_B",
             causality_type="chain_reaction", causal_force=0.5,
             evidence_strength="moderate",
+            mechanism="test", fabula_time=0,
         )
     if name == "add_social_edges":
         return RelationshipEdge(
@@ -236,7 +239,8 @@ def _make_ws_with_utterance_and_orphan_belief():
     )
     channel = Channel(
         id="CHN_PHONE",
-        kind="telephone",
+        name="Phone line",
+        medium="telephone",
         participant_ids=["ENT_A", "ENT_B"],
         intelligibility={"ENT_A": 1.0, "ENT_B": 1.0},
     )
@@ -249,14 +253,20 @@ def _make_ws_with_utterance_and_orphan_belief():
     )
     ent_a = Entity(
         id="ENT_A", name="Alice", description="receiver",
+        location_id="LOC_A", status="healthy", traits={},
         beliefs=[belief],
     )
-    ent_b = Entity(id="ENT_B", name="Bob", description="speaker")
-    ent_c = Entity(id="ENT_C", name="Carol", description="subject")
+    ent_b = Entity(id="ENT_B", name="Bob", description="speaker",
+                   location_id="LOC_A", status="healthy", traits={})
+    ent_c = Entity(id="ENT_C", name="Carol", description="subject",
+                   location_id="LOC_A", status="healthy", traits={})
     return WorldStateV1(
         story_title="t", style="prose",
+        locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+        objects={},
         entities={"ENT_A": ent_a, "ENT_B": ent_b, "ENT_C": ent_c},
         events=[utterance], channels={"CHN_PHONE": channel},
+        causal_topology=[], spatial_topology=[], social_topology=[],
     )
 
 

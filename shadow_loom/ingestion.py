@@ -11662,11 +11662,22 @@ def reconcile_affect(
             )
         return guess
 
+    # Detect intra-pass collisions where two different events in the
+    # same Phase-C sweep write opposing truths to the same
+    # (proposition, fabula_time). The dict update below silently picks
+    # last-write-wins; without an explicit warn the conflict was
+    # invisible to operators.
+    pass_collisions: Dict[Tuple[str, int], bool] = {}
+
     for evt in world.events:
         for pid in evt.resolves_proposition_ids:
             resolved = _resolve_pid(pid)
             if resolved is not None:
-                truth_writes[(resolved, evt.fabula_time)] = True
+                key = (resolved, evt.fabula_time)
+                prev = truth_writes.get(key)
+                if prev is not None and prev != True:
+                    pass_collisions[key] = True
+                truth_writes[key] = True
         if evt.asserts_proposition_id:
             resolved = _resolve_pid(evt.asserts_proposition_id)
             if resolved is not None:
@@ -11677,11 +11688,29 @@ def reconcile_affect(
                 if tv is None and evt.truth_value not in ("unknown", "performative"):
                     tv = True
                 if tv is not None:
-                    truth_writes[(resolved, evt.fabula_time)] = tv
+                    key = (resolved, evt.fabula_time)
+                    prev = truth_writes.get(key)
+                    if prev is not None and prev != tv:
+                        pass_collisions[key] = True
+                    truth_writes[key] = tv
         if evt.denies_proposition_id:
             resolved = _resolve_pid(evt.denies_proposition_id)
             if resolved is not None:
-                truth_writes[(resolved, evt.fabula_time)] = False
+                key = (resolved, evt.fabula_time)
+                prev = truth_writes.get(key)
+                if prev is not None and prev != False:
+                    pass_collisions[key] = True
+                truth_writes[key] = False
+
+    for (pid, fab) in pass_collisions:
+        logger.warning(
+            "[Phase C] Conflicting truth writes within the same pass on "
+            "%s@fabula=%d (two or more events in this sweep wrote opposing "
+            "truth values; last write wins). This usually indicates a "
+            "Schr\u00f6dinger reveal that should be split across ticks, or a "
+            "duplicate extraction.",
+            pid, fab,
+        )
 
     for (pid, fab), val in truth_writes.items():
         prop = prop_index[pid]
@@ -11698,6 +11727,37 @@ def reconcile_affect(
         new_truth = dict(prop.truth_at_fabula)
         new_truth[fab] = val
         prop_index[pid] = prop.model_copy(update={"truth_at_fabula": new_truth})
+
+        # Mirror onto the inverse proposition (if declared) so a
+        # storyworld carrying PROP_X and PROP_NOT_X kept in lockstep
+        # sees both sides commit consistently. The mirror only fires
+        # when the inverse exists in the catalogue; missing inverses
+        # are logged and skipped (not auto-created).
+        inverse_pid = prop.inverse_proposition_id
+        if inverse_pid and inverse_pid in prop_index:
+            inv_prop = prop_index[inverse_pid]
+            inv_val = not val
+            inv_existing = inv_prop.truth_at_fabula.get(fab)
+            if inv_existing is not None and inv_existing != inv_val:
+                logger.warning(
+                    "[Phase C] Inverse-proposition consistency conflict on "
+                    "%s@fabula=%d: existing truth %s contradicts mirror from "
+                    "%s=%s (would-be inverse=%s). Keeping existing value.",
+                    inverse_pid, fab, inv_existing, pid, val, inv_val,
+                )
+                continue
+            if inv_existing is None:
+                inv_new = dict(inv_prop.truth_at_fabula)
+                inv_new[fab] = inv_val
+                prop_index[inverse_pid] = inv_prop.model_copy(
+                    update={"truth_at_fabula": inv_new}
+                )
+        elif inverse_pid:
+            logger.debug(
+                "[Phase C] Proposition %s declares inverse_proposition_id=%s "
+                "but that PROP_ is not in the catalogue; skipping mirror.",
+                pid, inverse_pid,
+            )
 
     # ----------------------------------------------------------------
     # 3. Per-chunk affect outputs: proposition framing snapshots +

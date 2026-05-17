@@ -352,6 +352,19 @@ class Proposition(AMWNNode):
             "the truth value is undetermined for surprise-scoring purposes."
         ),
     )
+    inverse_proposition_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional PROP_ id of a logically-opposite proposition "
+            "(e.g. ``PROP_DUNCAN_ALIVE`` for ``PROP_DUNCAN_DEAD``). "
+            "When set, ``truth_at_fabula`` commits are auto-mirrored "
+            "to the inverse with the opposite truth value during the "
+            "Phase C truth-write sweep, so concerns / beliefs anchored "
+            "to either proposition see a consistent ground truth. "
+            "Linkage is one-way at declaration but symmetrised by the "
+            "reconciler when both sides name each other."
+        ),
+    )
     state_timeline: List["PropositionSnapshot"] = Field(
         default_factory=list,
         description=(
