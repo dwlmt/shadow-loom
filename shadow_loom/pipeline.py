@@ -89,6 +89,37 @@ _OBSERVATION_STATUS_ALIASES: Dict[str, str] = {
 # Anchor resolution helper
 # =====================================================================
 
+def _isolate_ws_for_surgery(
+    ws: WorldStateV1,
+    query: "UserRequest",
+) -> WorldStateV1:
+    """Return a fresh deep-clone of ``ws`` when the query is going to
+    invoke ``CausalPhysicsEngine`` typed do-target handlers.
+
+    The Rung-2 / Rung-3 ``_apply_do_*`` methods on
+    :class:`CausalPhysicsEngine` mutate ``world_state`` in-place
+    (writing onto ``events``, ``channels``, ``social_topology``,
+    ``spatial_topology``, ``causal_topology``, and individual
+    ``Concern`` / ``Channel`` / ``RelationshipMetric`` objects) so
+    that downstream brief construction sees the surgery. Those fields
+    are shared by reference between factual and shadow projections
+    (``projected_for_branch`` only forks ``entities`` /
+    ``objects`` / ``propositions`` / ``world_traits``), so a single
+    counterfactual query was permanently corrupting the user's
+    factual world.
+
+    This isolation runs *after* :func:`_apply_query_introductions`
+    (which already deep-clones when introductions are present, so
+    those cases pay one clone, not two) and only for query types
+    that can actually fire do-target handlers — observation /
+    interrogate / general / evaluate paths are read-only and skip
+    the clone.
+    """
+    if query.query_type not in ("intervention", "counterfactual"):
+        return ws
+    return ws.model_copy(deep=True)
+
+
 def _apply_query_introductions(
     ws: WorldStateV1,
     query: "UserRequest",
@@ -2329,6 +2360,14 @@ def run_pipeline(
         branch_world_id=_active_branch_world_id,
         branch_label=_active_branch_label,
     )
+    # Per-query surgery isolation — deep-clones ws so engine-side
+    # ``_apply_do_*`` handlers (which mutate channels / events /
+    # social_topology / spatial_topology / causal_topology / concerns /
+    # propositions in place) cannot leak back to the VWM-held world
+    # state. Without this every Rung-2 / Rung-3 query permanently
+    # contaminated the factual world for subsequent queries. No-op for
+    # observation / interrogate / general / evaluate (read-only paths).
+    ws = _isolate_ws_for_surgery(ws, query)
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
     )
@@ -2892,6 +2931,9 @@ async def run_pipeline_async(
         branch_world_id=_active_branch_world_id,
         branch_label=_active_branch_label,
     )
+    # Per-query surgery isolation — see run_pipeline (sync) for
+    # rationale.
+    ws = _isolate_ws_for_surgery(ws, query)
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
     )

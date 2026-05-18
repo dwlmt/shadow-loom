@@ -1794,6 +1794,7 @@ def _apply_affect_to_world(
     world_id: Literal["factual", "shadow"],
     changeset: "MergeChangeset",
     branch_label: Optional[str] = None,
+    suppressed_truth_commits: Optional[set[tuple[str, int]]] = None,
 ) -> None:
     """Fold proposition / concern additions and snapshots into ``merged``.
 
@@ -1807,6 +1808,14 @@ def _apply_affect_to_world(
     instead routed onto a per-branch split copy of the carrier in
     the appropriate sidecar (see ``_get_or_clone_shadow_proposition``
     and ``_get_or_clone_shadow_entity``).
+
+    ``suppressed_truth_commits`` is a precomputed set of
+    ``(proposition_id, fabula_time)`` tuples that were committed by
+    events suppressed by the surgery cascade. Computed by the caller
+    BEFORE ``_apply_deletions`` runs (which prunes the suppressed
+    events from ``merged.events`` and would otherwise make this set
+    silently empty). Used by the per-branch proposition-clone helpers
+    to trim those commits from the shadow sidecar.
     """
     from shadow_loom.models import Proposition, Concern  # local to keep import-time graph clean
 
@@ -1814,7 +1823,7 @@ def _apply_affect_to_world(
     # helpers can trim the new sidecar copies consistently with the
     # ``_apply_deletions`` cascade (see same provenance rule there).
     _suppressed_event_ids: set[str] = set(getattr(topology, "suppressed_event_ids", None) or [])
-    _suppressed_commits: set[tuple[str, int]] = set()
+    _suppressed_commits: set[tuple[str, int]] = set(suppressed_truth_commits or ())
     _surviving_commits: set[tuple[str, int]] = set()
     if world_id == "shadow" and branch_label and _suppressed_event_ids:
         def _committed_props_at_local(evt: Any) -> List[tuple[str, int]]:
@@ -1831,11 +1840,11 @@ def _apply_affect_to_world(
             for pid_r in getattr(evt, "resolves_proposition_ids", None) or []:
                 pairs.append((pid_r, int(ft)))
             return pairs
+        # ``merged.events`` here is post-``_apply_deletions``, so it
+        # contains only surviving events. Suppressed commits arrive
+        # via ``suppressed_truth_commits`` (precomputed by caller).
         for evt in merged.events:
-            if evt.id in _suppressed_event_ids:
-                _suppressed_commits.update(_committed_props_at_local(evt))
-            else:
-                _surviving_commits.update(_committed_props_at_local(evt))
+            _surviving_commits.update(_committed_props_at_local(evt))
 
     # Index existing propositions by id for O(1) lookup.
     prop_index: Dict[str, Proposition] = {p.proposition_id: p for p in merged.propositions}
@@ -3525,6 +3534,36 @@ class VersionedWorldModel(BaseModel):
                     c.world_id = world_id
         changeset = MergeChangeset()
 
+        # Precompute suppressed truth-commit provenance BEFORE the
+        # deletion pass removes the suppressed events from
+        # ``merged.events``. ``_apply_affect_to_world`` needs the
+        # (proposition_id, fabula_time) pairs that were committed by
+        # suppressed events so its per-branch proposition-clone
+        # helpers can trim those commits out of the shadow sidecar
+        # (otherwise a shadow proposition's ``truth_at_fabula`` still
+        # carries the factual commit timestamps, contradicting the
+        # rendered counterfactual). Walking ``merged.events`` after
+        # ``_apply_deletions`` would yield an empty set because the
+        # suppressed events have already been pruned.
+        _suppressed_truth_commits: set[tuple[str, int]] = set()
+        if world_id == "shadow" and branch_label and getattr(topology, "suppressed_event_ids", None):
+            _sup_ids = set(topology.suppressed_event_ids or [])
+            for _evt in merged.events:
+                if _evt.id not in _sup_ids:
+                    continue
+                _ft = getattr(_evt, "fabula_time", None)
+                if _ft is None:
+                    continue
+                _ft_i = int(_ft)
+                for _pid in (
+                    getattr(_evt, "asserts_proposition_id", None),
+                    getattr(_evt, "denies_proposition_id", None),
+                ):
+                    if _pid:
+                        _suppressed_truth_commits.add((_pid, _ft_i))
+                for _pid in getattr(_evt, "resolves_proposition_ids", None) or []:
+                    _suppressed_truth_commits.add((_pid, _ft_i))
+
         # --- Deletion pass (P2 of prose-merge completeness) — runs
         # before additive sections so a single merge can replace-then-
         # add cleanly. Cascades dependent edges/snapshots.
@@ -3852,6 +3891,7 @@ class VersionedWorldModel(BaseModel):
         _apply_affect_to_world(
             merged, topology, world_id=world_id, changeset=changeset,
             branch_label=branch_label,
+            suppressed_truth_commits=_suppressed_truth_commits,
         )
         # Belief confidence overwrites (Pearl Rung-2 BeliefMutation bridge).
         _apply_belief_confidence_updates(

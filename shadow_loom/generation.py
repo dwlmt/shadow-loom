@@ -4159,6 +4159,19 @@ def build_observation_brief(
         _syuzhet_to_fabula_anchor(world_state, syuzhet_anchor),
         world_label="observed",
     ))
+    # Anchor-event co-presence pin. When the observation query carries
+    # ``anchor_after_event_id`` AND the resolved event has an
+    # ``at_location_id``, the focus entities are watching / reacting
+    # to that event — so the scene must be staged AT the event's
+    # location, not at each focus entity's drifted last-known
+    # location_id. Without this pin the renderer reconstructs each
+    # focus entity at their stale ``EntityStateSnapshot.location_id``
+    # (e.g. their home / flat) and then invents a remote channel to
+    # bridge them to the trial / courtroom, missing the goal of the
+    # query (witness the event live).
+    constraints.extend(_build_anchor_event_copresence_constraints(
+        query, world_state,
+    ))
     scene_context = dict(physics_state) if isinstance(physics_state, dict) else {}
     if syuzhet_anchor is not None and isinstance(scene_context, dict):
         scene_context.setdefault("syuzhet_anchor", syuzhet_anchor)
@@ -4203,6 +4216,69 @@ def build_observation_brief(
         ),
         scene_context=scene_context,
     )
+
+
+def _build_anchor_event_copresence_constraints(
+    query: Any,
+    world_state: WorldStateV1,
+) -> List[ConstraintBlock]:
+    """Pin focus entities to the anchor event's ``at_location_id``.
+
+    Fires when the query carries ``anchor_after_event_id`` AND the
+    resolved event has an ``at_location_id``. Emits a HARD spatial
+    constraint instructing the renderer to stage the scene at the
+    event's location with every focus entity bodily present (rather
+    than reconstructing each entity at their last
+    ``EntityStateSnapshot.location_id``, which is often a stale
+    home/flat that the renderer then bridges to the event via an
+    invented channel).
+
+    Returns ``[]`` when the query does not name an anchor event, when
+    the event is missing from the world, or when the event has no
+    ``at_location_id`` (no location to pin to).
+    """
+    after_id = getattr(query, "anchor_after_event_id", None)
+    focus = list(getattr(query, "focus_entity_ids", None) or [])
+    if not after_id or not focus:
+        return []
+    evt = next(
+        (e for e in (world_state.events or []) if e.id == after_id), None,
+    )
+    if evt is None:
+        return []
+    loc_id = getattr(evt, "at_location_id", None)
+    if not loc_id:
+        return []
+    loc = (world_state.locations or {}).get(loc_id)
+    loc_name = getattr(loc, "name", None) or loc_id
+    evt_desc = (getattr(evt, "description", None) or evt.id).strip().replace("\n", " ")
+    if len(evt_desc) > 120:
+        evt_desc = evt_desc[:117] + "\u2026"
+    focus_str = ", ".join(f"`{eid}`" for eid in focus)
+    return [ConstraintBlock(
+        constraint_type="spatial",
+        priority="hard",
+        instruction=(
+            f"ANCHOR-EVENT CO-PRESENCE: this observation is anchored "
+            f"to `{evt.id}` (\u201c{evt_desc}\u201d), which takes place "
+            f"at `{loc_id}` ({loc_name}). Stage the scene AT that "
+            f"location with the focus entities ({focus_str}) bodily "
+            f"present and witnessing the event live \u2014 do NOT "
+            f"render them at their last-known home/flat with the "
+            f"event reaching them through an invented "
+            f"telephone/television/radio channel. If a focus entity "
+            f"is canonically elsewhere at this fabula tick AND the "
+            f"event has a declared `via_channel_id`, render the "
+            f"reception as channel-mediated; otherwise place every "
+            f"focus entity in the room with the event."
+        ),
+        evidence={
+            "anchor_event_id": evt.id,
+            "at_location_id": loc_id,
+            "focus_entity_ids": focus,
+            "fabula_time": getattr(evt, "fabula_time", None),
+        },
+    )]
 
 
 def _build_skipped_intervention_constraints(

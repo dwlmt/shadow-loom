@@ -1107,29 +1107,107 @@ class CausalPhysicsEngine:
         engine. The clamp is also written back to the live
         ``world_state.propositions`` list so downstream consumers reading
         the world state observe the pinned truth value.
+
+        Three additional invariants beyond a bare timeline write:
+
+        1. **Post-clamp suppression.** The surgery sets the canonical
+           truth from ``ft`` forward; any pre-existing factual commits
+           at ``fabula_time > ft`` would otherwise flicker the
+           shadow-branch truth log (e.g. a counterfactual that pins
+           ``X=False`` at T=30000 must not still surface the factual
+           ``X=True`` at T=14000 followed by the new commit, because
+           the shadow timeline diverges at ``ft``). Drop those later
+           commits so the shadow brief shows a coherent monotone
+           truth history.
+        2. **Inverse-proposition mirror.** Mirrors the Phase C ingestion
+           sweep (``ingestion.py`` "Phase C — Affect Reconciler"): when
+           ``prop.inverse_proposition_id`` is set and the inverse
+           exists in the catalogue, write the negated truth at the
+           same tick onto the inverse, applying the same post-clamp
+           suppression. Without this a do-surgery on ``PROP_X`` leaves
+           ``PROP_NOT_X`` carrying stale factual commits that
+           contradict the surgery.
+        3. **Defensive copy-on-write.** The proposition (and its
+           inverse) is replaced in ``world_state.propositions`` with a
+           deep clone before mutation so callers that captured a
+           reference to the canonical ``Proposition`` object before the
+           shadow surgery (e.g. ``VersionedWorldModel.history``) do not
+           observe the in-place edit.
         """
         ft = target.fabula_time
         if ft is None:
             ft = self._default_fabula_time()
+        ft = int(ft)
 
         old_truth: Optional[bool] = None
-        # Mirror the clamp onto the live world-state proposition.
-        for prop in (self.world_state.propositions or []):
+        prop_index: Optional[int] = None
+        inverse_pid: Optional[str] = None
+        props_list = self.world_state.propositions or []
+        for idx, prop in enumerate(props_list):
             if prop.proposition_id != target.proposition_id:
                 continue
+            prop_index = idx
+            inverse_pid = getattr(prop, "inverse_proposition_id", None)
             if isinstance(prop.truth_at_fabula, dict):
-                # truth_at_fabula keys are ints (fabula_time) → bool
-                # Snapshot the most recent prior truth as `old_truth`.
-                prior = [v for k, v in prop.truth_at_fabula.items() if int(k) <= int(ft)]
+                prior = [v for k, v in prop.truth_at_fabula.items() if int(k) <= ft]
                 old_truth = prior[-1] if prior else None
-                prop.truth_at_fabula[int(ft)] = bool(target.truth)
+                # Copy-on-write: replace the canonical Proposition with
+                # a deep clone before mutating so external references
+                # (UI snapshots, version history, sibling queries) keep
+                # the unmodified object.
+                new_truth = {
+                    int(k): v for k, v in prop.truth_at_fabula.items() if int(k) < ft
+                }
+                new_truth[ft] = bool(target.truth)
+                clone = prop.model_copy(update={"truth_at_fabula": new_truth})
+                props_list[idx] = clone
             break
+
+        # Inverse-proposition mirror (parity with Phase C ingestion).
+        if inverse_pid:
+            for idx, inv_prop in enumerate(props_list):
+                if inv_prop.proposition_id != inverse_pid:
+                    continue
+                inv_val = not bool(target.truth)
+                if isinstance(inv_prop.truth_at_fabula, dict):
+                    inv_existing = inv_prop.truth_at_fabula.get(ft)
+                    if inv_existing is not None and inv_existing != inv_val:
+                        logger.warning(
+                            "[CausalPhysics\u00b7do_proposition] Inverse "
+                            "consistency conflict on %s@fabula=%d: existing "
+                            "truth %s contradicts mirror from %s=%s "
+                            "(would-be inverse=%s). Keeping existing value.",
+                            inverse_pid, ft, inv_existing,
+                            target.proposition_id, target.truth, inv_val,
+                        )
+                    else:
+                        inv_new = {
+                            int(k): v for k, v in inv_prop.truth_at_fabula.items()
+                            if int(k) < ft
+                        }
+                        inv_new[ft] = inv_val
+                        props_list[idx] = inv_prop.model_copy(
+                            update={"truth_at_fabula": inv_new}
+                        )
+                break
+
+        # Refresh the sandbox's serialised proposition layer so
+        # downstream consumers reading ``sandbox.graph['propositions']``
+        # (Q&A compressor, brief renderer) observe the clamp + inverse
+        # mirror instead of the pre-surgery snapshot taken by
+        # ``_stamp_utility_layer``.
+        if prop_index is not None:
+            sand_props = self.sandbox.graph.get("propositions")
+            if isinstance(sand_props, list):
+                self.sandbox.graph["propositions"] = [
+                    p.model_dump() for p in props_list
+                ]
 
         # Persist the clamp on the sandbox graph for Phase-2 consumers.
         clamps = self.sandbox.graph.setdefault("proposition_clamps", [])
         clamps.append({
             "proposition_id": target.proposition_id,
-            "fabula_time": int(ft),
+            "fabula_time": ft,
             "truth": bool(target.truth),
         })
 
@@ -1139,7 +1217,7 @@ class CausalPhysicsEngine:
 
         self._proposition_mutations.append(PropositionMutation(
             proposition_id=target.proposition_id,
-            fabula_time=int(ft),
+            fabula_time=ft,
             old_truth=old_truth,
             new_truth=bool(target.truth),
             cascaded_belief_count=cascaded,
