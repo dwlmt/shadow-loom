@@ -1672,7 +1672,7 @@ def _emit_downstream_cascade_lines(branch: Any, lines: List[str]) -> None:
         ("concern_cascade_detail",
          "  CONCERN CASCADES (utility salience / polarity / active shifts):"),
         ("blocked_propagations_detail",
-         "  BLOCKED PROPAGATIONS (resistance prevented full cascade \u2014 render the resistance, do NOT silently skip the node):"),
+         "  BLOCKED PROPAGATIONS (resistance prevented full cascade \u2014 honour the BLOCKED PROPAGATIONS (HARD) constraint block's directive: stage one concrete resistance beat per entry when the list is short, treat as stable when the list is long; do NOT depict any listed (node, trait) as having reached the new value):"),
     ]
     any_section = False
     for attr, header in sections:
@@ -4353,10 +4353,21 @@ def _build_cascade_exclusion_constraints(
             )
         if len(blocked_clean) > 25:
             lines.append(f"  \u2022 \u2026 + {len(blocked_clean) - 25} more.")
-        blocks.append(ConstraintBlock(
-            constraint_type="mathematical",
-            priority="hard",
-            instruction=(
+        # Renderer-budget guard. Staging an on-page resistance beat
+        # for every blocked propagation is impossible in a 500-2000
+        # word scene once the list exceeds ~5 entries — the renderer
+        # is forced to either sketch them all (auditor fires
+        # ``blocked_propagation_leak`` on the half-rendered cues) or
+        # skip most (auditor fires ``abduction_failure``). When the
+        # list is short, demand explicit resistance beats; when it is
+        # long, the directive flips to "treat these traits as stable
+        # and do NOT stage them" so the renderer stops oscillating
+        # between the two failure modes. Stable behaviour is still
+        # implicitly rendered (the character's normal baseline), it
+        # is just not foregrounded as a resistance beat.
+        _BLOCKED_STAGE_CAP = 5
+        if len(blocked_clean) <= _BLOCKED_STAGE_CAP:
+            _blocked_directive = (
                 f"=== BLOCKED PROPAGATIONS (HARD) === \u2014 the engine "
                 f"applied the {rung_label} cascade but the targets "
                 f"below RESISTED. They DID NOT reach the propagated "
@@ -4365,18 +4376,48 @@ def _build_cascade_exclusion_constraints(
                 f"the (node, trait) below as having reached the new "
                 f"value \u2014 the would-have-been target is "
                 f"intentionally NOT shown to you so you cannot pattern-"
-                f"match on it. Render the RESISTANCE instead: the "
-                f"force, inertia, affordance constraint, or cyclic "
-                f"absorption that stopped the change from taking hold. "
-                f"The auditor cross-checks that no blocked target "
-                f"appears in its propagated state on-page.\n"
+                f"match on it. Render the RESISTANCE as a single "
+                f"concrete beat per entry: the force, inertia, "
+                f"affordance constraint, or cyclic absorption that "
+                f"stopped the change from taking hold. The auditor "
+                f"cross-checks that no blocked target appears in its "
+                f"propagated state on-page.\n"
                 + "\n".join(lines)
-            ),
+            )
+        else:
+            _blocked_directive = (
+                f"=== BLOCKED PROPAGATIONS (HARD) === \u2014 the engine "
+                f"applied the {rung_label} cascade but the "
+                f"{len(blocked_clean)} (node, trait) targets below "
+                f"RESISTED and DID NOT reach the propagated state in "
+                f"the {world_label} world. The list is too long to "
+                f"stage one resistance beat per entry within the "
+                f"scene's word budget. Instead, treat every trait "
+                f"below as STABLE at its prior value: do NOT render "
+                f"any line that names, depicts, implies, or "
+                f"interiorises any (node, trait) below as having "
+                f"shifted, AND do NOT manufacture a separate "
+                f"resistance beat for each \u2014 the character's "
+                f"ordinary baseline behaviour is sufficient evidence "
+                f"of stability. The auditor checks for the propagated "
+                f"state appearing on-page, not for explicit resistance "
+                f"prose.\n"
+                + "\n".join(lines)
+            )
+        blocks.append(ConstraintBlock(
+            constraint_type="mathematical",
+            priority="hard",
+            instruction=_blocked_directive,
             evidence={
                 "blocked_node_traits": [
                     f"{b.get('node_id', '?')}.{b.get('trait', '?')}"
                     for b in blocked_clean
                 ],
+                "blocked_directive_mode": (
+                    "stage_resistance"
+                    if len(blocked_clean) <= _BLOCKED_STAGE_CAP
+                    else "treat_as_stable"
+                ),
             },
         ))
 
@@ -4682,18 +4723,49 @@ def build_intervention_brief(
         ),
         evidence={},
     ))
-    # Blocked propagations become constraints
+    # Blocked propagations become constraints. The
+    # ``_build_cascade_exclusion_constraints`` helper above already
+    # emits a single consolidated BLOCKED PROPAGATIONS block (and
+    # flips its directive between "stage one resistance beat per
+    # entry" and "treat as stable, no per-entry resistance beats"
+    # once the list exceeds the ~5-beat scene budget). Mirror that
+    # cap here so we do not append 25 separate hard constraints
+    # demanding 25 distinct resistance beats — that is what forced
+    # the renderer to oscillate between blocked_propagation_leak
+    # (sketched too many) and abduction_failure (skipped most).
     if blocked:
-        for b in blocked:
+        _BLOCKED_PER_ENTRY_CAP = 5
+        if len(blocked) <= _BLOCKED_PER_ENTRY_CAP:
+            for b in blocked:
+                constraints.append(ConstraintBlock(
+                    constraint_type="spatial",
+                    priority="hard",
+                    instruction=(
+                        f"BLOCKED: The propagation to {b.get('node_id', '?')}.{b.get('trait', '?')} "
+                        f"was blocked by {b.get('reason', 'unknown')}. "
+                        f"The state change did NOT propagate \u2014 render one concrete resistance beat."
+                    ),
+                    evidence=b,
+                ))
+        else:
+            # Long blocked list: emit a single aggregate constraint
+            # that forbids the propagated state but does NOT demand a
+            # per-entry resistance beat. The consolidated
+            # pink-elephant block above carries the full enumeration
+            # in its ``evidence``.
             constraints.append(ConstraintBlock(
                 constraint_type="spatial",
                 priority="hard",
                 instruction=(
-                    f"BLOCKED: The propagation to {b.get('node_id', '?')}.{b.get('trait', '?')} "
-                    f"was blocked by {b.get('reason', 'unknown')}. "
-                    f"The state change did NOT propagate — render the resistance."
+                    f"BLOCKED ({len(blocked)} entries): the (node, trait) "
+                    f"targets enumerated in the BLOCKED PROPAGATIONS "
+                    f"pink-elephant block did NOT change. Treat each as "
+                    f"stable at its prior value; the character's "
+                    f"ordinary baseline behaviour is sufficient \u2014 "
+                    f"do NOT manufacture a separate resistance beat "
+                    f"for each entry."
                 ),
-                evidence=b,
+                evidence={"blocked_count": len(blocked)},
             ))
 
     # ctf-calculus pre-flight prunings (Correa & Bareinboim 2025).
@@ -4879,8 +4951,13 @@ def build_intervention_brief(
                 "Render the struggle between Impact and Inertia as physical prose.",
                 "Show the cause producing the effect through a specific mechanism "
                 "(kinetic, chemical, social, psychological).",
-                "If a propagation was blocked, describe the resistance \u2014 the force "
-                "that stopped the change from taking hold.",
+                "If a propagation was blocked, the (node, trait) did NOT move. "
+                "When the BLOCKED PROPAGATIONS block asks for resistance beats, "
+                "stage one concrete beat of the force or inertia that held the "
+                "prior value \u2014 never a near-change or a subtle cue of a "
+                "shift. When the block asks you to treat the list as stable, "
+                "do NOT manufacture per-entry resistance prose; the character's "
+                "ordinary baseline behaviour is sufficient.",
                 "Render the scene as the lived present of this world. Do "
                 "not stand outside it as a narrator commenting on its "
                 "structure.",
@@ -4991,11 +5068,35 @@ def build_counterfactual_brief(
     # cuts that double-jeopardy at the source. (May 2026 Star Wars
     # counterfactual non-convergence audit.)
     _ABDUCTION_MIN_DELTA = 0.10
+    # Build a (entity, trait) lookup of every blocked propagation so we
+    # can drop overlapping abduction entries. The BLOCKED PROPAGATIONS
+    # constraint block (see ``_build_cascade_exclusion_constraints``)
+    # tells the renderer the (node, trait) did NOT change and forbids
+    # depicting / interiorising it as changed; the AbductionTruth
+    # ``weave_hint`` for the same trait would simultaneously demand a
+    # subtle behavioural cue revealing the hidden shift. The two
+    # instructions are mutually unsatisfiable: any micro-reaction the
+    # renderer writes for AbductionTruth is interiorisation of the
+    # trait as changed, which the BLOCKED block forbids and the
+    # auditor's ``blocked_propagation_leak`` then flags. Resistance
+    # wins (the engine's verdict is that the delta was never realised).
+    _blocked_keys: set = set()
+    for _b in (blocked or []):
+        if not isinstance(_b, dict):
+            continue
+        _bnode = _b.get("node_id")
+        _btrait = _b.get("trait")
+        if _bnode and _btrait:
+            _blocked_keys.add((_bnode, _btrait))
     abduction: List[AbductionTruth] = []
     if hidden_deltas:
         skipped_flat = 0
+        skipped_blocked = 0
         for entity_id, deltas in hidden_deltas.items():
             for trait, delta_val in deltas.items():
+                if (entity_id, trait) in _blocked_keys:
+                    skipped_blocked += 1
+                    continue
                 if abs(float(delta_val)) < _ABDUCTION_MIN_DELTA:
                     skipped_flat += 1
                     continue
@@ -5019,6 +5120,15 @@ def build_counterfactual_brief(
                 "or noisy-OR-absorbed cluster; rendering would be invented "
                 "and immediately flagged as POV/abduction conflicts.",
                 skipped_flat, _ABDUCTION_MIN_DELTA,
+            )
+        if skipped_blocked:
+            logger.info(
+                "[CounterfactualBrief] Skipped %d abduction shifts whose "
+                "(entity, trait) overlap with BLOCKED PROPAGATIONS — "
+                "resistance wins so the AbductionTruth weave_hint would "
+                "contradict the blocked-propagation directive and trigger "
+                "blocked_propagation_leak in the auditor.",
+                skipped_blocked,
             )
 
     # Build a counterfactual branch from the intervention keys.

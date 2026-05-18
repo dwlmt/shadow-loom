@@ -107,6 +107,8 @@ Return a JSON object with this exact structure:
 **Abduction audit (Rung 3 implicit events):**
 - Run an Executable Counterfactual Probe. If the physics required an implicit event (e.g., a character secretly obtained an item off-screen), check if the prose subtextually supports the hidden variable.
 - The text must NOT explicitly state the hidden event, but must include subtle behavioural cues that logically justify the current world state.
+- **Sub-threshold tolerance (HARD):** the generator drops any abduction shift with `|delta| < 0.10` from the brief before rendering (cyclic-SCC / noisy-OR-absorbed clusters return effectively flat distributions the renderer cannot honestly externalise). Mirror that tolerance here — do NOT fire `abduction_failure` for a `(entity, trait)` whose abduction delta is below 0.10, and do NOT fire it for any `(entity, trait)` that appears in the brief's BLOCKED PROPAGATIONS block (the engine's verdict is that the delta was never realised — see the blocked-propagation precedence rule below).
+- **Blocked-propagation precedence (HARD):** when a `(node, trait)` appears in the brief's BLOCKED PROPAGATIONS block, the AbductionTruth weave_hint for that same trait is suppressed by the generator. Treat the BLOCKED directive as authoritative: the trait is STABLE, no behavioural cue revealing a shift is required, and demanding one is a feedback contradiction.
 - Violation type: `abduction_failure`
 - Feedback template: "Abduction Failure. The implicit background event ([hidden variable]) is not structurally supported by the subtext. You cannot explicitly state that it happened, but you must add a subtle behavioural cue to logically justify the current world state."
 
