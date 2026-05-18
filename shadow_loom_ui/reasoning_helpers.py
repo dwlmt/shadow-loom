@@ -142,12 +142,26 @@ VIOLATION_EXPLANATIONS: Dict[str, str] = {
         "resisted, but the prose co-asserts both. Either drop the "
         "trait reference or surface the resistance explicitly."
     ),
+    "inert_intervention_aftermath": (
+        "The engine flagged the requested do-surgery as inert "
+        "(every target Rule-3 pruned or absorbed by inertia / "
+        "cyclic SCC), but the prose still depicted the change "
+        "'taking hold' via aftermath beats. Rewrite so the "
+        "attempt and its resistance are staged \u2014 without any "
+        "downstream consequence."
+    ),
     "undeclared_element": (
         "Prose introduced a new entity / location / object / world "
         "trait / proposition / concern without declaring it in "
         "``GeneratedScene.introduced_elements``. Either remove the "
         "name and re-use an existing referent or move it into the "
         "declared-introductions list."
+    ),
+    "unjustified_introduction": (
+        "An ``introduced_elements`` declaration lacks a structural "
+        "justification (no engine-side spawn, no causal antecedent "
+        "in the graph, no preceding-prose hook). Either ground the "
+        "introduction in the world model or drop the new referent."
     ),
     "object_misuse": (
         "A character performed an action on an object whose "

@@ -257,13 +257,28 @@ def _format_constraints(constraints: List[ConstraintBlock]) -> str:
     return "\n".join(lines)
 
 
-def _format_rendering_directive(r: RenderingDirective) -> str:
-    """Format a RenderingDirective into prose instructions."""
+def _format_rendering_directive(
+    r: RenderingDirective,
+    *,
+    format_str: Optional[str] = None,
+) -> str:
+    """Format a RenderingDirective into prose instructions.
+
+    When ``format_str`` is a summary form (plot_summary / synopsis /
+    outline), the scenic cues — ``SENSORY FOCUS`` and any
+    ``STYLISTIC ACTIONS`` whose text pulls toward moment-by-moment
+    rendering — are stripped to keep the form-class override (which
+    bans dialogue, demands compressed diction, etc.) from being
+    undermined by sensory bullets the renderer would otherwise try
+    to honour. Other formats keep the full directive.
+    """
+    is_summary = bool(format_str) and format_str in _SUMMARY_FORMS
     parts = [
         f"RENDERING MODE: {r.rendering_mode}",
         f"PACING: {r.pacing}",
-        f"SENSORY FOCUS: {r.sensory_focus}",
     ]
+    if not is_summary:
+        parts.append(f"SENSORY FOCUS: {r.sensory_focus}")
     if r.pov_lock:
         if r.pov_policy == "single" or not r.additional_pov_locks:
             parts.append(f"POV LOCKED TO: {r.pov_lock}")
@@ -287,9 +302,27 @@ def _format_rendering_directive(r: RenderingDirective) -> str:
     if r.tone_arc:
         parts.append(f"TONAL ARC: {r.tone_arc}")
     if r.stylistic_instructions:
-        parts.append("STYLISTIC ACTIONS:")
-        for j, si in enumerate(r.stylistic_instructions, 1):
-            parts.append(f"  {j}. {si}")
+        # Filter out scenic-only stylistic actions when rendering as a
+        # summary form. Keywords cover the renderer's most common
+        # scenic cues ("moment by moment", "sensory", "dilate", "hear",
+        # etc.); the form-class override handles the broader register
+        # so dropping these bullets is safe.
+        _SCENIC_KEYWORDS = (
+            "moment by moment", "moment-by-moment", "sensory",
+            "dilate", "texture", "hear", "see", "smell", "touch",
+            "taste", "breath", "close-up", "dwell", "linger",
+        )
+        kept = []
+        for si in r.stylistic_instructions:
+            if is_summary and any(
+                kw in si.lower() for kw in _SCENIC_KEYWORDS
+            ):
+                continue
+            kept.append(si)
+        if kept:
+            parts.append("STYLISTIC ACTIONS:")
+            for j, si in enumerate(kept, 1):
+                parts.append(f"  {j}. {si}")
     return "\n".join(parts)
 
 
@@ -2753,6 +2786,7 @@ def _normalise_omniscient_to_ego_shape(
     ctx: Dict[str, Any],
     *,
     recent_event_limit: int = 20,
+    branch_world_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convert a full ``WorldStateV1.model_dump()`` into the ego-graph
     payload shape consumed by :func:`format_scene_context_for_prompt`.
@@ -2808,6 +2842,28 @@ def _normalise_omniscient_to_ego_shape(
     wt_list = _to_list_with_id(ctx.get("world_traits") or {})
 
     raw_events = list(ctx.get("events") or [])
+    # Branch isolation. The omniscient normaliser is fed the full
+    # ``WorldStateV1.model_dump()`` which carries both factual and
+    # shadow events undifferentiated. When the caller is rendering a
+    # specific branch we filter so:
+    #   * factual scene  → drop shadow events entirely.
+    #   * shadow scene   → keep events tagged shadow PLUS factual
+    #                       events (factual is the parent timeline
+    #                       up to the branch point).
+    # When the caller does not pin a branch (None) we keep everything
+    # for backwards-compat — most existing callers pass full state
+    # for diagnostic / interrogate use.
+    if branch_world_id == "factual":
+        raw_events = [
+            e for e in raw_events
+            if not (isinstance(e, dict) and e.get("world_id") == "shadow")
+        ]
+    elif branch_world_id == "shadow":
+        raw_events = [
+            e for e in raw_events
+            if not isinstance(e, dict)
+            or e.get("world_id") in (None, "factual", "shadow")
+        ]
     raw_events.sort(
         key=lambda e: (
             e.get("fabula_time") if isinstance(e, dict) else 0
@@ -3016,7 +3072,50 @@ def format_scene_context_for_prompt(
     _utt_chars = utterance_chars if utterance_chars is not None else _s.scene_context_utterance_chars
 
     ctx = _normalise_sandbox_to_ego_shape(ctx)
-    ctx = _normalise_omniscient_to_ego_shape(ctx, recent_event_limit=_recent_events)
+    ctx = _normalise_omniscient_to_ego_shape(
+        ctx,
+        recent_event_limit=_recent_events,
+        branch_world_id=ctx.get("branch_world_id") if isinstance(ctx, dict) else None,
+    )
+
+    # ------------------------------------------------------------
+    # Sentinel filter. ``ENT_AUDIENCE`` and ``LOC_NONE`` are internal
+    # sentinels (the implicit reader-stand-in entity and the non-place
+    # placeholder its ``location_id`` points at). They MUST never
+    # appear in the renderer's scene context — the LLM cannot honour
+    # them as in-world referents and they leak system bookkeeping
+    # into prose. ``_resolve_pov_targets`` already filters them from
+    # the POV roster; the broader scene-context formatter must do
+    # the same.
+    _SENTINEL_ENT_IDS: set[str] = {"ENT_AUDIENCE"}
+    _SENTINEL_LOC_IDS: set[str] = {"LOC_NONE"}
+
+    def _strip_sentinels(items: list, key: str, ids: set[str]) -> list:
+        return [it for it in (items or []) if it.get(key) not in ids]
+
+    for _ent_key in (
+        "focus_entities", "copresent_entities", "relevant_entities",
+        "current_entities", "entities",
+    ):
+        if _ent_key in ctx:
+            ctx[_ent_key] = _strip_sentinels(
+                ctx.get(_ent_key) or [], "id", _SENTINEL_ENT_IDS,
+            )
+    for _loc_key in (
+        "current_locations", "relevant_locations", "locations",
+    ):
+        if _loc_key in ctx:
+            ctx[_loc_key] = _strip_sentinels(
+                ctx.get(_loc_key) or [], "id", _SENTINEL_LOC_IDS,
+            )
+    # Spatial edges touching LOC_NONE are by construction degenerate.
+    if "relevant_spatial_edges" in ctx:
+        ctx["relevant_spatial_edges"] = [
+            se for se in (ctx.get("relevant_spatial_edges") or [])
+            if se.get("source_id") not in _SENTINEL_LOC_IDS
+            and se.get("target_id") not in _SENTINEL_LOC_IDS
+        ]
+
     sections: List[str] = []
 
     # ------------------------------------------------------------
@@ -3698,7 +3797,10 @@ def assemble_rendering_prompt(
     # === Rendering Directive (the stylistic control layer) ===
     if brief.rendering:
         sections.append("=== RENDERING DIRECTIVE (Step 10 — How to write) ===")
-        sections.append(_format_rendering_directive(brief.rendering))
+        sections.append(_format_rendering_directive(
+            brief.rendering,
+            format_str=brief.narrative_style.format,
+        ))
         # Form-class override. The COUNTERFACTUAL / OBSERVATION /
         # INTERVENTION mode templates in ``prompts/generation.md`` all
         # default to "render as a lived scene grounded in physical
@@ -4327,6 +4429,54 @@ def _build_skipped_intervention_constraints(
     )]
 
 
+def _build_inert_intervention_constraints(
+    *,
+    intervention_inert: bool,
+    intervention_inert_reason: Optional[str],
+    rung_label: str,
+    world_label: str,
+) -> List[ConstraintBlock]:
+    """HARD disclosure when the engine produced ZERO downstream effects.
+
+    Companion to ``_build_cascade_exclusion_constraints`` and
+    ``_build_skipped_intervention_constraints``. When the
+    :class:`CausalPhysicsEngine` flags ``intervention_inert=True`` every
+    requested do-target was Rule-3 pruned and/or every downstream
+    propagation was absorbed by inertia / cyclic SCC. Without this
+    block the renderer still receives the surgery as a "real" event
+    and fabricates psychologically plausible aftermath ("calm held
+    steady\u2026 professionalism remained unshaken\u2026") that the
+    auditor then has to police as miracle steps. Emit a single
+    pink-elephant-safe instruction telling the renderer to stage the
+    *attempted* surgery and its *resistance* only \u2014 no downstream.
+    """
+    if not intervention_inert:
+        return []
+    reason = intervention_inert_reason or "no actionable downstream propagation"
+    return [ConstraintBlock(
+        constraint_type="mathematical",
+        priority="hard",
+        instruction=(
+            f"=== INERT INTERVENTION (HARD) === \u2014 the {rung_label} "
+            f"surgery in the {world_label} sandbox produced ZERO "
+            f"downstream effects: {reason}. The do-operator either "
+            f"failed to land or was fully absorbed by inertia / "
+            f"cyclic SCC / affordance gate. Stage the *attempt* and "
+            f"its *resistance* only \u2014 do NOT depict any trait "
+            f"shift, relationship update, belief change, concern "
+            f"flip, proposition flip, or world-state delta as a "
+            f"consequence of this surgery. Any aftermath beat that "
+            f"reads as 'the change took hold' (even subtly: 'still "
+            f"steady\u2026', 'as composed as ever\u2026', 'unshaken') "
+            f"is a miracle the auditor flags."
+        ),
+        evidence={
+            "intervention_inert": True,
+            "intervention_inert_reason": reason,
+        },
+    )]
+
+
 def _build_cascade_exclusion_constraints(
     *,
     blocked: Optional[List[Dict[str, Any]]],
@@ -4377,19 +4527,36 @@ def _build_cascade_exclusion_constraints(
     # 1. Cascade-bounded miracle prevention. Always emit when the
     # engine produced any cascade at all (otherwise the renderer has
     # no concrete cascade to bound against and the rule is vacuous).
+    # ALSO emit when no cascade fired but the engine has blocked
+    # propagations: in that case the bound is "zero downstream
+    # effects" \u2014 the renderer needs an explicit ceiling so it does
+    # not invent consequences to fill the blocked-but-staged void.
     cascade_present = bool(
         mutations or social_mutations or proposition_mutations
         or belief_mutations or concern_mutations
     )
-    if cascade_present:
+    blocked_only = bool(blocked) and not cascade_present
+    if cascade_present or blocked_only:
         n_total = sum(len(x or []) for x in (
             mutations, social_mutations, proposition_mutations,
             belief_mutations, concern_mutations,
         ))
-        blocks.append(ConstraintBlock(
-            constraint_type="mathematical",
-            priority="hard",
-            instruction=(
+        if blocked_only:
+            _instr = (
+                f"=== CASCADE-BOUNDED CONSEQUENCES (HARD) === \u2014 the "
+                f"{rung_label} surgery propagated ZERO downstream "
+                f"effects in the {world_label} sandbox \u2014 every "
+                f"candidate propagation was absorbed by inertia, "
+                f"cyclic SCC, or affordance gate (see BLOCKED "
+                f"PROPAGATIONS below for the full resistance list). "
+                f"The cascade bound is therefore ZERO: do NOT invent "
+                f"ANY downstream trait shift, relationship update, "
+                f"belief change, or world-state consequence beyond the "
+                f"do-target itself. The auditor counts any "
+                f"manufactured downstream effect as a miracle step."
+            )
+        else:
+            _instr = (
                 f"=== CASCADE-BOUNDED CONSEQUENCES (HARD) === \u2014 the "
                 f"{rung_label} surgery propagated exactly {n_total} "
                 f"downstream effect(s) listed under DOWNSTREAM TRAIT / "
@@ -4401,7 +4568,11 @@ def _build_cascade_exclusion_constraints(
                 f"propagate would be a miracle step \u2014 the auditor "
                 f"flags both omitted cascades and invented consequences "
                 f"by counting the gap against this list."
-            ),
+            )
+        blocks.append(ConstraintBlock(
+            constraint_type="mathematical",
+            priority="hard",
+            instruction=_instr,
             evidence={
                 "cascade_total": n_total,
                 "trait_count": len(mutations or []),
@@ -4409,6 +4580,7 @@ def _build_cascade_exclusion_constraints(
                 "proposition_count": len(proposition_mutations or []),
                 "belief_count": len(belief_mutations or []),
                 "concern_count": len(concern_mutations or []),
+                "blocked_count": len(blocked or []),
             },
         ))
 
@@ -4441,7 +4613,7 @@ def _build_cascade_exclusion_constraints(
         # between the two failure modes. Stable behaviour is still
         # implicitly rendered (the character's normal baseline), it
         # is just not foregrounded as a resistance beat.
-        _BLOCKED_STAGE_CAP = 5
+        _BLOCKED_STAGE_CAP = 2
         if len(blocked_clean) <= _BLOCKED_STAGE_CAP:
             _blocked_directive = (
                 f"=== BLOCKED PROPAGATIONS (HARD) === \u2014 the engine "
@@ -4695,6 +4867,8 @@ def build_intervention_brief(
     branch_label: Optional[str] = None,
     factual_contrast_summary: Optional[str] = None,
     syuzhet_anchor: Optional[int] = None,
+    intervention_inert: bool = False,
+    intervention_inert_reason: Optional[str] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for intervention (do-calculus) queries."""
     pruned_set = set(rule3_pruned_interventions or [])
@@ -4886,6 +5060,25 @@ def build_intervention_brief(
                 evidence={"rule3_advisory": list(rule3_pruned_interventions)},
             ))
 
+    # ctf-calculus Rule-2 advisory \u2014 mirrors the counterfactual brief
+    # (round-9 audit fix). Intervention briefs accepted but never
+    # surfaced ``rule2_redundant_evidence``; the renderer therefore had
+    # no signal that some evidence anchors were d-separated from the
+    # surgery and should be treated as background colour.
+    if rule2_redundant_evidence:
+        constraints.append(ConstraintBlock(
+            constraint_type="mathematical",
+            priority="soft",
+            instruction=(
+                "REDUNDANT EVIDENCE (Rule-2): "
+                f"{', '.join(rule2_redundant_evidence)} are d-separated "
+                "from the typed interventions on the AMWN. They did not "
+                "constrain the surgery's reach \u2014 treat them as "
+                "background colour, not evidential anchors for the change."
+            ),
+            evidence={"rule2_redundant": list(rule2_redundant_evidence)},
+        ))
+
     constraints.append(ConstraintBlock(
         constraint_type="mathematical",
         priority="hard",
@@ -4929,6 +5122,12 @@ def build_intervention_brief(
         rule3_pruning_mode=rule3_pruning_mode,
         world_label="intervened",
         rung_label="Rung-2 intervention",
+    ))
+    constraints.extend(_build_inert_intervention_constraints(
+        intervention_inert=intervention_inert,
+        intervention_inert_reason=intervention_inert_reason,
+        rung_label="Rung-2 intervention",
+        world_label="intervened",
     ))
     # Negative-physics record: prevented events + false propositions.
     constraints.extend(_build_skipped_intervention_constraints(
@@ -5128,6 +5327,8 @@ def build_counterfactual_brief(
     branch_label: Optional[str] = None,
     factual_contrast_summary: Optional[str] = None,
     syuzhet_anchor: Optional[int] = None,
+    intervention_inert: bool = False,
+    intervention_inert_reason: Optional[str] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for counterfactual (Rung 3) queries."""
     # Build AbductionTruth entries from hidden_deltas.
@@ -5439,6 +5640,12 @@ def build_counterfactual_brief(
         rule3_pruning_mode=rule3_pruning_mode,
         world_label="counterfactual",
         rung_label="Rung-3 counterfactual",
+    ))
+    constraints.extend(_build_inert_intervention_constraints(
+        intervention_inert=intervention_inert,
+        intervention_inert_reason=intervention_inert_reason,
+        rung_label="Rung-3 counterfactual",
+        world_label="counterfactual",
     ))
     # Negative-physics record: prevented events + false propositions.
     constraints.extend(_build_skipped_intervention_constraints(
@@ -5767,6 +5974,8 @@ def render_from_query(
             branch_label=branch_label,
             factual_contrast_summary=factual_contrast_summary,
             syuzhet_anchor=syuzhet_anchor,
+            intervention_inert=bool(physics_result.get("intervention_inert")),
+            intervention_inert_reason=physics_result.get("intervention_inert_reason"),
         )
         return render_scene(brief, config, "intervention", physics_state)
 
@@ -5801,6 +6010,8 @@ def render_from_query(
             branch_label=branch_label,
             factual_contrast_summary=factual_contrast_summary,
             syuzhet_anchor=syuzhet_anchor,
+            intervention_inert=bool(physics_result.get("intervention_inert")),
+            intervention_inert_reason=physics_result.get("intervention_inert_reason"),
         )
         return render_scene(brief, config, "counterfactual", physics_state)
 

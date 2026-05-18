@@ -504,6 +504,12 @@ def calculate_narrative_physics(
                 "skipped_interventions": list(
                     physics_result.skipped_interventions
                 ),
+                # Inert-intervention disclosure: when every requested
+                # do-target was Rule-3 pruned / cycle-absorbed the
+                # engine sets these so the brief, auditor, and UI can
+                # avoid fabricating consequences for a no-op surgery.
+                "intervention_inert": physics_result.intervention_inert,
+                "intervention_inert_reason": physics_result.intervention_inert_reason,
                 # Typed object stashed under a private key so the pipeline
                 # can forward it to the auditor (which needs the full
                 # CausalPhysicsResult, not the JSON-serialised slices).
@@ -779,6 +785,12 @@ def calculate_narrative_physics(
                 "skipped_interventions": list(
                     physics_result.skipped_interventions
                 ),
+                # Inert-intervention disclosure (parity with the
+                # intervention branch above) — surfaces a no-op CTF
+                # so the brief / auditor / UI do not fabricate
+                # downstream consequences.
+                "intervention_inert": physics_result.intervention_inert,
+                "intervention_inert_reason": physics_result.intervention_inert_reason,
                 # Typed object stashed for the pipeline → auditor handoff;
                 # see the intervention branch for rationale.
                 "_causal_physics_result": physics_result,

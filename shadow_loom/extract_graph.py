@@ -829,6 +829,36 @@ def introduced_elements_to_spawns(
 
     for spec in getattr(introduced, "concerns", []) or []:
         try:
+            # Idempotency guard (round-6 audit fix): every other spawn
+            # branch refuses to re-introduce an existing id; the concern
+            # branch used to append duplicates, doubling the holder's
+            # belief weight on a re-emitted spec.
+            holder = spec.holder_entity_id
+            already = {
+                c.concern_id
+                for c in (out["concerns"].get(holder) or [])
+            }
+            existing_for_holder = world_state.entities.get(holder) if holder else None
+            if existing_for_holder is not None:
+                already.update(
+                    c.concern_id for c in (existing_for_holder.concerns or [])
+                )
+            if spec.id in already:
+                continue
+            # Proposition-reference validation (round-6 audit fix). A
+            # dangling proposition_id makes the concern unresolvable
+            # downstream (propagation has no truth_at_fabula to read);
+            # surface it as a warning so the renderer/operator notices
+            # rather than letting the concern fall silently inert.
+            prop_id = spec.proposition_id
+            existing_prop_ids = {p.proposition_id for p in (world_state.propositions or [])}
+            if prop_id and prop_id not in existing_prop_ids and prop_id not in out["propositions"]:
+                logger.warning(
+                    "[introduced_elements_to_spawns] Concern %s references "
+                    "unknown proposition %s \u2014 spawning anyway but it will "
+                    "be inert until the proposition is introduced.",
+                    spec.id, prop_id,
+                )
             # Spec polarity accepts both the canonical Concern
             # vocabulary (``desire`` / ``fear``) and the legacy LLM
             # aliases (``positive`` / ``negative``). Map either down
@@ -2442,6 +2472,20 @@ def _get_or_clone_shadow_entity(
             b for b in clone.beliefs
             if getattr(b, "acquired_via_event_id", None) not in sup
         ]
+        # Concern salience snapshots carry the same ``triggered_by``
+        # provenance: a salience bump driven by a suppressed event
+        # has no surviving causal arc in W*\u2099 and must be trimmed
+        # off the clone alongside the entity-level timeline. Without
+        # this trim, a concern's motivational arc on the shadow
+        # branch would still report a salience spike attributed to
+        # an event that did not occur in this AMWN world.
+        for c in clone.concerns:
+            tl = getattr(c, "state_timeline", None)
+            if tl:
+                c.state_timeline = [
+                    cs for cs in tl
+                    if getattr(cs, "triggered_by", None) not in sup
+                ]
     sidecar[entity_id] = clone
     logger.info(
         "[merge\u00b7shadow-clone] AMWN-split entity %s on branch %r "
@@ -2620,6 +2664,79 @@ def _get_or_clone_shadow_proposition(
     return clone
 
 
+def _demote_social_metric_axes(
+    social_topology: List[Any],
+    axes: List[tuple[str, str, str]],
+    *,
+    merge_world_id: Literal["factual", "shadow"],
+    source: str,
+) -> int:
+    """Demote ``RelationshipMetric.evidence_strength`` to ``weak`` on
+    every ``(source_entity_id, target_entity_id, axis)`` triple in
+    ``axes`` whose originating ``mutation_social`` causal edge has
+    just been removed from the merged ``causal_topology``.
+
+    Round-3 / round-5 cross-branch leak fix. ``RelationshipMetric``
+    carries no ``triggered_by`` field of its own \u2014 unlike entity /
+    object / world-trait / proposition / concern timelines \u2014 so a
+    removed ``mutation_social`` edge would otherwise silently leave
+    the post-mutation metric value on the social_topology view.
+    Demoting evidence_strength to ``weak`` is the closest surgical
+    fix without a schema change: the metric value is preserved as a
+    last-known reading, but downstream consumers see the same
+    "stale / unsupported" signal they get when the canonical
+    propagation gate did not fire.
+
+    Parameters
+    ----------
+    social_topology
+        The merged ``social_topology`` list to mutate in place.
+    axes
+        Iterable of ``(source_entity_id, target_entity_id, metric_axis)``
+        tuples captured at edge-removal time.
+    merge_world_id
+        Branch tag for the log line.
+    source
+        Either ``"delete"`` (the ``removed_event_ids`` deletion pass)
+        or ``"suppress"`` (the shadow ``suppressed_event_ids`` cascade).
+
+    Returns the number of axes actually demoted (already-weak axes are
+    counted as zero so the warning reflects new information only).
+    """
+    if not axes:
+        return 0
+    demoted = 0
+    axes_set = set(axes)
+    for rel in social_topology:
+        # Round-9 audit fix: gate demotion on rel.world_id matching the
+        # merge branch. Without this, a shadow-branch merge whose
+        # removed mutation_social edge happens to share
+        # (s_ent, t_ent, axis) with a factual RelationshipMetric would
+        # also demote the factual metric — a critical cross-branch
+        # leak. ``world_id`` defaults to "factual" on legacy records so
+        # the guard is back-compat.
+        rel_world_id = getattr(rel, "world_id", "factual") or "factual"
+        if rel_world_id != merge_world_id:
+            continue
+        for (s_ent, t_ent, axis) in axes_set:
+            if (
+                rel.source_entity_id == s_ent
+                and rel.target_entity_id == t_ent
+            ):
+                m = rel.metrics.get(axis)
+                if m is not None and m.evidence_strength != "weak":
+                    m.evidence_strength = "weak"
+                    demoted += 1
+    if demoted:
+        logger.warning(
+            "[merge\u00b7%s] Demoted evidence_strength to 'weak' on %d "
+            "RelationshipMetric axis/axes whose originating "
+            "mutation_social event was removed on branch=%s: %s",
+            source, demoted, merge_world_id, sorted(axes_set),
+        )
+    return demoted
+
+
 def _apply_deletions(
     merged: WorldStateV1,
     topology: "ChunkTopology",
@@ -2677,6 +2794,19 @@ def _apply_deletions(
         # on this branch by definition); branch-mismatched edges naming a
         # surviving cross-branch event are left alone.
         before_c = len(merged.causal_topology)
+        # Capture mutation_social edges that this deletion drops so the
+        # corresponding RelationshipMetric axes can be demoted to
+        # ``weak``. Parity with the suppression cascade below \u2014 see
+        # ``_demote_social_axes`` for rationale.
+        _drop_social_axes: list[tuple[str, str, str]] = []
+        for c in merged.causal_topology:
+            cond = (c.source_id in drop or c.target_id in drop) and _branch_match(c)
+            if not cond or c.causality_type != "mutation_social":
+                continue
+            if c.target_id and c.rel_counterpart_id and c.trait_target:
+                _drop_social_axes.append(
+                    (c.target_id, c.rel_counterpart_id, c.trait_target)
+                )
         merged.causal_topology = [
             c for c in merged.causal_topology
             if not (
@@ -2685,6 +2815,13 @@ def _apply_deletions(
             )
         ]
         changeset.causal_edges_removed += before_c - len(merged.causal_topology)
+        if _drop_social_axes:
+            _demote_social_metric_axes(
+                merged.social_topology,
+                _drop_social_axes,
+                merge_world_id=merge_world_id,
+                source="delete",
+            )
 
     # --- Shadow suppression (counterfactual / intervention cascade).
     # Unlike ``removed_event_ids``, suppression bypasses the
@@ -2715,11 +2852,43 @@ def _apply_deletions(
         changeset.events_removed += suppressed_n
         # Cascade: causal edges touching suppressed events.
         before_c = len(merged.causal_topology)
+        # Capture removed ``mutation_social`` edges so we can demote
+        # the evidence_strength on RelationshipMetric axes whose last
+        # justifying event is now gone. ``RelationshipMetric`` has no
+        # ``triggered_by`` field of its own (unlike entity /
+        # object / world-trait / proposition / concern timelines), so
+        # without this pass a suppressed Event\u2192Relationship
+        # ``mutation_social`` edge silently leaves the post-mutation
+        # metric value on the shadow branch \u2014 a real cross-branch
+        # leak (e.g. an affinity bump from a counterfactually-prevented
+        # confession persists into the shadow social_topology view).
+        # Closed Literal vocabulary ``weak|moderate|strong`` prevents a
+        # ``stale`` value, so we demote to ``weak`` and warn the
+        # operator; a future schema change can move this to a typed
+        # provenance gate.
+        _suppressed_social_axes: list[tuple[str, str, str]] = []
+        for c in merged.causal_topology:
+            if c.source_id not in sup and c.target_id not in sup:
+                continue
+            if c.causality_type != "mutation_social":
+                continue
+            src_ent = c.target_id  # Event\u2192Entity edge: target is src of rel
+            tgt_ent = c.rel_counterpart_id
+            axis = c.trait_target
+            if src_ent and tgt_ent and axis:
+                _suppressed_social_axes.append((src_ent, tgt_ent, axis))
         merged.causal_topology = [
             c for c in merged.causal_topology
             if c.source_id not in sup and c.target_id not in sup
         ]
         changeset.causal_edges_removed += before_c - len(merged.causal_topology)
+        if _suppressed_social_axes:
+            _demote_social_metric_axes(
+                merged.social_topology,
+                _suppressed_social_axes,
+                merge_world_id=merge_world_id,
+                source="suppress",
+            )
         # Cascade: drop entity state_timeline snapshots whose
         # ``triggered_by`` references a suppressed event (the
         # entity-level mutation those snapshots applied is no longer

@@ -473,7 +473,12 @@ def _compress_world_state(
             speaker = u.get("speaker_id") or (u.get("actor_ids") or ["?"])[0]
             addressees = ",".join(u.get("addressee_ids") or []) or "—"
             tv = u.get("truth_value")
-            tv_str = f" truth={tv}" if tv else ""
+            # Always label the truth status so the LLM consuming this
+            # block never treats utterance content as ground truth.
+            # When the extractor left ``truth_value`` unset we mark it
+            # explicitly as ``unknown`` rather than silently omitting
+            # the field \u2014 omitting reads as "this is a fact".
+            tv_str = f" truth={tv or 'unknown'}"
             content = (u.get("content") or "").strip().replace("\n", " ")
             if len(content) > 200:
                 content = content[:197] + "…"

@@ -279,7 +279,11 @@ class TestSuppressionDemotesSocialMetric:
                 evidence_strength="strong",
                 last_updated_fabula=50,
             )},
-            world_id="factual",
+            # Round-9 audit fix \u2014 demotion is now branch-scoped, so for
+            # this shadow-branch merge the rel must be tagged shadow to
+            # exercise the demotion path. Cross-branch demotion (factual
+            # rel during shadow merge) is now blocked as a leak.
+            world_id="shadow",
         )
         return WorldStateV1(
             entities={"ENT_GEORGE": george, "ENT_WANDA": wanda},

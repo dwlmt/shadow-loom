@@ -1081,6 +1081,57 @@ def _stamp_brief_full(
     return brief
 
 
+def _log_feedback_outcome(
+    feedback: "FeedbackLoopResult",
+    *,
+    async_path: bool,
+) -> None:
+    """Loudly surface refinement-loop failure modes.
+
+    ``FeedbackLoopResult`` carries three distinct failure signals that
+    were previously buried in a debug-string parenthetical
+    (``audit=skipped/failed``) or in a result attribute the caller
+    would have to introspect manually:
+
+      * ``converged=False`` \u2014 the auditor never passed within
+        ``max_iterations``. Final scene is the best-effort last
+        iteration, not a clean pass.
+      * ``engine_thresholds_passed=False`` \u2014 deterministic
+        ChangeImpactMetrics checks failed on the final cycle even if
+        the LLM auditor passed. ``engine_threshold_failures`` names
+        which gates fell.
+      * ``correction_error`` populated \u2014 a refinement/rewrite
+        LLM call raised; the loop exited early with whatever scene
+        the previous iteration produced.
+
+    Emit one WARNING per signal so log greppers, CI assertions, and
+    the UI debug view see them without parsing the PipelineHistory
+    or FeedbackLoopResult by hand.
+    """
+    tag = "Pipeline\u00b7Async" if async_path else "Pipeline"
+    if not feedback.converged:
+        logger.warning(
+            "[%s] Refinement loop did NOT converge after %d iteration(s) "
+            "\u2014 returning best-effort last scene. Auditor never passed.",
+            tag, feedback.iterations,
+        )
+    if feedback.engine_thresholds_passed is False:
+        logger.warning(
+            "[%s] Engine-threshold check FAILED on final audit cycle "
+            "(thresholds=%s); ChangeImpactMetrics did not meet the "
+            "deterministic gates even if the LLM auditor passed.",
+            tag,
+            feedback.engine_threshold_failures or ["<unspecified>"],
+        )
+    if feedback.correction_error:
+        logger.warning(
+            "[%s] Refinement loop exited via correction_error=%r after "
+            "%d iteration(s); scene reflects pre-error state, not a "
+            "clean audit pass.",
+            tag, feedback.correction_error, feedback.iterations,
+        )
+
+
 def _render_engine_priors(
     physics_result: Dict[str, Any],
     *,
@@ -1105,6 +1156,11 @@ def _render_engine_priors(
     social_muts = physics_result.get("social_mutations") or []
     blocked = physics_result.get("blocked") or []
     intervened = physics_result.get("intervened_nodes") or []
+    inert = bool(physics_result.get("intervention_inert"))
+    inert_reason = physics_result.get("intervention_inert_reason")
+    pruned_utt_ids = physics_result.get("pruned_utterance_event_ids") or []
+    disabled_ch_ids = physics_result.get("disabled_channel_ids") or []
+    skipped_ints = physics_result.get("skipped_interventions") or []
 
     sections: List[str] = []
 
@@ -1208,6 +1264,55 @@ def _render_engine_priors(
             )
         sections.append("\n".join(lines))
 
+    if pruned_utt_ids:
+        ids = [str(n) for n in pruned_utt_ids[:max_items_per_section]]
+        sections.append(
+            "Pruned utterance events (do-surgery removed these "
+            "speech-act events; do NOT re-extract them from the prose "
+            "even if quoted): " + ", ".join(ids)
+            + (
+                ""
+                if len(pruned_utt_ids) <= max_items_per_section
+                else f" (+{len(pruned_utt_ids) - max_items_per_section} more)"
+            )
+        )
+
+    if disabled_ch_ids:
+        ids = [str(n) for n in disabled_ch_ids[:max_items_per_section]]
+        sections.append(
+            "Disabled channels (do-surgery removed; beliefs acquired "
+            "via these channels are no longer supported): "
+            + ", ".join(ids)
+            + (
+                ""
+                if len(disabled_ch_ids) <= max_items_per_section
+                else f" (+{len(disabled_ch_ids) - max_items_per_section} more)"
+            )
+        )
+
+    if skipped_ints:
+        ids = [str(n) for n in skipped_ints[:max_items_per_section]]
+        sections.append(
+            "Skipped interventions (engine could not apply \u2014 target "
+            "absent from sandbox; do NOT extract any consequence for "
+            "these): " + ", ".join(ids)
+            + (
+                ""
+                if len(skipped_ints) <= max_items_per_section
+                else f" (+{len(skipped_ints) - max_items_per_section} more)"
+            )
+        )
+
+    if inert:
+        sections.append(
+            "INERT INTERVENTION \u2014 the engine produced ZERO downstream "
+            "mutations for this surgery"
+            + (f": {inert_reason}" if inert_reason else "")
+            + ". Do NOT extract any new trait shift, relationship update, "
+            "belief change, or world-state delta from the prose attributed "
+            "to this intervention."
+        )
+
     if not sections:
         return None
     return "\n\n".join(sections)
@@ -1216,6 +1321,8 @@ def _render_engine_priors(
 def _compute_shadow_prune_closure(
     world_state: WorldStateV1,
     root_event_ids: set[str],
+    *,
+    cause_disconnected_event_ids: Optional[set[str]] = None,
 ) -> set[str]:
     """Expand a do-surgery prune set to its causal descendant closure.
 
@@ -1227,7 +1334,17 @@ def _compute_shadow_prune_closure(
     *disjunctive* reading on direct-causation edges:
 
       An event Y is pruned ⇔ Y has at least one ``chain_reaction``
-      incoming edge AND every such parent is in the pruned set.
+      incoming edge AND every such parent is in the pruned set OR
+      cause-disconnected set.
+
+    The optional ``cause_disconnected_event_ids`` set holds events
+    whose *outcome / event_type was do-flipped* (the event still
+    occurs but its causal payload is no longer the one that drove
+    downstream chain reactions). These events are treated as broken
+    parents for the disjunctive descendant rule but are NOT added to
+    the returned closure — the do-flipped event itself stays in
+    the persisted shadow world; only its now-unsupported descendants
+    are suppressed.
 
     This preserves over-determined effects (the Halpern-Pearl "actual
     causation" intuition: Mrs Coady can die of *something else* if
@@ -1247,8 +1364,10 @@ def _compute_shadow_prune_closure(
     Returns the *expanded* prune set (includes the original roots).
     Safe to call with an empty root set (returns empty).
     """
-    if not root_event_ids:
+    if not root_event_ids and not cause_disconnected_event_ids:
         return set()
+
+    cause_broken = set(cause_disconnected_event_ids or [])
 
     # Build adjacency: child_event_id -> list of chain_reaction parent ids.
     # Only Event→Event chain_reaction edges count for the disjunctive
@@ -1269,12 +1388,16 @@ def _compute_shadow_prune_closure(
     while changed:
         changed = False
         for eid, parents in parents_of.items():
-            if eid in pruned:
+            if eid in pruned or eid in cause_broken:
+                # Cause-disconnected roots are NOT pruned themselves.
                 continue
             # Disjunctive rule: prune only when every chain_reaction
-            # parent is already pruned. An event with no
-            # chain_reaction parents is exogenous and never pruned.
-            if parents and all(p in pruned for p in parents):
+            # parent is already pruned OR cause-disconnected. An event
+            # with no chain_reaction parents is exogenous and never
+            # pruned.
+            if parents and all(
+                (p in pruned) or (p in cause_broken) for p in parents
+            ):
                 pruned.add(eid)
                 changed = True
 
@@ -2014,9 +2137,22 @@ def _augment_topology_with_sandbox_deltas(
         prune_roots = set(
             physics_result.get("pruned_utterance_event_ids") or []
         )
-        if prune_roots:
+        # Cause-disconnected seeds: EVT_ ids whose ``outcome`` /
+        # ``event_type`` were do-flipped this run. The event itself
+        # still occurs (do not delete it), but its chain_reaction
+        # children should be re-evaluated under the new payload —
+        # otherwise the prose can render "George was acquitted"
+        # while the persisted world still carries
+        # ``EVT_GEORGE_JAILED`` as if the conviction had stuck.
+        intervened = set(physics_result.get("intervened_nodes") or [])
+        cause_broken: set[str] = {
+            nid for nid in intervened
+            if isinstance(nid, str) and nid.startswith("EVT_")
+        }
+        if prune_roots or cause_broken:
             closure = _compute_shadow_prune_closure(
                 world_state, prune_roots,
+                cause_disconnected_event_ids=cause_broken,
             )
             if closure:
                 # Preserve any caller-set suppressions (none today,
@@ -2025,9 +2161,11 @@ def _augment_topology_with_sandbox_deltas(
                 topology.suppressed_event_ids = sorted(existing | closure)
                 logger.info(
                     "[Bridge\u00b7shadow-prune] query_type=%s expanded %d "
-                    "physics-pruned event root(s) \u2192 %d-event "
-                    "deletion closure for shadow merge: %s",
-                    query_type, len(prune_roots), len(closure),
+                    "physics-pruned + %d cause-disconnected event "
+                    "root(s) \u2192 %d-event deletion closure for "
+                    "shadow merge: %s",
+                    query_type, len(prune_roots), len(cause_broken),
+                    len(closure), sorted(closure),
                     sorted(closure),
                 )
 
@@ -2702,6 +2840,7 @@ def run_pipeline(
         result.converged = feedback.converged
         result.audit_iterations = feedback.iterations
         result.feedback_result = feedback
+        _log_feedback_outcome(feedback, async_path=False)
 
     # =================================================================
     # Steps 6–7: Prose re-extraction + merge
@@ -3178,6 +3317,7 @@ async def run_pipeline_async(
         result.converged = feedback.converged
         result.audit_iterations = feedback.iterations
         result.feedback_result = feedback
+        _log_feedback_outcome(feedback, async_path=True)
 
     # Steps 6–7: Re-extraction + merge (same as sync)
     if cfg.skip_reextraction:
@@ -3533,6 +3673,8 @@ def _build_brief_for_query(
             concern_mutations=physics_result.get("concern_mutations"),
             causal_chain=physics_result.get("causal_chain"),
             syuzhet_anchor=syuzhet_anchor,
+            intervention_inert=bool(physics_result.get("intervention_inert")),
+            intervention_inert_reason=physics_result.get("intervention_inert_reason"),
         )
     elif query.query_type == "counterfactual":
         return build_counterfactual_brief(
@@ -3571,6 +3713,8 @@ def _build_brief_for_query(
             blocked=physics_result.get("blocked"),
             causal_chain=physics_result.get("causal_chain"),
             syuzhet_anchor=syuzhet_anchor,
+            intervention_inert=bool(physics_result.get("intervention_inert")),
+            intervention_inert_reason=physics_result.get("intervention_inert_reason"),
         )
     elif query.query_type == "directive":
         # Reached when the causal engine is disabled (or otherwise

@@ -109,7 +109,14 @@ Physical connections between locations. Fields:
 - `established_at_fabula` (int): When this path was created. Default 0 (pre-existing).
 - `destroyed_at_fabula` (int | null): When this path was destroyed. Null if still traversable.
 
-Only include spatial connections that are **explicitly mentioned or clearly implied** by character movement in the text.
+Only include spatial connections that are **explicitly mentioned or clearly implied by on-page character / object traversal** in the text.
+
+**Hard rule — movement evidence required.** A `SpatialEdge` asserts that the two locations are physically adjacent / traversable. Emit one ONLY when the text either:
+1. Shows or describes an entity / object **moving** from `source_id` to `target_id` (or vice versa) in this chunk, or
+2. **Names a physical passage** between them (a door, corridor, stair, road, bridge, portal, tunnel, gangway), or
+3. Carries forward a passage **established in earlier chunks** that is still operative.
+
+**Do NOT** emit a SpatialEdge for two locations merely because they are *mentioned together* in narration, listed in the same paragraph, contrasted thematically, or named in a character's thoughts. Narrative co-mention is not adjacency. If the text says "He longed for Heathrow even as he sat in his flat" with no traversal and no named passage, emit no edge — the locations are referenced together but not physically connected on-page. The runtime traversability graph silently swells with spurious adjacencies when this rule is relaxed, breaking affordance-gate reachability checks during counterfactual propagation.
 
 Extraction rules:
 - **Directionality.** Most physical passages are *bidirectional* (a corridor, a staircase, an open door). Emit ONE edge per pair — the dedup pass keys on `(source_id, target_id)` and the runtime treats the connection symmetrically. Only emit a second `(target_id, source_id)` edge when the text makes the passage *one-way* (a slide, a cliff drop, a one-way valve, a portal that closes after passage).

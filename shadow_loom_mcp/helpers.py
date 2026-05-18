@@ -34,6 +34,19 @@ from shadow_loom_mcp.auth import check_project_access, get_user_id
 logger = logging.getLogger(__name__)
 
 
+def _apply_inert_envelope(response: dict, physics_result: dict | None) -> None:
+    """Surface ``intervention_inert`` / ``intervention_inert_reason`` on
+    the MCP response envelope when the engine flagged the surgery as a
+    no-op (round-3 audit fix; extracted for testability in round 5)."""
+    if not physics_result:
+        return
+    if physics_result.get("intervention_inert"):
+        response["intervention_inert"] = True
+        reason = physics_result.get("intervention_inert_reason")
+        if reason:
+            response["intervention_inert_reason"] = reason
+
+
 # ── Project resolution ────────────────────────────────────────────
 
 def resolve_project(
@@ -376,6 +389,11 @@ def run_and_save(
             response["disabled_channel_ids"] = list(disabled_chans)
         if pruned_beliefs:
             response["pruned_beliefs_count"] = int(pruned_beliefs)
+        # Inert-intervention disclosure (round-3 audit fix). Surfaces a
+        # no-op Rung-2/3 surgery so external clients can tell the user
+        # "the requested change has no representable consequences" rather
+        # than displaying an empty cascade as if it were a complete one.
+        _apply_inert_envelope(response, result.physics_result)
     if result.converged is not None:
         response["audit_converged"] = result.converged
         response["audit_iterations"] = result.audit_iterations

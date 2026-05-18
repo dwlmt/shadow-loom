@@ -45,6 +45,8 @@ One entry per (PROP_id, fabula_time) where the proposition's ground-truth value 
 - `truth` (bool): `true` if the proposition resolves true at this tick, `false` if it resolves false.
 - `triggered_by` (str): EVT_ id from this chunk that resolves it. Required. Typically an `outcome` event for `event_occurs`/`outcome` propositions; can be a `revelation` or `utterance` for `identity_is`/`relation_holds` propositions.
 
+> **Truth-value gate on utterance-anchored commits (HARD).** When `triggered_by` is an utterance event, check the event's `truth_value` field in the EVENTS block (`truth_value=true` / `false` / `performative` / `unknown`). Only `truth_value=true` utterances may anchor a `truth=true` commit; a `truth_value=false` utterance asserting PROP_X is a **lie** and MUST NOT produce `truth=true` on PROP_X (the speech act occurred, but the propositional content is false in the world). A truthful denial (`truth_value=true` utterance denying PROP_X) may anchor `truth=false`. A `truth_value=false` denial is a lie about a true proposition and MUST NOT produce `truth=false`. `performative` / `unknown` utterances are not eligible anchors for truth commits at all \u2014 prefer an `outcome` / `revelation` event when one exists, otherwise omit the commit.
+
 > **Schrödinger pattern**: a proposition that flips true→false→true (a body's identity misidentified, a death faked) is legitimate but rare. Emit each commit separately; the reconciler logs the flip but accepts it.
 
 ### `concern_snapshots` — List[ConcernSnapshot]

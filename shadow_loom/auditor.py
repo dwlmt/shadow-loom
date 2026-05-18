@@ -362,6 +362,16 @@ class AuditViolation(BaseModel):
         "pruned_utterance_leak",
         "disabled_channel_leak",
         "blocked_propagation_leak",
+        # Inert-intervention aftermath (round-5 audit fix; the round-9
+        # follow-up added the missing Literal value). Fired when the
+        # engine flagged the surgery ``intervention_inert=True`` but
+        # the prose still depicts the change "taking hold" ("still
+        # steady", "as composed as ever", "unshaken"). Referenced by
+        # ``shadow_loom/prompts/auditor.md`` and the UI
+        # VIOLATION_EXPLANATIONS dict; without the Literal entry the
+        # LLM's emission would fail Pydantic validation and the
+        # violation would be silently dropped by the parser.
+        "inert_intervention_aftermath",
         # Source-style fidelity (NarrativeStyle profile from ingestion).
         "style_mismatch",
         # Meta-narration: prose comments on its own structure (timelines,
@@ -702,6 +712,19 @@ def compute_causal_feedback(
     except Exception:
         _propagation_mode = "deterministic"
     _treat_inertia_as_absorbed = _propagation_mode == "noisy_or"
+    # When the engine itself flagged the surgery inert (every requested
+    # do-target Rule-3 pruned and/or every propagation absorbed by
+    # cyclic SCC / inertia), the brief tells the renderer NOT to depict
+    # any downstream consequence \u2014 see the
+    # ``_build_inert_intervention_constraints`` HARD block. The blocks
+    # the engine produced are *the correct outcome*, not narrative
+    # miracles. Routing them to ``miracle_steps`` would pin
+    # ``engine_passed=False`` for the entire refinement loop on
+    # exactly the scenes where the prose was correctly inert.
+    _inert = bool(
+        physics_result is not None
+        and getattr(physics_result, "intervention_inert", False)
+    )
 
     if physics_result is not None:
         for b in physics_result.blocked:
@@ -713,7 +736,14 @@ def compute_causal_feedback(
                 cyclic_clusters.append(entry)
             elif b.reason == "noisy_or_absorbed":
                 noisy_or_absorbed.append(entry)
-            elif b.reason == "inertia" and _treat_inertia_as_absorbed:
+            elif b.reason == "inertia" and (
+                _treat_inertia_as_absorbed or _inert
+            ):
+                noisy_or_absorbed.append(entry)
+            elif _inert:
+                # Catch-all: any other block under an inert intervention
+                # is also expected engine behaviour, not a miracle the
+                # renderer is meant to repair.
                 noisy_or_absorbed.append(entry)
             else:
                 miracle_steps.append(entry)
@@ -1592,6 +1622,20 @@ def assemble_audit_prompt(
             sections.append("  stylistic_instructions:")
             for j, si in enumerate(r.stylistic_instructions, 1):
                 sections.append(f"    {j}. {si}")
+        if r.pov_lock:
+            sections.append(
+                "  POV-temporal rule: the locked / rostered POV "
+                "entity / entities know ONLY what they had "
+                "perceived by the scene's fabula_time. Flag any "
+                "interior thought or remembered detail that "
+                "references events with fabula_time strictly "
+                "GREATER than the scene anchor as a violation "
+                "under the `physics` category (rationale prefix "
+                "`pov_future_knowledge:`). A POV character "
+                "\"remembering\" something that has not yet "
+                "happened in their subjective timeline is the "
+                "signature failure mode."
+            )
         sections.append("")
 
     # === Physics override (engine-authored hard text the renderer was
@@ -2012,6 +2056,22 @@ def assemble_audit_prompt(
                 "'performative' utterances (vows, declarations, "
                 "promises) are neither true nor false — flag prose "
                 "that treats them as factual claims about the world."
+            )
+            sections.append(
+                "  Paraphrase leak rule: the narrator is ALSO "
+                "endorsing a false utterance when it paraphrases the "
+                "content without the speech-act frame. \"He insisted "
+                "he was at the flat\" is acceptable (attribution is "
+                "intact). \"He had been at the flat that night\" "
+                "rendered as ground-truth narration of a "
+                "truth_value='false' utterance is a "
+                "**reasoning_failure** with rationale prefix "
+                "`utterance_paraphrase_leak:` \u2014 fire it whenever "
+                "the prose asserts the propositional content of a "
+                "false / performative utterance from above without "
+                "an attribution clause (\"said\", \"claimed\", "
+                "\"testified\", interior monologue marker, etc.) "
+                "anchoring it back to the speaker."
             )
             sections.append("")
 

@@ -4400,6 +4400,26 @@ def _sanitize_entity_update(
     return candidate
 
 
+# Sentinel IDs that must NEVER be surfaced into per-chunk extractor
+# system prompts. ``ENT_AUDIENCE`` is the implicit reader-stand-in
+# entity synthesised post-hoc by the affect-unification layer;
+# ``LOC_NONE`` is its non-place location. Neither exists in the
+# diegesis, and offering them as valid extraction targets in the
+# VALID ID REGISTER lets the LLM emit events/edges/beliefs anchored
+# on them \u2014 polluting causal-edge coverage metrics and forcing
+# downstream filters to strip them again.
+_EXTRACTOR_SENTINEL_ENTITY_IDS: frozenset[str] = frozenset({"ENT_AUDIENCE"})
+_EXTRACTOR_SENTINEL_LOCATION_IDS: frozenset[str] = frozenset({"LOC_NONE"})
+
+
+def _filter_extractor_entity_ids(ids: List[str]) -> List[str]:
+    return [i for i in ids if i not in _EXTRACTOR_SENTINEL_ENTITY_IDS]
+
+
+def _filter_extractor_location_ids(ids: List[str]) -> List[str]:
+    return [i for i in ids if i not in _EXTRACTOR_SENTINEL_LOCATION_IDS]
+
+
 def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, PhysicsExtraction]:
     """Construct the Step 3a Physics Agent — events + causal + spatial edges."""
     agent: Agent[_PhysicsDeps, PhysicsExtraction] = Agent(
@@ -4413,8 +4433,8 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
     @agent.system_prompt
     def inject_register_for_physics(ctx: RunContext[_PhysicsDeps]) -> str:
         reg = ctx.deps.global_register
-        entity_ids = sorted(reg.entities.keys())
-        location_ids = sorted(reg.locations.keys())
+        entity_ids = _filter_extractor_entity_ids(sorted(reg.entities.keys()))
+        location_ids = _filter_extractor_location_ids(sorted(reg.locations.keys()))
         object_ids = sorted(reg.objects.keys())
         world_trait_ids = sorted(reg.world_traits.keys())
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
@@ -4713,7 +4733,7 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             fixed_object_updates.append(cleaned_ou)
 
         if fixes:
-            logger.info("[Validator·Physics] Auto-fixed %d ID(s): %s", len(fixes), "; ".join(fixes))
+            logger.warning("[Validator·Physics] Auto-fixed %d ID(s): %s", len(fixes), "; ".join(fixes))
 
         if bad:
             raise ModelRetry(
@@ -4966,8 +4986,8 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
     @agent.system_prompt
     def inject_register_for_social(ctx: RunContext[_SocialDeps]) -> str:
         reg = ctx.deps.global_register
-        entity_ids = sorted(reg.entities.keys())
-        location_ids = sorted(reg.locations.keys())
+        entity_ids = _filter_extractor_entity_ids(sorted(reg.entities.keys()))
+        location_ids = _filter_extractor_location_ids(sorted(reg.locations.keys()))
         object_ids = sorted(reg.objects.keys())
         world_trait_ids = sorted(reg.world_traits.keys())
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
@@ -5422,7 +5442,7 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
                 fixed_social.append(sanitized)
 
         if fixes:
-            logger.info("[Validator·Social] Auto-fixed %d issue(s): %s", len(fixes), "; ".join(fixes))
+            logger.warning("[Validator·Social] Auto-fixed %d issue(s): %s", len(fixes), "; ".join(fixes))
 
         if bad:
             raise ModelRetry(
@@ -5502,8 +5522,8 @@ def _build_consequences_agent(
     @agent.system_prompt
     def inject_register_for_consequences(ctx: RunContext[_ConsequencesDeps]) -> str:
         reg = ctx.deps.global_register
-        entity_ids = sorted(reg.entities.keys())
-        location_ids = sorted(reg.locations.keys())
+        entity_ids = _filter_extractor_entity_ids(sorted(reg.entities.keys()))
+        location_ids = _filter_extractor_location_ids(sorted(reg.locations.keys()))
         object_ids = sorted(reg.objects.keys())
         world_trait_ids = sorted(reg.world_traits.keys())
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
@@ -5883,7 +5903,10 @@ def _build_affect_agent(
     @agent.system_prompt
     def inject_register_for_affect(ctx: RunContext[_AffectDeps]) -> str:
         reg = ctx.deps.global_register
-        entity_names = {eid: reg.entities[eid].name for eid in sorted(reg.entities)}
+        entity_names = {
+            eid: reg.entities[eid].name
+            for eid in _filter_extractor_entity_ids(sorted(reg.entities))
+        }
 
         # Catalogue propositions — render fully so the agent can decide
         # which to snapshot.
@@ -5923,9 +5946,20 @@ def _build_affect_agent(
             if e.resolves_proposition_ids:
                 link_bits.append(f"resolves={e.resolves_proposition_ids}")
             link_str = (" " + ", ".join(link_bits)) if link_bits else ""
+            # Surface truth_value on utterance events so the Affect
+            # agent does not treat a lie as a ground-truth assertion
+            # when emitting ``proposition_truth_commits``. A
+            # truth_value="false" utterance asserting PROP_X must NOT
+            # produce a commit of ``truth=True`` on PROP_X \u2014 the
+            # speech act occurred but its propositional content is
+            # false in the world.
+            tv_bits: List[str] = []
+            if e.event_type == "utterance" and e.truth_value:
+                tv_bits.append(f"truth_value={e.truth_value}")
+            tv_str = (" " + ", ".join(tv_bits)) if tv_bits else ""
             evt_lines.append(
                 f"  - {e.id} (fabula={e.fabula_time}, type={e.event_type}, "
-                f"actors={e.actor_ids}, targets={e.target_ids}){link_str}: "
+                f"actors={e.actor_ids}, targets={e.target_ids}){link_str}{tv_str}: "
                 f"{e.description}"
             )
         events_block = "\n".join(evt_lines) if evt_lines else "  (no events in this chunk)"
@@ -13977,16 +14011,30 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
         }
         last_loc: Optional[str] = ent.location_id
         # Walk events that involve this entity in fabula order.
+        # Participation predicate: an entity is treated as physically
+        # present at ``evt.at_location_id`` when it appears anywhere on
+        # the event roster — actor, target, addressee, or speaker —
+        # since narrative co-location applies regardless of agency.
+        # Remote (channel-mediated) utterances are excluded because the
+        # speaker need not be co-present with the event location.
+        # Co-located targets of remote utterances *are* tracked since
+        # the at_location_id refers to where the addressee/scene is.
+        def _co_present(e: "EventNode") -> bool:
+            if not (e.at_location_id and e.at_location_id in location_ids):
+                return False
+            if e.event_type == "utterance" and e.via_channel_id:
+                # Remote speaker is NOT co-present; addressees/targets
+                # at the named location still are.
+                return eid in (e.addressee_ids or []) or eid in (e.target_ids or [])
+            return (
+                eid in (e.actor_ids or [])
+                or eid in (e.target_ids or [])
+                or eid in (e.addressee_ids or [])
+                or (e.event_type == "utterance" and e.speaker_id == eid)
+            )
+
         relevant = sorted(
-            [
-                e for e in clean_events
-                if e.at_location_id and e.at_location_id in location_ids
-                and (eid in (e.actor_ids or [])
-                     or (e.event_type == "utterance" and e.speaker_id == eid))
-                # Skip remote utterances — channel-mediated speakers
-                # need not be co-present with the event location.
-                and not (e.event_type == "utterance" and e.via_channel_id)
-            ],
+            [e for e in clean_events if _co_present(e)],
             key=lambda e: e.fabula_time,
         )
         # Walk timeline + events together to track last_loc.
@@ -14055,7 +14103,28 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
         location_ids = set(ws.locations.keys())
 
     if repairs:
-        logger.info("[Auto-Repair] Applied %d repairs.", len(repairs))
+        # Upgrade visibility: the auto-fixer was previously logging at
+        # INFO which made silent structural repairs invisible to
+        # operators reading default-level logs. Repairs that backfill
+        # entity location snapshots, drop dangling at_location_ids, or
+        # coerce shadow world_ids back to factual are non-trivial
+        # corrections the extractor failed to produce and should
+        # surface as warnings so they can be triaged and the upstream
+        # prompt / schema tightened.
+        logger.warning(
+            "[Auto-Repair] Applied %d repairs (the extractor produced "
+            "structurally incorrect output that the auto-fixer had to "
+            "patch \u2014 triage the upstream prompt if this fires "
+            "regularly):",
+            len(repairs),
+        )
+        for _msg in repairs[:25]:
+            logger.warning("[Auto-Repair]   \u2022 %s", _msg)
+        if len(repairs) > 25:
+            logger.warning(
+                "[Auto-Repair]   \u2022 \u2026 + %d more.",
+                len(repairs) - 25,
+            )
         ws = WorldStateV1(
             locations=ws.locations,
             objects=ws.objects,

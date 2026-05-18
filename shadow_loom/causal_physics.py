@@ -378,6 +378,27 @@ class CausalPhysicsResult(BaseModel):
             "effect."
         ),
     )
+    intervention_inert: bool = Field(
+        default=False,
+        description=(
+            "True when every requested intervention was either Rule-3 "
+            "pruned (no path to evidence in the mutilated diagram) or "
+            "had all of its trait/social mutations absorbed by cyclic "
+            "SCCs / inertia. In this state the do-surgery produced no "
+            "observable change downstream. The pipeline MUST surface "
+            "this to the brief so prose can disclose the inert outcome "
+            "rather than fabricate consequences."
+        ),
+    )
+    intervention_inert_reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable explanation of why the intervention was "
+            "inert (e.g. 'all do-targets Rule-3 pruned and 4 trait "
+            "propagations absorbed by cycle'). Populated alongside "
+            "``intervention_inert``."
+        ),
+    )
     # ------------------------------------------------------------------
     # Probabilistic outputs (populated only when the corresponding modes
     # are active in CausalPhysicsSettings; empty under default settings).
@@ -1163,7 +1184,34 @@ class CausalPhysicsEngine:
                 props_list[idx] = clone
             break
 
+        # Missing-proposition guard (round-8 audit fix). Refuse to
+        # record a PropositionMutation or proposition_clamps row when
+        # the surgery targets a proposition that is not in the
+        # canonical catalogue — the clamp would be unreadable to
+        # downstream consumers and pollute the audit log with phantom
+        # truth pins.
+        if prop_index is None:
+            logger.warning(
+                "[CausalPhysics·do_proposition] Proposition %s not in "
+                "world_state.propositions; skipping clamp.",
+                target.proposition_id,
+            )
+            return
+
         # Inverse-proposition mirror (parity with Phase C ingestion).
+        # Round-10 audit fix (R10-F1): track whether the mirror actually
+        # landed so we can emit a paired ``PropositionMutation`` row for
+        # the inverse below. Without that row, the pipeline's
+        # ``PropositionTruthCommit`` bridge at pipeline.py only persists
+        # the primary clamp on merge — the inverse mirror lives solely on
+        # the deep-cloned shadow ``world_state.propositions`` (via
+        # ``_isolate_ws_for_surgery``) and is discarded after physics.
+        # The result was silent desync of every declared inverse pair
+        # after any Do-surgery, even though the engine reported the
+        # mirror as applied.
+        inverse_mirror_applied: bool = False
+        inverse_old_truth: Optional[bool] = None
+        inverse_new_truth: Optional[bool] = None
         if inverse_pid:
             for idx, inv_prop in enumerate(props_list):
                 if inv_prop.proposition_id != inverse_pid:
@@ -1181,6 +1229,11 @@ class CausalPhysicsEngine:
                             target.proposition_id, target.truth, inv_val,
                         )
                     else:
+                        inv_prior = [
+                            v for k, v in inv_prop.truth_at_fabula.items()
+                            if int(k) < ft
+                        ]
+                        inverse_old_truth = inv_prior[-1] if inv_prior else None
                         inv_new = {
                             int(k): v for k, v in inv_prop.truth_at_fabula.items()
                             if int(k) < ft
@@ -1189,6 +1242,8 @@ class CausalPhysicsEngine:
                         props_list[idx] = inv_prop.model_copy(
                             update={"truth_at_fabula": inv_new}
                         )
+                        inverse_mirror_applied = True
+                        inverse_new_truth = inv_val
                 break
 
         # Refresh the sandbox's serialised proposition layer so
@@ -1222,6 +1277,23 @@ class CausalPhysicsEngine:
             new_truth=bool(target.truth),
             cascaded_belief_count=cascaded,
         ))
+        # Round-10 audit fix (R10-F1): emit a paired ``PropositionMutation``
+        # for the inverse so the pipeline merge bridge emits a matching
+        # ``PropositionTruthCommit`` and the canonical timeline stays in
+        # lockstep with the primary clamp. Phase C ingestion already does
+        # this mirror on the canonical side; the Pearl Rung-2 path missed
+        # it. Cascaded belief count is reported as 0 because the cascade
+        # ran against the *primary* proposition's id only — beliefs tied
+        # to the inverse keep their existing confidence (a future round
+        # could cascade through the inverse too if needed).
+        if inverse_mirror_applied and inverse_pid:
+            self._proposition_mutations.append(PropositionMutation(
+                proposition_id=inverse_pid,
+                fabula_time=ft,
+                old_truth=inverse_old_truth,
+                new_truth=bool(inverse_new_truth),
+                cascaded_belief_count=0,
+            ))
 
     def _cascade_proposition_to_beliefs(self, target: Any) -> int:
         """Clamp every belief whose ``proposition_id`` matches the
@@ -1359,6 +1431,48 @@ class CausalPhysicsEngine:
             triggered_by=triggered_by,
         ))
 
+        # Canonical mirror (round-8 audit fix). The sandbox dict-shape
+        # belief lives only in the engine's working memory; re-extraction
+        # reads :attr:`Entity.beliefs` from the canonical world, so
+        # without this mirror the surgery would not survive a merge.
+        canonical_holder = (self.world_state.entities or {}).get(target.holder_id)
+        if canonical_holder is not None:
+            from shadow_loom.models import Belief
+            canonical_beliefs = list(getattr(canonical_holder, "beliefs", None) or [])
+            mirrored = False
+            for cb in canonical_beliefs:
+                pid_match = (
+                    target.proposition_id
+                    and getattr(cb, "proposition_id", None) == target.proposition_id
+                )
+                tid_match = (
+                    not target.proposition_id
+                    and getattr(cb, "target_id", None) == target.target_id
+                )
+                if pid_match or tid_match:
+                    cb.confidence = float(target.confidence)
+                    cb.acquired_via_event_id = triggered_by
+                    mirrored = True
+                    break
+            if not mirrored:
+                try:
+                    canonical_beliefs.append(Belief(
+                        target_id=target.target_id or "",
+                        perceived_state=target.perceived_state or "",
+                        confidence=float(target.confidence),
+                        inertia=0.3,
+                        evidence_strength="moderate",
+                        proposition_id=target.proposition_id,
+                        acquired_via_event_id=triggered_by,
+                    ))
+                except Exception:
+                    logger.exception(
+                        "[CausalPhysics·do_belief] Canonical belief mirror "
+                        "validation failed for holder=%s target=%s.",
+                        target.holder_id, target.target_id,
+                    )
+            canonical_holder.beliefs = canonical_beliefs
+
     def _apply_do_concern(self, target: Any) -> None:
         """Clamp salience / polarity / activation on a single
         :class:`Concern` belonging to ``target.holder_id``.
@@ -1433,6 +1547,29 @@ class CausalPhysicsEngine:
         # concerns that the surgery just suppressed.
         self._intervened_nodes.add(target.holder_id)
 
+        # Canonical mirror (round-8 audit fix). Without this the
+        # surgery only lives in the sandbox node attrs; the next
+        # re-extraction pass reads concerns from
+        # ``world_state.entities[holder].concerns`` and silently
+        # restores the pre-surgery state.
+        canonical_holder = (self.world_state.entities or {}).get(target.holder_id)
+        if canonical_holder is not None:
+            canonical_concerns = list(getattr(canonical_holder, "concerns", None) or [])
+            for cc in canonical_concerns:
+                if getattr(cc, "concern_id", None) != target.concern_id:
+                    continue
+                if target.polarity is not None:
+                    cc.polarity = target.polarity
+                if target.salience is not None:
+                    cc.salience = float(target.salience)
+                if target.active is not None:
+                    if target.active is False:
+                        cc.activation_fabula_window = [int(ft) + 1, int(ft) + 1]
+                    else:
+                        cc.activation_fabula_window = None
+                break
+            canonical_holder.concerns = canonical_concerns
+
     def _apply_do_world_trait(self, target: Any) -> None:
         """Clamp a WORLD_ ``GlobalTrait``'s magnitude — ambient-force
         intervention.
@@ -1488,6 +1625,41 @@ class CausalPhysicsEngine:
             if getattr(target, "fabula_time", None) is not None
             else self._default_fabula_time()
         )
+
+        # Canonical mirror (round-8 audit fix). Every other Do-handler
+        # mirrors its sandbox mutation onto ``world_state`` so the
+        # re-extraction pass observes the surgery. WorldTrait used to
+        # only mutate the sandbox node, leaving
+        # ``world_state.world_traits[wt_id].magnitude`` stale and
+        # propagating the pre-surgery value back on the next merge.
+        canonical_wt = (self.world_state.world_traits or {}).get(wt_id)
+        if canonical_wt is not None:
+            try:
+                from shadow_loom.models import TraitVector
+                mag_obj = getattr(canonical_wt, "magnitude", None)
+                if isinstance(mag_obj, TraitVector):
+                    mag_obj.value = new_value
+                    if target.inertia is not None:
+                        mag_obj.inertia = float(max(0.0, min(0.99, target.inertia)))
+                else:
+                    canonical_wt.magnitude = TraitVector(
+                        value=new_value,
+                        inertia=float(target.inertia) if target.inertia is not None else 0.3,
+                    )
+                # Mirror domain set-ops onto canonical too.
+                cdomains = list(getattr(canonical_wt, "affected_domains", None) or [])
+                if target.affected_domains_add:
+                    for d in target.affected_domains_add:
+                        if d not in cdomains:
+                            cdomains.append(str(d))
+                if target.affected_domains_remove:
+                    cdomains = [d for d in cdomains if d not in set(target.affected_domains_remove)]
+                canonical_wt.affected_domains = cdomains
+            except Exception:
+                logger.exception(
+                    "[CausalPhysics·do_world_trait] Canonical mirror failed for %s.",
+                    wt_id,
+                )
 
         self._world_trait_mutations.append(WorldTraitMutation(
             world_trait_id=wt_id,
@@ -1554,6 +1726,15 @@ class CausalPhysicsEngine:
                 merged = dict(ch.intelligibility or {})
                 merged.update({k: float(v) for k, v in target.intelligibility.items()})
                 ch.intelligibility = merged
+        else:
+            # Round-8 audit fix — every other Do-handler warns when the
+            # canonical mirror cannot be applied; channel used to fail
+            # silently which made debugging missing-mirror cases hard.
+            logger.warning(
+                "[CausalPhysics·do_channel] Channel %s missing from "
+                "world.channels; canonical mirror skipped.",
+                target.channel_id,
+            )
 
     def _apply_do_event_relocation(self, target: Any) -> None:
         """Rewrite an event's ``at_location_id`` and cascade
@@ -1649,6 +1830,17 @@ class CausalPhysicsEngine:
             if getattr(target, "fabula_time", None) is not None
             else self._default_fabula_time()
         )
+        # Endpoint validation (round-7 audit fix): refuse to spawn a
+        # dangling RelationshipEdge whose endpoints are not real
+        # entities — a typo would otherwise leave the canonical
+        # ``social_topology`` carrying an unresolvable dyad.
+        entities = self.world_state.entities or {}
+        if target.source_entity_id not in entities or target.target_entity_id not in entities:
+            logger.warning(
+                "[CausalPhysics·do_relationship] Skipping clamp — endpoint(s) not in world.entities (%s→%s).",
+                target.source_entity_id, target.target_entity_id,
+            )
+            return
         # Sandbox-side: locate or create the relationship edge attrs.
         # Relationship edges are emitted with ``edge_type='relationship'``
         # by the instantiator and may carry per-axis metrics in either
@@ -1742,18 +1934,36 @@ class CausalPhysicsEngine:
             else self._default_fabula_time()
         )
         if target.action == "sever":
+            # Optional ``causality_type`` filter (round-7 audit fix):
+            # the EVT_PUSH→ENT_ALICE pair routinely carries multiple
+            # edges with different causality_types (e.g. a
+            # ``mutation`` arrow for physical harm AND a
+            # ``mutation_social`` arrow for the affinity hit). The
+            # original sever removed every edge between the pair,
+            # silently destroying co-existing causal arrows the caller
+            # never asked to sever.
+            wanted_ct = getattr(target, "causality_type", None)
+
+            def _ct_match(attrs: dict) -> bool:
+                if wanted_ct is None:
+                    return True
+                return attrs.get("causality_type") == wanted_ct
             # Sandbox side.
             if self.sandbox.has_edge(target.source_id, target.target_id):
                 keys_to_drop = [
                     k for k, attrs in self.sandbox[target.source_id][target.target_id].items()
-                    if attrs.get("edge_type") == "causal"
+                    if attrs.get("edge_type") == "causal" and _ct_match(attrs)
                 ]
                 for k in keys_to_drop:
                     self.sandbox.remove_edge(target.source_id, target.target_id, key=k)
             # World-state side.
             self.world_state.causal_topology = [
                 e for e in (self.world_state.causal_topology or [])
-                if not (e.source_id == target.source_id and e.target_id == target.target_id)
+                if not (
+                    e.source_id == target.source_id
+                    and e.target_id == target.target_id
+                    and (wanted_ct is None or e.causality_type == wanted_ct)
+                )
             ]
             return
         # action == "add"
@@ -1789,7 +1999,17 @@ class CausalPhysicsEngine:
                 edge_type="causal",
                 **edge.model_dump(),
             )
-        # World-state side.
+        # World-state side. Refuse to persist an edge whose endpoints
+        # are unknown to the canonical world — a typo / stale id would
+        # otherwise leave a dangling-endpoint edge in
+        # ``causal_topology`` that is invisible to the sandbox renderer
+        # but persists on every subsequent merge.
+        if not self._world_knows_node(target.source_id) or not self._world_knows_node(target.target_id):
+            logger.warning(
+                "[CausalPhysics·do_causal_edge] add skipped — endpoint(s) unknown to canonical world (%s→%s).",
+                target.source_id, target.target_id,
+            )
+            return
         topology = list(self.world_state.causal_topology or [])
         topology.append(edge)
         self.world_state.causal_topology = topology
@@ -1815,10 +2035,45 @@ class CausalPhysicsEngine:
         if target.action == "sever":
             for k in _matching_edge_keys():
                 sb.remove_edge(target.source_id, target.target_id, key=k)
-            self.world_state.spatial_topology = [
-                e for e in (self.world_state.spatial_topology or [])
-                if not (e.source_id == target.source_id and e.target_id == target.target_id)
-            ]
+            # Bidirectional sever (round-7 audit fix). The ``add``
+            # branch below registers the reverse arrow for
+            # bidirectional connections; an asymmetric sever leaves
+            # the canonical world traversable B→A even after A→B was
+            # cut, contradicting the renderer's view of the world.
+            # Mirror the cut on the reverse edge for every direction
+            # whose canonical record was bidirectional.
+            reverse_was_bidi = any(
+                e.source_id == target.target_id
+                and e.target_id == target.source_id
+                and getattr(e, "bidirectional", False)
+                for e in (self.world_state.spatial_topology or [])
+            )
+            forward_was_bidi = any(
+                e.source_id == target.source_id
+                and e.target_id == target.target_id
+                and getattr(e, "bidirectional", False)
+                for e in (self.world_state.spatial_topology or [])
+            )
+            if reverse_was_bidi or forward_was_bidi:
+                if sb.has_edge(target.target_id, target.source_id):
+                    rev_keys = [
+                        k for k, attrs in sb[target.target_id][target.source_id].items()
+                        if attrs.get("edge_type") == "connected_to"
+                    ]
+                    for k in rev_keys:
+                        sb.remove_edge(target.target_id, target.source_id, key=k)
+                self.world_state.spatial_topology = [
+                    e for e in (self.world_state.spatial_topology or [])
+                    if not (
+                        (e.source_id == target.source_id and e.target_id == target.target_id)
+                        or (e.source_id == target.target_id and e.target_id == target.source_id)
+                    )
+                ]
+            else:
+                self.world_state.spatial_topology = [
+                    e for e in (self.world_state.spatial_topology or [])
+                    if not (e.source_id == target.source_id and e.target_id == target.target_id)
+                ]
             return
 
         if target.action in ("lock", "unlock"):
@@ -1864,6 +2119,17 @@ class CausalPhysicsEngine:
                     edge_type="connected_to",
                     **edge.model_dump(),
                 )
+        # World-state side. Refuse to persist an edge whose endpoints
+        # are unknown locations — otherwise the canonical
+        # ``spatial_topology`` accumulates dangling LOC_ references that
+        # later affordance-gate checks cannot resolve.
+        locations = self.world_state.locations or {}
+        if target.source_id not in locations or target.target_id not in locations:
+            logger.warning(
+                "[CausalPhysics·do_spatial_edge] add skipped — endpoint(s) not in world.locations (%s→%s).",
+                target.source_id, target.target_id,
+            )
+            return
         topology = list(self.world_state.spatial_topology or [])
         topology.append(edge)
         self.world_state.spatial_topology = topology
@@ -1892,6 +2158,24 @@ class CausalPhysicsEngine:
             if getattr(target, "fabula_time", None) is not None
             else self._default_fabula_time()
         )
+        # Reference validation (round-7 audit fix). A typoed LOC_ /
+        # ENT_ id would silently pin the object at a phantom
+        # location/owner, leaving affordance gates unresolvable and
+        # the renderer's place-the-object prompt dangling.
+        locations = self.world_state.locations or {}
+        entities = self.world_state.entities or {}
+        if target.new_location_id is not None and target.new_location_id not in locations:
+            logger.warning(
+                "[CausalPhysics·do_object] new_location_id %r not in world.locations; skipping object %s.",
+                target.new_location_id, target.object_id,
+            )
+            return
+        if target.new_owner_id is not None and target.new_owner_id not in entities:
+            logger.warning(
+                "[CausalPhysics·do_object] new_owner_id %r not in world.entities; skipping object %s.",
+                target.new_owner_id, target.object_id,
+            )
+            return
         # Sandbox-side mutation.
         if self.sandbox.has_node(target.object_id):
             ndata = self.sandbox.nodes[target.object_id]
@@ -1960,6 +2244,29 @@ class CausalPhysicsEngine:
         anchor = getattr(self.world_state, "global_anchor", None)
         ft = getattr(anchor, "fabula_time", None) if anchor is not None else None
         return int(ft) if ft is not None else 0
+
+    def _world_knows_node(self, node_id: str) -> bool:
+        """True iff ``node_id`` resolves to an EVT_/ENT_/OBJ_/LOC_/WORLD_
+        node that already exists on the canonical
+        :class:`WorldStateV1`. Used by the ``do_causal_edge`` add path
+        to refuse persisting edges with dangling endpoints.
+        """
+        if not node_id:
+            return False
+        ws = self.world_state
+        if node_id.startswith("EVT_"):
+            return any(e.id == node_id for e in (ws.events or []))
+        if node_id.startswith("ENT_"):
+            return node_id in (ws.entities or {})
+        if node_id.startswith("OBJ_"):
+            return node_id in (ws.objects or {})
+        if node_id.startswith("LOC_"):
+            return node_id in (ws.locations or {})
+        if node_id.startswith("WORLD_"):
+            return node_id in (ws.world_traits or {})
+        # Unknown prefix \u2014 conservatively reject so we never persist
+        # an off-schema endpoint into the canonical topology.
+        return False
 
     # ------------------------------------------------------------------
     # Provenance invalidation
@@ -3094,6 +3401,82 @@ class CausalPhysicsEngine:
         # Step D — Social propagation (mutation_social edges)
         self.propagate_social()
 
+        # Step D.5 — Inert-intervention detection.
+        # Failure mode observed in the wild: every requested do-target is
+        # Rule-3 pruned AND every downstream trait mutation is absorbed by
+        # a cyclic SCC. The engine then produces zero observable change,
+        # but the brief still hands a counterfactual prompt to the
+        # renderer, which fabricates content ("professionalism held
+        # steady\u2026 calm remained unshaken\u2026"). Detect this state
+        # here so the pipeline can disclose it instead of papering over.
+        _inert = False
+        _inert_reason: Optional[str] = None
+        # Track whether the caller *requested* a Rung-2/3 surgery at
+        # all. ``interventions`` can be falsy in two distinct ways:
+        # the caller passed nothing (Rung-1 observation \u2014 no inert
+        # state possible) or every requested key was filtered out
+        # upstream (type mismatch, wrong ID format, prune-mode Rule-3
+        # drop). The latter case is itself an inert state we MUST
+        # surface; the previous ``if interventions:`` guard
+        # short-circuited it.
+        _requested_surgery = rung >= 2 and (
+            bool(interventions)
+            or bool(self.sandbox.graph.get("skipped_interventions", []))
+            or bool(ctf_report.rule3_pruned)
+        )
+        if _requested_surgery:
+            _requested = set(interventions.keys())
+            _pruned = set(ctf_report.rule3_pruned)
+            _skipped = list(
+                self.sandbox.graph.get("skipped_interventions", []) or []
+            )
+            _all_pruned = bool(_requested) and _requested.issubset(_pruned)
+            _no_mutations = (
+                not self._mutations
+                and not self._social_mutations
+                and not self._proposition_mutations
+                and not self._belief_mutations
+                and not self._concern_mutations
+                and not self._world_trait_mutations
+                and not self._object_mutations
+            )
+            _cycle_blocked = [
+                b for b in self._blocked if b.reason == "cycle"
+            ]
+            # Case 0: caller-requested surgery was emptied upstream.
+            # ``_requested`` is the *post-prune* working set; if it is
+            # empty but the original request was non-trivial (skipped
+            # or rule-3-pruned), no do-surgery actually landed and
+            # downstream is necessarily inert.
+            if not _requested and (_skipped or _pruned):
+                _inert = True
+                _inert_reason = (
+                    f"all requested intervention(s) filtered before "
+                    f"surgery (skipped={len(_skipped)}, rule3_pruned="
+                    f"{len(_pruned)}); no do-operator applied"
+                )
+            elif _all_pruned and _no_mutations:
+                _inert = True
+                _inert_reason = (
+                    f"all {len(_requested)} intervention(s) Rule-3 pruned "
+                    f"({sorted(_pruned)}) and no downstream mutations "
+                    f"fired (cycle-blocked: {len(_cycle_blocked)})"
+                )
+            elif _no_mutations and _cycle_blocked:
+                _inert = True
+                _inert_reason = (
+                    f"intervention(s) {sorted(_requested)} produced no "
+                    f"mutations; {len(_cycle_blocked)} trait "
+                    f"propagation(s) absorbed by cyclic SCC"
+                )
+            if _inert:
+                logger.warning(
+                    "[CausalPhysics\u00b7Inert] Intervention is inert "
+                    "\u2014 %s. Pipeline should disclose this rather "
+                    "than render fabricated consequences.",
+                    _inert_reason,
+                )
+
         result = CausalPhysicsResult(
             sandbox_data=nx.node_link_data(self.sandbox),
             mutations=self._mutations,
@@ -3116,6 +3499,8 @@ class CausalPhysicsEngine:
             skipped_interventions=list(
                 self.sandbox.graph.get("skipped_interventions", []) or []
             ),
+            intervention_inert=_inert,
+            intervention_inert_reason=_inert_reason,
         )
         _log_physics_result(rung, interventions, evidence_node_ids, result)
         return result
