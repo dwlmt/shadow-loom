@@ -39,6 +39,18 @@ logger = logging.getLogger(__name__)
 EXAMPLE_USER_PROVIDER_ID = "local:example"
 LOCAL_USER_PROVIDER_ID = "local:default"
 
+# Default cost-rule sentinel. Looked up by
+# :meth:`shadow_loom.cost_calculation.CostCalculator.get_cost_rule` as
+# the final fallback when no provider/model-specific rule exists, so
+# every logged agent call lands on *some* non-zero unit price. Values
+# are USD per single token (the schema's ``cost_per_unit_usd`` field
+# is per-unit, not per-million); we store the per-token value so the
+# arithmetic in ``calculate_agent_call_cost`` (``tokens * price``)
+# returns the right dollar amount without extra scaling.
+DEFAULT_COST_RULE_PROVIDER = "default"
+DEFAULT_INPUT_COST_PER_TOKEN_USD = 0.039 / 1_000_000  # $0.039 / 1M input tokens
+DEFAULT_OUTPUT_COST_PER_TOKEN_USD = 0.18 / 1_000_000  # $0.18 / 1M output tokens
+
 Base = SQLModel
 
 
@@ -722,6 +734,7 @@ def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
         ensure_pg_partitions(_engine)
     _record_schema_versions(_engine)
     ensure_example_user()
+    ensure_default_cost_rule()
     logger.info("[DB] Tables initialised on %s", database_url)
 
 
@@ -1093,6 +1106,54 @@ def get_example_user_id() -> Optional[int]:
     with get_session() as s:
         row = s.exec(select(UserRow).where(UserRow.provider_id == EXAMPLE_USER_PROVIDER_ID)).first()
         return row.id if row else None
+
+
+def ensure_default_cost_rule() -> "CostRuleRow":
+    """Create (or return) the catch-all default cost rule.
+
+    Without a row in ``cost_rules`` matching the call's provider /
+    model, :meth:`CostCalculator.get_cost_rule` returns ``None`` and
+    every logged agent call is stamped ``estimated_cost_usd = 0.0``
+    — the per-user / per-project rollups in ``UserUsageSummaryRow``
+    and ``ProjectUsageSummaryRow`` then sum to zero too.
+
+    This helper seeds a single ``provider="default"`` rule
+    (input $0.039 / 1M tokens, output $0.18 / 1M tokens) used by the
+    calculator's *final* fallback lookup once no provider-specific
+    rule matches. Idempotent: re-running returns the existing row.
+    """
+    with get_session() as s:
+        row = s.exec(
+            select(CostRuleRow).where(
+                CostRuleRow.provider == DEFAULT_COST_RULE_PROVIDER,
+                CostRuleRow.service_type == "llm_chat",
+                CostRuleRow.model_name.is_(None),
+            )
+        ).first()
+        if row is None:
+            row = CostRuleRow(
+                provider=DEFAULT_COST_RULE_PROVIDER,
+                service_type="llm_chat",
+                model_name=None,
+                unit_type="tokens",
+                cost_per_unit_usd=DEFAULT_INPUT_COST_PER_TOKEN_USD,
+                input_cost_per_unit_usd=DEFAULT_INPUT_COST_PER_TOKEN_USD,
+                output_cost_per_unit_usd=DEFAULT_OUTPUT_COST_PER_TOKEN_USD,
+                description=(
+                    "Default fallback pricing for any (provider, model) pair "
+                    "without an explicit rule: $0.039 / 1M input tokens, "
+                    "$0.18 / 1M output tokens."
+                ),
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            logger.info(
+                "[DB] Seeded default cost rule: input $%g / token, output $%g / token.",
+                DEFAULT_INPUT_COST_PER_TOKEN_USD,
+                DEFAULT_OUTPUT_COST_PER_TOKEN_USD,
+            )
+        return row
 
 
 def ensure_local_user() -> UserRow:

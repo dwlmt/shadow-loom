@@ -476,10 +476,29 @@ def configure_agent_instrumentation() -> None:
                             
                             # Trigger immediate cost calculation for this entry
                             try:
-                                from shadow_loom.cost_calculation import CostCalculator
+                                from shadow_loom.cost_calculation import (
+                                    CostCalculator,
+                                    increment_user_lifetime_usage,
+                                )
                                 calculator = CostCalculator(session)
                                 tracked.estimated_cost_usd = calculator.calculate_agent_call_cost(tracked)
                                 session.commit()
+                                # Bump the user's lifetime rollup so
+                                # the UI cost panel reflects the call
+                                # immediately, without waiting for the
+                                # nightly summary batch.
+                                try:
+                                    increment_user_lifetime_usage(
+                                        session,
+                                        tracked.user_id,
+                                        agent_tokens=int(tracked.total_tokens or 0),
+                                        agent_cost_usd=float(tracked.estimated_cost_usd or 0.0),
+                                        agent_calls=1,
+                                    )
+                                except Exception as rollup_err:
+                                    _LANGFUSE_LOGGER.warning(
+                                        f"User-lifetime rollup failed: {rollup_err}"
+                                    )
                             except Exception as cost_err:
                                 # Don't fail the agent call if cost calculation fails
                                 _LANGFUSE_LOGGER.warning(f"Cost calculation failed: {cost_err}")
@@ -545,10 +564,27 @@ def configure_agent_instrumentation() -> None:
                             
                             # Trigger immediate cost calculation for this entry
                             try:
-                                from shadow_loom.cost_calculation import CostCalculator
+                                from shadow_loom.cost_calculation import (
+                                    CostCalculator,
+                                    increment_user_lifetime_usage,
+                                )
                                 calculator = CostCalculator(session)
                                 tracked.estimated_cost_usd = calculator.calculate_agent_call_cost(tracked)
                                 session.commit()
+                                # Per-call lifetime rollup; see
+                                # ``instrumented_run_sync`` for rationale.
+                                try:
+                                    increment_user_lifetime_usage(
+                                        session,
+                                        tracked.user_id,
+                                        agent_tokens=int(tracked.total_tokens or 0),
+                                        agent_cost_usd=float(tracked.estimated_cost_usd or 0.0),
+                                        agent_calls=1,
+                                    )
+                                except Exception as rollup_err:
+                                    _LANGFUSE_LOGGER.warning(
+                                        f"User-lifetime rollup failed: {rollup_err}"
+                                    )
                             except Exception as cost_err:
                                 # Don't fail the agent call if cost calculation fails
                                 _LANGFUSE_LOGGER.warning(f"Cost calculation failed: {cost_err}")

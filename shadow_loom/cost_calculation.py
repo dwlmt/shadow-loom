@@ -13,6 +13,7 @@ This module provides cost calculation services that:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Tuple
 
@@ -20,10 +21,123 @@ from sqlmodel import Session, select, text
 
 from shadow_loom.db import (
     get_session, AgentCallLogRow, ApiCallLogRow, CostRuleRow,
-    UserUsageSummaryRow, ProjectUsageSummaryRow
+    UserUsageSummaryRow, ProjectUsageSummaryRow,
+    DEFAULT_COST_RULE_PROVIDER,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# =====================================================================
+# Gross-profit multiplier
+# =====================================================================
+
+# Applied to every raw token / request cost computed from a
+# ``CostRuleRow`` before the value is returned to the caller (and so
+# before it is persisted on ``estimated_cost_usd`` and folded into the
+# per-user lifetime rollup). Lets operators bill above raw vendor
+# token cost without rewriting every cost rule. The default of 1.5
+# yields a 50 % gross margin on top of the raw OpenAI / Anthropic /
+# Ollama unit price; override via the ``SHADOW_LOOM_COST_GROSS_MARGIN``
+# env var (any positive float; e.g. ``2.0`` for a 100 % markup, or
+# ``1.0`` to bill at raw vendor cost with no margin).
+DEFAULT_GROSS_PROFIT_MULTIPLIER: float = 1.5
+
+
+def get_gross_profit_multiplier() -> float:
+    """Return the active gross-profit multiplier.
+
+    Reads ``SHADOW_LOOM_COST_GROSS_MARGIN`` from the environment at
+    call time so operators can flip the value without restarting; a
+    malformed or non-positive value logs a warning and falls back to
+    :data:`DEFAULT_GROSS_PROFIT_MULTIPLIER`.
+    """
+    raw = os.environ.get("SHADOW_LOOM_COST_GROSS_MARGIN")
+    if raw is None or raw == "":
+        return DEFAULT_GROSS_PROFIT_MULTIPLIER
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid SHADOW_LOOM_COST_GROSS_MARGIN=%r; using default %.2f.",
+            raw, DEFAULT_GROSS_PROFIT_MULTIPLIER,
+        )
+        return DEFAULT_GROSS_PROFIT_MULTIPLIER
+    if value <= 0.0:
+        logger.warning(
+            "SHADOW_LOOM_COST_GROSS_MARGIN=%g must be > 0; using default %.2f.",
+            value, DEFAULT_GROSS_PROFIT_MULTIPLIER,
+        )
+        return DEFAULT_GROSS_PROFIT_MULTIPLIER
+    return value
+
+
+# =====================================================================
+# Lifetime usage increment (per-call hook)
+# =====================================================================
+
+# Sentinel ``period_start`` used for the lifetime rollup row. The
+# schema's ``UniqueConstraint("user_id", "period_start")`` requires a
+# concrete value, so we use the Unix epoch as the lifetime sentinel:
+# every (user_id, EPOCH) pair is unique and clearly distinct from any
+# real daily/monthly period.
+_LIFETIME_PERIOD_START = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def increment_user_lifetime_usage(
+    session: Session,
+    user_id: int,
+    *,
+    agent_tokens: int = 0,
+    agent_cost_usd: float = 0.0,
+    agent_calls: int = 1,
+    api_calls: int = 0,
+    api_cost_usd: float = 0.0,
+) -> UserUsageSummaryRow:
+    """Increment the lifetime ``UserUsageSummaryRow`` for ``user_id``.
+
+    Called from :mod:`shadow_loom._agent_logging` immediately after
+    each agent call's ``estimated_cost_usd`` is stamped so the
+    per-user running tally moves in lockstep with the per-row log.
+    Without this hook the only path to a non-zero summary row was
+    the nightly :meth:`UsageSummaryCalculator.update_user_summaries`
+    batch \u2014 anything between batch runs was invisible to the UI
+    cost panel.
+
+    Idempotent in the row-creation sense (re-running creates only
+    the first lifetime row); the *counters* increment monotonically
+    on every call by design.
+    """
+    row = session.exec(
+        select(UserUsageSummaryRow).where(
+            UserUsageSummaryRow.user_id == user_id,
+            UserUsageSummaryRow.period_type == "lifetime",
+            UserUsageSummaryRow.period_start == _LIFETIME_PERIOD_START,
+        )
+    ).first()
+    if row is None:
+        row = UserUsageSummaryRow(
+            user_id=user_id,
+            period_type="lifetime",
+            period_start=_LIFETIME_PERIOD_START,
+            period_end=None,
+            total_agent_calls=int(agent_calls),
+            total_agent_tokens=int(agent_tokens),
+            total_agent_cost_usd=float(agent_cost_usd),
+            total_api_calls=int(api_calls),
+            total_api_cost_usd=float(api_cost_usd),
+        )
+        session.add(row)
+    else:
+        row.total_agent_calls = int(row.total_agent_calls or 0) + int(agent_calls)
+        row.total_agent_tokens = int(row.total_agent_tokens or 0) + int(agent_tokens)
+        row.total_agent_cost_usd = float(row.total_agent_cost_usd or 0.0) + float(agent_cost_usd)
+        row.total_api_calls = int(row.total_api_calls or 0) + int(api_calls)
+        row.total_api_cost_usd = float(row.total_api_cost_usd or 0.0) + float(api_cost_usd)
+        row.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(row)
+    return row
 
 
 class CostCalculator:
@@ -73,6 +187,21 @@ class CostCalculator:
             # Fall back to generic rule for provider/service
             generic_query = query.where(CostRuleRow.model_name.is_(None))
             rule = self.session.exec(generic_query).first()
+            if rule is None and provider != DEFAULT_COST_RULE_PROVIDER:
+                # Final fallback: the catch-all ``provider="default"``
+                # row seeded by ``ensure_default_cost_rule()`` on
+                # ``init_db()``. Without this every (provider, model)
+                # pair without an explicit cost rule was priced at $0
+                # \u2014 the per-user / per-project rollups in
+                # ``UserUsageSummaryRow`` then summed to zero too,
+                # which is exactly the "no costs ever logged" symptom
+                # the hookup task fixed.
+                default_query = select(CostRuleRow).where(
+                    CostRuleRow.provider == DEFAULT_COST_RULE_PROVIDER,
+                    CostRuleRow.service_type == service_type,
+                    CostRuleRow.model_name.is_(None),
+                ).order_by(CostRuleRow.created_at.desc())
+                rule = self.session.exec(default_query).first()
             self._cost_rules_cache[cache_key] = rule
             
         return self._cost_rules_cache[cache_key]
@@ -115,20 +244,26 @@ class CostCalculator:
             
             input_cost = input_tokens * rule.input_cost_per_unit_usd
             output_cost = output_tokens * rule.output_cost_per_unit_usd
-            total_cost = input_cost + output_cost
+            raw_total = input_cost + output_cost
+            multiplier = get_gross_profit_multiplier()
+            total_cost = raw_total * multiplier
             
             logger.debug(
                 f"Calculated agent call cost: {input_tokens} input tokens * "
                 f"${rule.input_cost_per_unit_usd:.6f} + {output_tokens} output tokens * "
-                f"${rule.output_cost_per_unit_usd:.6f} = ${total_cost:.6f}"
+                f"${rule.output_cost_per_unit_usd:.6f} = ${raw_total:.6f} raw "
+                f"× {multiplier:.3f} margin = ${total_cost:.6f}"
             )
             return total_cost
         else:
             # Combined token pricing
-            total_cost = log_entry.total_tokens * rule.cost_per_unit_usd
+            raw_total = log_entry.total_tokens * rule.cost_per_unit_usd
+            multiplier = get_gross_profit_multiplier()
+            total_cost = raw_total * multiplier
             logger.debug(
                 f"Calculated agent call cost: {log_entry.total_tokens} tokens * "
-                f"${rule.cost_per_unit_usd:.6f} = ${total_cost:.6f}"
+                f"${rule.cost_per_unit_usd:.6f} = ${raw_total:.6f} raw "
+                f"× {multiplier:.3f} margin = ${total_cost:.6f}"
             )
             return total_cost
             
@@ -149,20 +284,24 @@ class CostCalculator:
             
         # Apply pricing based on unit type
         if rule.unit_type == "requests":
-            cost = rule.cost_per_unit_usd
+            raw_cost = rule.cost_per_unit_usd
         elif rule.unit_type == "results" and log_entry.results_count:
-            cost = log_entry.results_count * rule.cost_per_unit_usd
+            raw_cost = log_entry.results_count * rule.cost_per_unit_usd
         elif rule.unit_type == "tokens" and log_entry.request_size:
-            cost = log_entry.request_size * rule.cost_per_unit_usd
+            raw_cost = log_entry.request_size * rule.cost_per_unit_usd
         elif rule.unit_type == "characters" and log_entry.request_size:
-            cost = log_entry.request_size * rule.cost_per_unit_usd
+            raw_cost = log_entry.request_size * rule.cost_per_unit_usd
         else:
             # Default to per-request pricing
-            cost = rule.cost_per_unit_usd
-            
+            raw_cost = rule.cost_per_unit_usd
+
+        multiplier = get_gross_profit_multiplier()
+        cost = raw_cost * multiplier
+
         logger.debug(
             f"Calculated API call cost: {rule.unit_type} * "
-            f"${rule.cost_per_unit_usd:.6f} = ${cost:.6f}"
+            f"${rule.cost_per_unit_usd:.6f} = ${raw_cost:.6f} raw "
+            f"× {multiplier:.3f} margin = ${cost:.6f}"
         )
         return cost
         
