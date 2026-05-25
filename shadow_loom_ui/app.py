@@ -75,7 +75,7 @@ app.add_middleware(AuthMiddleware)
 # Auth routes
 app.add_route("/auth/{provider}", auth_login, methods=["GET"])
 app.add_route("/auth/{provider}/callback", auth_callback, methods=["GET", "POST"])
-app.add_route("/auth/logout", auth_logout, methods=["GET"])
+app.add_route("/auth/logout", auth_logout, methods=["POST"])
 
 
 # =====================================================================
@@ -87,6 +87,37 @@ app.add_route("/auth/logout", auth_logout, methods=["GET"])
 # world models, etc.), so it cannot live in app.storage.user which is
 # persisted to disk as JSON.
 _SESSION_STATES: dict[str, AppState] = {}
+# Round-6 audit: track per-session last-access timestamps so we can
+# evict idle sessions. Without this, ``_SESSION_STATES`` grows
+# unboundedly — every anon visitor adds a new ``AppState`` (carrying a
+# loaded world model) that never gets reclaimed for the life of the
+# process.
+_SESSION_LAST_TOUCH: dict[str, float] = {}
+# Soft cap; oldest-touched sessions evicted past this number.
+_SESSION_STATES_MAX = 256
+# Idle TTL: sessions untouched for longer than this are evicted on the
+# next ``_get_session_state`` call.
+_SESSION_IDLE_TTL_SECONDS = 60 * 60 * 6  # 6h
+
+
+def _evict_idle_sessions(now: float) -> None:
+    """Drop sessions untouched past the idle TTL, then cap total count."""
+    stale = [
+        sid for sid, t in _SESSION_LAST_TOUCH.items()
+        if now - t > _SESSION_IDLE_TTL_SECONDS
+    ]
+    for sid in stale:
+        _SESSION_STATES.pop(sid, None)
+        _SESSION_LAST_TOUCH.pop(sid, None)
+    overflow = len(_SESSION_STATES) - _SESSION_STATES_MAX
+    if overflow > 0:
+        # Evict oldest-touched first.
+        victims = sorted(
+            _SESSION_LAST_TOUCH.items(), key=lambda kv: kv[1]
+        )[:overflow]
+        for sid, _ in victims:
+            _SESSION_STATES.pop(sid, None)
+            _SESSION_LAST_TOUCH.pop(sid, None)
 
 
 def _get_session_state() -> AppState:
@@ -98,10 +129,28 @@ def _get_session_state() -> AppState:
     """
     storage = app.storage.user
     session_id = app.storage.browser.get("id", "")
+    # Reject / replace an empty session id. Without this, every caller
+    # that arrives before ``app.storage.browser`` has been initialised
+    # collapses onto the SAME AppState entry under the ``""`` key,
+    # cross-leaking user/project/version state between sessions
+    # (round-3 audit \u2014 multi-user collapse).
+    if not session_id:
+        import uuid as _uuid
+        session_id = f"anon-{_uuid.uuid4().hex}"
+        try:
+            app.storage.browser["id"] = session_id
+        except Exception:  # noqa: BLE001
+            # Browser storage may be read-only in some contexts \u2014
+            # the generated id still keeps THIS request isolated.
+            pass
     # Drop any legacy non-serialisable state that older builds may have left
     # in the persisted user storage.
     if "_state" in storage:
         storage.pop("_state", None)
+    # Round-6 audit: opportunistic eviction sweep before touch.
+    import time as _time
+    _now = _time.monotonic()
+    _evict_idle_sessions(_now)
     state = _SESSION_STATES.get(session_id)
     if state is None:
         state = AppState()
@@ -124,6 +173,7 @@ def _get_session_state() -> AppState:
                 display_name=local.display_name or "Local User",
             )
         _SESSION_STATES[session_id] = state
+    _SESSION_LAST_TOUCH[session_id] = _now
     return state
 
 
@@ -181,7 +231,11 @@ def _build_app_header(state: AppState, *, show_back: bool = False):
                     feather("settings")
                 if authed:
                     with ui.button(
-                        on_click=lambda: ui.navigate.to("/auth/logout")
+                        on_click=lambda: ui.run_javascript(
+                            "fetch('/auth/logout', {method: 'POST', "
+                            "credentials: 'same-origin'}).then("
+                            "() => window.location.href = '/login');"
+                        )
                     ).props("flat dense round color=secondary size=sm"):
                         feather("log-out")
             elif config.AUTH_ENABLED:

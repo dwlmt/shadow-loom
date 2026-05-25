@@ -849,6 +849,66 @@ UserRequest = Union[
 # ``{"EVT_DUNCAN_MURDER": "averted"}``; values are treated as
 # falsey-string-means-not-occurred.
 # ---------------------------------------------------------------------
+
+# Public truthy / falsey string sets used by both ``_coerce_legacy_dict``
+# (event-level surgery) and ``coerce_truth`` (proposition / belief clamp
+# parsing). Splitting them out keeps the two parsers consistent and
+# prevents a recurrence of the silent ``bool("false") == True`` bug
+# that flipped proposition truth in DoProposition clamps.
+_NOT_OCCURRED_VALUES = frozenset({
+    "averted",
+    "false",
+    "no",
+    "not_occurred",
+    "absent",
+    "prevented",
+    "removed",
+    "blocked",
+    "did_not_occur",
+    "didnt_occur",
+    "didn't_occur",
+    "never_happened",
+    "0",
+    "off",
+    "disabled",
+})
+_OCCURRED_VALUES = frozenset({
+    "true",
+    "yes",
+    "occurred",
+    "happened",
+    "present",
+    "1",
+    "on",
+    "enabled",
+})
+
+
+def coerce_truth(value: Any) -> Optional[bool]:
+    """Strictly coerce a value into ``True`` / ``False`` / ``None``.
+
+    Unlike ``bool(value)`` this rejects ambiguous strings: passing the
+    string ``"false"`` returns ``False`` (not ``True``, which is what
+    ``bool("false")`` returns), and any string not recognised as either
+    truthy or falsey returns ``None`` so the caller can reject the
+    clamp rather than silently invert proposition semantics.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in _OCCURRED_VALUES:
+            return True
+        if lowered in _NOT_OCCURRED_VALUES:
+            return False
+        return None
+    return None
+
+
 def _coerce_legacy_dict(legacy: Dict[str, Any]) -> List[DoTarget]:
     """Translate a legacy intervention dict into typed ``DoEvent`` targets."""
     targets: List[DoTarget] = []
@@ -860,20 +920,9 @@ def _coerce_legacy_dict(legacy: Dict[str, Any]) -> List[DoTarget]:
     # truthy and the resulting ``DoEvent`` was flipped to ``occurred=True``,
     # which silently inverted the counterfactual semantics and stopped the
     # renderer from emitting the precursor-attempt-survival hint.
-    _NOT_OCCURRED_VALUES = {
-        "averted",
-        "false",
-        "no",
-        "not_occurred",
-        "absent",
-        "prevented",
-        "removed",
-        "blocked",
-        "did_not_occur",
-        "didnt_occur",
-        "didn't_occur",
-        "never_happened",
-    }
+    # ``_NOT_OCCURRED_VALUES`` is now hoisted to module scope and shared
+    # with ``coerce_truth`` so proposition-clamp parsing applies the same
+    # strict semantics.
     for key, value in legacy.items():
         if not isinstance(key, str):
             continue
@@ -903,9 +952,14 @@ def _coerce_legacy_dict(legacy: Dict[str, Any]) -> List[DoTarget]:
             continue
         # ---- Proposition truth clamp: ``PROP_X.truth = bool`` -----
         if base_key.startswith("PROP_") and prop in ("truth", "is_true"):
+            coerced = coerce_truth(value)
+            if coerced is None:
+                # Reject ambiguous truth payloads rather than letting
+                # ``bool("false")`` silently set truth=True.
+                continue
             try:
                 targets.append(DoProposition(
-                    proposition_id=base_key, truth=bool(value),
+                    proposition_id=base_key, truth=coerced,
                 ))
             except Exception:
                 pass

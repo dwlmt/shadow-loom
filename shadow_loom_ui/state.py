@@ -70,11 +70,22 @@ class StateEvent(Enum):
     ACTIVE_PATH_CHANGED = "active_path_changed"
     WORLD_FACTS_CHANGED = "world_facts_changed"
     PROJECT_LIST_CHANGED = "project_list_changed"
+    AUTOSAVE_FAILED = "autosave_failed"
 
 
 # Debounce window (seconds) for cursor emit fan-out. Coalesces bursty
 # slider drags / keyboard repeats so subscribers don't see every tick.
 _CURSOR_DEBOUNCE_S = 0.12
+
+# Bounded query history (round-3 audit): a single session that runs
+# many queries could accumulate unlimited PipelineResult objects and
+# leak memory. 500 is enough for the longest interactive sessions; the
+# oldest entries fall off when the cap is hit.
+import os as _os
+try:
+    _QUERY_HISTORY_MAX = max(1, int(_os.environ.get("SHADOW_LOOM_QUERY_HISTORY_MAX", "500")))
+except ValueError:
+    _QUERY_HISTORY_MAX = 500
 
 
 @dataclass
@@ -199,6 +210,15 @@ class AppState:
 
     # Event bus: multiple listeners per event
     _listeners: Dict[StateEvent, List[Callable]] = field(default_factory=dict)
+
+    # Round-6 audit: serialize pipeline mutations of the versioned
+    # model so concurrent NL queries (e.g. user fires a second query
+    # before the first completes, or the deferred re-extraction worker
+    # races a fresh foreground query) can't tear ``versioned_model`` /
+    # ``world_state`` against each other. Use a reentrant lock — the
+    # same thread may enter via ``run_structured_query`` and then via
+    # ``_save_version_to_db`` without self-deadlocking.
+    _query_lock: threading.RLock = field(default_factory=threading.RLock)
 
     # ---- Branch-aware accessors ----------------------------------
     # ``world_state`` is the AMWN-PROJECTED view (shadow clones
@@ -483,7 +503,7 @@ class AppState:
                 error=f"Query validation failed: {errors}",
                 summary=f"Validation failed: {errors}",
             )
-            self.query_history.append(result)
+            self._record_query_history(result)
             return result
 
         return self.run_structured_query(
@@ -492,6 +512,18 @@ class AppState:
             force_implausible=force_implausible,
         )
 
+    def _record_query_history(self, result: NLQueryResult) -> None:
+        """Append to ``query_history`` and trim to ``_QUERY_HISTORY_MAX``.
+
+        Bounded ring-buffer behaviour prevents long-lived sessions from
+        leaking ``PipelineResult`` objects indefinitely. See round-3
+        audit; cap is tunable via ``SHADOW_LOOM_QUERY_HISTORY_MAX``.
+        """
+        self.query_history.append(result)
+        overflow = len(self.query_history) - _QUERY_HISTORY_MAX
+        if overflow > 0:
+            del self.query_history[:overflow]
+
     def run_structured_query(
         self,
         query: UserRequest,
@@ -499,6 +531,22 @@ class AppState:
         force_implausible: bool = False,
     ) -> NLQueryResult:
         """Execute a pre-built structured query through the pipeline."""
+        # Round-6 audit: serialize the whole pipeline run. Two queries
+        # firing in parallel (foreground + deferred-reextraction worker,
+        # or two rapid clicks) could otherwise read/write
+        # ``versioned_model`` between each other's pipeline steps and
+        # persist a half-merged version.
+        with self._query_lock:
+            return self._run_structured_query_locked(
+                query, parse_result, force_implausible,
+            )
+
+    def _run_structured_query_locked(
+        self,
+        query: UserRequest,
+        parse_result: Optional[QueryParseResult] = None,
+        force_implausible: bool = False,
+    ) -> NLQueryResult:
         if force_implausible and hasattr(query, "force_implausible"):
             query = query.model_copy(update={"force_implausible": True})
         if self.world_state is None:
@@ -554,7 +602,7 @@ class AppState:
                 error=f"Pipeline failed: {e}",
                 summary=f"Pipeline error: {e}",
             )
-            self.query_history.append(result)
+            self._record_query_history(result)
             return result
 
         # Capture the *previous* version before we overwrite ``self.versioned_model``
@@ -671,7 +719,7 @@ class AppState:
             pipeline_result=pipeline_result,
             summary=summary_text,
         )
-        self.query_history.append(result)
+        self._record_query_history(result)
 
         self.emit(StateEvent.PIPELINE_RESULT, result=result)
         self.emit(StateEvent.QUERY_COMPLETE, result=result)
@@ -752,9 +800,14 @@ class AppState:
                 pipeline_result.world_model is not None
                 and not pipeline_result.reextraction_failed
             ):
-                self.versioned_model = pipeline_result.world_model
-                self.world_state = pipeline_result.world_model.current
-                self._reproject_world_state_to_vwm_head()
+                # Round-6 audit: hold the query lock while applying the
+                # deferred merge so a foreground query firing at the
+                # same instant can't interleave its versioned_model
+                # mutation with ours.
+                with self._query_lock:
+                    self.versioned_model = pipeline_result.world_model
+                    self.world_state = pipeline_result.world_model.current
+                    self._reproject_world_state_to_vwm_head()
                 self.emit(StateEvent.WORLD_STATE_CHANGED)
                 # Persist the now-advanced version, mirroring the
                 # synchronous-flow gating (skip readonly / failed /
@@ -850,7 +903,7 @@ class AppState:
                 error=f"Query validation failed: {errors}",
                 summary=f"Validation failed: {errors}",
             )
-            self.query_history.append(result)
+            self._record_query_history(result)
             return result
 
         # Pipeline is sync — run in executor to avoid blocking NiceGUI event loop
@@ -1080,7 +1133,12 @@ class AppState:
                     self.emit(StateEvent.VERSION_CHANGED, version=ver.version)
             except Exception:
                 logger.exception("[AppState] Failed to persist patched world")
-                return True, changes + ["(warning) DB persistence failed"]
+                # Persistence failed \u2014 return False so callers cannot
+                # mistake the in-memory mutation for a durable commit
+                # (round-3 audit). The change list still carries the
+                # warning string so the UI banner can explain what
+                # happened.
+                return False, changes + ["(error) DB persistence failed"]
         return True, changes
 
     # ---- DB persistence ----
@@ -1191,8 +1249,23 @@ class AppState:
             # Notify version change (only when still on the same project)
             if proj_id == self.project_id:
                 self.emit(StateEvent.VERSION_CHANGED, version=ver.version)
-        except Exception:
+        except Exception as exc:
             logger.exception("[AppState] Failed to save version to DB")
+            # Surface the failure so the UI can show a toast / banner
+            # instead of leaving the user under the impression their
+            # query was persisted (round-3 audit). Listeners decide
+            # whether to retry or prompt the user.
+            try:
+                self.emit(
+                    StateEvent.AUTOSAVE_FAILED,
+                    source=source,
+                    error=str(exc),
+                    project_id=proj_id,
+                )
+            except Exception:
+                logger.exception(
+                    "[AppState] AUTOSAVE_FAILED emit raised"
+                )
 
     # ---- World model management ----
 
@@ -1202,6 +1275,12 @@ class AppState:
         self.versioned_model = VersionedWorldModel.from_world_state(
             ws, max_snapshots=max_snapshots,
         )
+        # Maintain the AMWN-projected invariant on ``self.world_state``
+        # so shadow-branch consumers see layered clones instead of the
+        # raw factual baseline (round-4 audit). Cheap when the VWM
+        # head is the factual branch \u2014 ``projected_for_branch``
+        # returns ``self``.
+        self._reproject_world_state_to_vwm_head()
         self.emit(StateEvent.WORLD_STATE_CHANGED)
 
     def _reproject_world_state_to_vwm_head(self) -> None:
@@ -1387,7 +1466,14 @@ class AppState:
         self.emit(StateEvent.FABULA_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.SYUZHET_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.NODE_SELECTED, node_id=None, node_type=None)
-        self.emit(StateEvent.VERSION_CHANGED, version=version)
+        # ``rollback()`` appends a NEW head version (target+1) carrying
+        # the rolled-back world; emitting the requested target version
+        # here would desync UI labels from ``versioned_model.version``
+        # (round-5 audit).
+        self.emit(
+            StateEvent.VERSION_CHANGED,
+            version=self.versioned_model.version,
+        )
 
     def load_db_version(
         self,

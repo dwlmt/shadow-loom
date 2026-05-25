@@ -1296,6 +1296,33 @@ def _items_to_dotted_dict(items: list[Any]) -> Dict[str, Any]:
     return out
 
 
+def _coerce_do_flag(value: Any) -> bool | None:
+    """Coerce LLM-emitted booleans for DoChannel.active and
+    DoSpatialEdge.bidirectional.
+
+    Plain ``bool(value)`` is unsafe because the JSON-from-LLM path
+    often yields the literal strings ``"false"`` / ``"no"`` / ``"0"``,
+    every one of which is truthy under Python semantics — silently
+    inverting the user's intent (round-4 audit). Returns ``None`` for
+    ambiguous input so the caller can drop the field entirely instead
+    of guessing.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"true", "yes", "y", "on", "1", "t"}:
+            return True
+        if token in {"false", "no", "n", "off", "0", "f"}:
+            return False
+        return None
+    return None
+
+
 def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
     """Phase 6 — convert flat ``do_targets`` records (with ``target_kind``
     discriminator) into the typed :class:`DoTarget` discriminated union.
@@ -1384,9 +1411,16 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                 truth = data.get("truth")
                 if not pid or truth is None:
                     continue
+                # Strict coercion: reject ambiguous string truths like
+                # "false" / "no" instead of letting ``bool(truth)``
+                # silently flip them to True.
+                from shadow_loom.query_models import coerce_truth as _ct
+                coerced_truth = _ct(truth)
+                if coerced_truth is None:
+                    continue
                 out.append(DoProposition(
                     proposition_id=pid,
-                    truth=bool(truth),
+                    truth=coerced_truth,
                     propagate_to_beliefs=data.get("propagate_to_beliefs", True),
                 ))
             elif kind == "world_trait":
@@ -1465,7 +1499,12 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                     continue
                 kwargs: Dict[str, Any] = {"channel_id": chn_id}
                 if active is not None:
-                    kwargs["active"] = bool(active)
+                    coerced_active = _coerce_do_flag(active)
+                    if coerced_active is None:
+                        # Ambiguous flag — drop the entire DoChannel
+                        # rather than risk inverting user intent.
+                        continue
+                    kwargs["active"] = coerced_active
                 if intel:
                     kwargs["intelligibility"] = {
                         str(k): float(v) for k, v in intel.items()
@@ -1548,7 +1587,12 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                     kwargs["connection_type"] = str(ctype)
                 bidir = data.get("bidirectional")
                 if bidir is not None:
-                    kwargs["bidirectional"] = bool(bidir)
+                    coerced_bidir = _coerce_do_flag(bidir)
+                    if coerced_bidir is None:
+                        # Ambiguous flag — drop the entire DoSpatialEdge
+                        # rather than risk inverting user intent.
+                        continue
+                    kwargs["bidirectional"] = coerced_bidir
                 barrier = data.get("barrier_item_id")
                 if barrier:
                     kwargs["barrier_item_id"] = barrier

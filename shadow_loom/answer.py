@@ -1105,11 +1105,13 @@ def answer_question(
     ])
     user_msg = "\n".join(user_msg_parts)
 
-    # Emit the full Q&A prompt at INFO so the answering agent's
+    # Emit the full Q&A prompt at DEBUG so the answering agent's
     # instructions can be analysed alongside the renderer / auditor
     # / evaluator prompts. Wrapped with BEGIN/END markers for
-    # unambiguous extraction from the log stream.
-    logger.info(
+    # unambiguous extraction from the log stream. INFO would expose
+    # world context / branch contrast / prior prose to shared log
+    # aggregators (data-exposure risk — round-3 audit).
+    logger.debug(
         "[Answer] Q&A prompt (q_type=%s, %d chars):\n"
         "========== BEGIN ANSWER PROMPT ==========\n%s\n"
         "========== END ANSWER PROMPT ==========",
@@ -1117,11 +1119,94 @@ def answer_question(
         len(user_msg),
         user_msg,
     )
+    logger.info(
+        "[Answer] Q&A prompt prepared (q_type=%s, %d chars)",
+        query_type, len(user_msg),
+    )
 
     agent = _build_answer_agent(config, query_type=query_type)
     try:
         result = agent.run_sync(user_msg)
         card = result.output
+        # Validate that ``evidence_node_ids`` actually resolve to
+        # nodes the answer agent could plausibly cite. ``physics_state``
+        # is the projection we just rendered into the prompt; node
+        # ids that don't appear there are model hallucinations.
+        # Filter them out and surface a caveat so the chat card /
+        # auditor / require_proof gate see only grounded evidence.
+        evidence = list(card.evidence_node_ids or [])
+        if evidence and isinstance(physics_state, dict):
+            known_ids: set = set()
+            # NB: the projected ``physics_state`` keys vary with the
+            # extractor (full vs ego vs interrogate) and Q&A query type.
+            # Cover both the legacy keys and the canonical world-state
+            # shape: ``entities`` (not "characters"), ``social_topology``
+            # (not "relationships"), ``causal_topology``, plus the
+            # affect layer (propositions / beliefs / concerns) and
+            # topology lists. Missing a key here causes valid evidence
+            # ids to be falsely dropped as hallucinations.
+            for collection_key in (
+                "events", "entities", "characters", "locations", "objects",
+                "propositions", "beliefs", "concerns", "world_traits",
+                "channels", "relationships", "social_topology",
+                "causal_topology", "spatial_topology",
+            ):
+                collection = physics_state.get(collection_key)
+                if isinstance(collection, dict):
+                    known_ids.update(str(k) for k in collection.keys())
+                elif isinstance(collection, list):
+                    for entry in collection:
+                        if isinstance(entry, dict):
+                            # Pick up any of the id-shaped fields the
+                            # entry exposes. Topology entries carry
+                            # source_id / target_id rather than a
+                            # primary id; without harvesting them
+                            # the evidence-grounding check rejects
+                            # all social / spatial / causal arrow
+                            # evidence as hallucinated.
+                            for id_key in (
+                                "id", "node_id", "event_id",
+                                "source_id", "target_id",
+                                "source_entity_id", "target_entity_id",
+                                "channel_id", "proposition_id",
+                                "belief_id", "concern_id",
+                                "world_trait_id", "object_id",
+                            ):
+                                if id_key in entry and entry[id_key]:
+                                    known_ids.add(str(entry[id_key]))
+            unsupported = [eid for eid in evidence if str(eid) not in known_ids]
+            if unsupported and known_ids:
+                # Only filter when we actually know the id space (avoid
+                # accidentally dropping all evidence when the projection
+                # is empty or in an unrecognised shape).
+                supported = [eid for eid in evidence if str(eid) in known_ids]
+                caveats = list(card.caveats or [])
+                caveats.append(
+                    "Some evidence node ids returned by the answer agent "
+                    "did not resolve in the projected world state and "
+                    "were dropped: "
+                    + ", ".join(str(u) for u in unsupported[:8])
+                    + ("…" if len(unsupported) > 8 else "")
+                )
+                # Down-rank confidence proportional to how many ids
+                # were unsupported.
+                hallucination_ratio = (
+                    len(unsupported) / max(1, len(evidence))
+                )
+                card = AnswerCard(
+                    answer=card.answer,
+                    confidence=max(
+                        0.0,
+                        float(card.confidence or 0.0)
+                        * (1.0 - hallucination_ratio),
+                    ),
+                    caveats=caveats,
+                    evidence_node_ids=supported,
+                )
+                logger.warning(
+                    "[Answer] Dropped %d/%d unsupported evidence ids",
+                    len(unsupported), len(evidence),
+                )
         logger.info(
             "[Answer] q_type=%s conf=%.2f answer_len=%d evidence=%d",
             query_type,

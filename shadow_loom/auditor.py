@@ -3583,15 +3583,21 @@ def run_audit(
         "[Auditor] Running audit: effect=%s categories=%s prompt_len=%d",
         brief.target_effect, categories, len(audit_prompt),
     )
-    # Emit the full audit prompt at INFO for log-based analysis,
+    # Emit the full audit prompt at DEBUG for log-based analysis,
     # mirroring the renderer's prompt logging so generator and
-    # auditor instructions can be compared side-by-side.
-    logger.info(
+    # auditor instructions can be compared side-by-side. INFO would
+    # leak prose under review and rich world-state slices to shared
+    # log aggregators (round-3 audit).
+    logger.debug(
         "[Auditor] Audit prompt (%d chars):\n"
         "========== BEGIN AUDIT PROMPT ==========\n%s\n"
         "========== END AUDIT PROMPT ==========",
         len(audit_prompt),
         audit_prompt,
+    )
+    logger.info(
+        "[Auditor] Audit prompt prepared (%d chars)",
+        len(audit_prompt),
     )
 
     agent = _build_auditor_agent(config)
@@ -4042,30 +4048,31 @@ def run_feedback_loop(
 
         # --- Track failed-open audits ---
         # A failed-open audit is an LLM/transport error, not evidence
-        # the prose is bad. Treat it as bypass-passed (the auditor has
-        # nothing useful to say) so transient infra failures don't
-        # masquerade as story-quality verdicts. We still bail after a
-        # streak so the loop doesn't spin forever waiting on a broken
-        # auditor.
+        # the prose is bad. Previously the loop returned
+        # ``converged=True`` after two consecutive failed-opens, which
+        # let infrastructure outages masquerade as clean audit passes
+        # and silently allowed downstream merge of unaudited prose.
+        # We now return ``converged=False`` with a clear error so
+        # callers (notably the pipeline merge gate) refuse to commit
+        # the prose by default. Callers can opt into a force-merge
+        # path explicitly when the failure is known-benign.
         if audit.failed_open:
             consecutive_failed_open += 1
             logger.warning(
                 "[FeedbackLoop] Audit failed-open (%d consecutive) \u2014 "
-                "treating as bypass-passed (auditor produced no usable "
-                "verdict).",
+                "no usable verdict; merge will be blocked unless caller "
+                "explicitly forces.",
                 consecutive_failed_open,
             )
             if consecutive_failed_open >= 2:
                 correction_error = (
                     f"Auditor failed-open {consecutive_failed_open} times "
-                    f"in a row; bypassing the prose-level audit. Last "
-                    f"summary: {audit.audit_summary}"
+                    f"in a row; refusing to mark the prose as audited. "
+                    f"Last summary: {audit.audit_summary}"
                 )
-                # Bypass-pass: return the current scene as converged
-                # under the bypass policy rather than a hard failure.
                 return FeedbackLoopResult(
                     final_scene=current_scene,
-                    converged=True,
+                    converged=False,
                     iterations=iteration + 1,
                     history=history,
                     final_graph_version=graph_version,
@@ -4149,16 +4156,39 @@ def run_feedback_loop(
         # *that*\u2026). The audit object itself still carries
         # ``passed=False`` and the violations so callers can render
         # them in the UI \u2014 we just don't gate the loop on them.
+        #
+        # SAFETY: the minor-only bypass is restricted to an explicit
+        # allowlist of cosmetic violation types. Without the allowlist
+        # any future violation that happens to be flagged ``minor``
+        # (including semantic regressions a rewriter could fix) is
+        # silently waved through. Anything outside the allowlist
+        # keeps ``llm_passed`` False so the loop continues.
+        _MINOR_BYPASS_ALLOWLIST = {
+            "prose_density",
+            "stylistic_drift",
+            "register_drift",
+            "pacing",
+            "diction",
+            "tone",
+            "wordcount",
+            "sentence_length",
+            "repetition",
+            "filler",
+        }
         if (
             not llm_passed
             and not audit.failed_open
             and audit.violations
             and all(v.severity == "minor" for v in audit.violations)
+            and all(
+                getattr(v, "violation_type", "") in _MINOR_BYPASS_ALLOWLIST
+                for v in audit.violations
+            )
         ):
             logger.info(
                 "[FeedbackLoop] All %d violation(s) at iteration %d are "
-                "'minor' \u2014 treating as effectively passed; not "
-                "spending a regeneration cycle.",
+                "'minor' and in the cosmetic allowlist \u2014 treating as "
+                "effectively passed; not spending a regeneration cycle.",
                 len(audit.violations), iteration + 1,
             )
             llm_passed = True
@@ -4285,7 +4315,9 @@ def run_feedback_loop(
         # the LLM is explicitly in rewrite mode (rather than reusing
         # the generic generation prompt and relying on injected text).
         agent = _build_generation_agent(
-            generation_config, prompt_filename="refinement.md",
+            generation_config,
+            prompt_filename="refinement.md",
+            stage="auditor_generation",
         )
         deps = _GenerationDeps(rendering_prompt=refinement_prompt)
 

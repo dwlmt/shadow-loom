@@ -35,7 +35,18 @@ APPLE_PRIVATE_KEY: str = _settings.oauth.apple_private_key
 OAUTH_REDIRECT_BASE: str = _settings.oauth.oauth_redirect_base
 
 AUTH_ENABLED: bool = _settings.oauth.auth_enabled
+AUTH_REQUIRED: bool = _settings.oauth.auth_required
 OAUTH_PROVIDERS: list[dict] = _settings.oauth.oauth_providers
+
+# Hard fail-closed: if AUTH_REQUIRED is set but no provider is
+# configured, refuse to start rather than silently opening every
+# route to anonymous traffic (round-3 audit).
+if AUTH_REQUIRED and not AUTH_ENABLED:
+    raise RuntimeError(
+        "SHADOW_LOOM_OAUTH__AUTH_REQUIRED is set but no OAuth provider "
+        "is configured (github/google/discord/microsoft/apple). Refusing "
+        "to start; configure a provider or unset auth_required."
+    )
 
 # ── Input limits ──────────────────────────────────────────────────
 # Maximum number of whitespace-separated tokens accepted by the

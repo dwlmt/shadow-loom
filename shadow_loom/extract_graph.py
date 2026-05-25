@@ -3263,13 +3263,24 @@ def _apply_supersession(
     """
     if not topology.supersedes_event_ids:
         return
+    # ``supersedes_event_ids`` is documented as ``new_id → old_id``.
     mapping = dict(topology.supersedes_event_ids)
-    event_index = {e.id: e for e in merged.events}
+    # Round-6 audit: scope the event lookup to the current merge
+    # branch. The previous global ``{e.id: e for e in merged.events}``
+    # silently picked the LAST event of a given id, so when factual and
+    # shadow shared an EVT id the stamp could land on the wrong branch
+    # (or skip the intended event entirely).
+    event_index = {
+        e.id: e for e in merged.events
+        if (getattr(e, "world_id", "factual") or "factual") == merge_world_id
+    }
     for new_id, old_id in mapping.items():
         old_evt = event_index.get(old_id)
         if old_evt is None:
             logger.warning(
-                "[merge·supersede] Old event %s not found — supersession skipped.", old_id,
+                "[merge\u00b7supersede] Old event %s not found on world "
+                "%s \u2014 supersession skipped.",
+                old_id, merge_world_id,
             )
             continue
         evt_world = getattr(old_evt, "world_id", "factual") or "factual"
@@ -3289,13 +3300,20 @@ def _apply_supersession(
     # Rewrite belief provenance — only on holders that match the
     # merge branch, so a shadow supersession can't silently rewrite
     # factual belief provenance pointers.
+    #
+    # Round-6 audit: the rewrite direction was inverted. ``mapping``
+    # is ``new_id → old_id``, so beliefs whose ``acquired_via_event_id``
+    # equals an OLD event id must be rewritten to point at the NEW
+    # (superseding) id. The previous code did the opposite, silently
+    # demoting belief provenance back to the superseded event.
+    old_to_new = {old_id: new_id for new_id, old_id in mapping.items()}
     for ent in merged.entities.values():
         ent_world = getattr(ent, "world_id", "factual") or "factual"
         if ent_world != merge_world_id:
             continue
         for b in ent.beliefs:
-            if b.acquired_via_event_id in mapping:
-                b.acquired_via_event_id = mapping[b.acquired_via_event_id]
+            if b.acquired_via_event_id in old_to_new:
+                b.acquired_via_event_id = old_to_new[b.acquired_via_event_id]
 
     # Rewrite Proposition.truth_at_fabula? No — those are keyed by time, not event.
     # But events' resolves_proposition_ids are still valid; we leave the
@@ -3610,17 +3628,42 @@ class VersionedWorldModel(BaseModel):
         )
 
     def _trim_snapshots(self, snapshots: List[WorldSnapshot], max_k: int) -> List[WorldSnapshot]:
-        """Trim snapshot list to at most *max_k*, preserving version 0."""
+        """Trim snapshot list to at most *max_k*, preserving version 0.
+
+        Round-6 audit: with the old "v0 + tail" policy, a long-running
+        session collapsed to v0 and the last ``max_k - 1`` snapshots,
+        so any rollback to a mid-history version raised KeyError once
+        the gap exceeded the cap. Reserve one slot for a middle anchor
+        so the user can still rewind to a logarithmically-spaced
+        midpoint between v0 and the head.
+        """
         if len(snapshots) <= max_k:
             return snapshots
         # Partition: keep version 0 always, trim oldest of the rest
         v0 = [s for s in snapshots if s.version == 0]
-        rest = [s for s in snapshots if s.version != 0]
+        rest = sorted(
+            (s for s in snapshots if s.version != 0),
+            key=lambda s: s.version,
+        )
         # Keep the most recent (max_k - len(v0)) from rest
         keep = max_k - len(v0)
         if keep <= 0:
             return v0[:max_k]
-        trimmed = v0 + rest[-keep:]
+        if keep >= 3 and len(rest) > keep:
+            # Reserve one slot for the geometric midpoint between the
+            # oldest non-v0 snapshot and the current head so rewinds
+            # past the tail window aren't all-or-nothing.
+            head_v = rest[-1].version
+            tail_v = rest[0].version
+            mid_target = tail_v + (head_v - tail_v) // 2
+            mid = min(rest, key=lambda s: abs(s.version - mid_target))
+            tail = rest[-(keep - 1):]
+            if mid not in tail:
+                trimmed = v0 + [mid] + tail
+            else:
+                trimmed = v0 + tail
+        else:
+            trimmed = v0 + rest[-keep:]
         trimmed.sort(key=lambda s: s.version)
         return trimmed
 

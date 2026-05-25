@@ -100,6 +100,15 @@ class GenerationConfig(BaseModel):
         default=0.7,
         description="Sampling temperature for creative prose.",
     )
+    # Round-6 audit: seed makes rendering reproducible when downstream
+    # consumers (snapshot tests, deterministic batch sweeps) need byte-
+    # equal prose for the same inputs. ``None`` keeps the default
+    # non-deterministic behaviour. Forwarded as ``model_settings["seed"]``
+    # which OpenAI/Ollama-class providers honour.
+    seed: Optional[int] = Field(
+        default=None,
+        description="Optional RNG seed forwarded to the model provider for reproducible prose.",
+    )
     # Scene-context trimming — mirrors GenerationSettings fields.
     scene_context_recent_events: int = Field(default=10)
     scene_context_max_beliefs: int = Field(default=4)
@@ -5766,6 +5775,7 @@ def _build_generation_agent(
     config: GenerationConfig,
     *,
     prompt_filename: str = "generation.md",
+    stage: str = "generation",
 ) -> Agent[_GenerationDeps, GeneratedScene]:
     """Construct the Step 10 rendering LLM agent.
 
@@ -5778,9 +5788,14 @@ def _build_generation_agent(
         prompt. Defaults to the standard generation prompt; the
         refinement loop passes ``"refinement.md"`` so the agent
         explicitly knows it is in rewrite mode.
+    stage : str
+        Resolver stage label for per-user model overrides. Defaults to
+        ``"generation"``; the auditor's regeneration loop passes
+        ``"auditor_generation"`` so users can route post-audit rewrites
+        to a different model than initial generation.
     """
     agent: Agent[_GenerationDeps, GeneratedScene] = Agent(
-        _resolve_model(config.model, stage="generation"),
+        _resolve_model(config.model, stage=stage),
         deps_type=_GenerationDeps,
         output_type=NativeOutput(GeneratedScene),
         system_prompt=_load_prompt(prompt_filename),
@@ -5833,17 +5848,23 @@ def render_scene(
         brief.target_entities,
         brief.rendering.rendering_mode if brief.rendering else "default",
     )
-    # Emit the full assembled prompt at INFO so downstream log
+    # Emit the full assembled prompt at DEBUG so downstream log
     # analysis (live_e2e captures, audit replays, off-line prompt
     # review) can see exactly how the renderer was instructed for
     # this scene. Wrapped with explicit BEGIN/END markers so the
-    # multi-line block is unambiguous in the log stream.
-    logger.info(
+    # multi-line block is unambiguous in the log stream. INFO is
+    # too noisy for production and leaks user-content / constraints
+    # to shared log aggregators (round-3 audit).
+    logger.debug(
         "[Generation] Rendering prompt (%d chars):\n"
         "========== BEGIN RENDERING PROMPT ==========\n%s\n"
         "========== END RENDERING PROMPT ==========",
         len(rendering_prompt),
         rendering_prompt,
+    )
+    logger.info(
+        "[Generation] Rendering prompt prepared (%d chars)",
+        len(rendering_prompt),
     )
 
     agent = _build_generation_agent(config)
@@ -5853,6 +5874,8 @@ def render_scene(
     if config.temperature != 0.7:
         model_settings["temperature"] = config.temperature
     model_settings["max_tokens"] = config.max_tokens
+    if config.seed is not None:
+        model_settings["seed"] = config.seed
 
     try:
         result = agent.run_sync(

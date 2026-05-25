@@ -121,6 +121,16 @@ def _check_engine_vacuity(
         return None
     if physics_result.mutations or physics_result.social_mutations:
         return None
+    # Typed-surgery mutation lists count as engine effect too — an
+    # ``OBJ_X.owner_id`` clamp that produces an :class:`ObjectMutation`
+    # has demonstrably moved the world even if no trait propagated
+    # (e.g. cyclic SCC absorbed downstream traits).
+    if (physics_result.object_mutations
+            or physics_result.proposition_mutations
+            or physics_result.belief_mutations
+            or physics_result.concern_mutations
+            or physics_result.world_trait_mutations):
+        return None
     if rung == 3 and physics_result.hidden_deltas:
         return None
 
@@ -438,12 +448,28 @@ def calculate_narrative_physics(
             )
 
             # Tier-2 vacuity check (after engine ran)
-            # Skipped when typed do-targets ran: edge-typed surgeries
-            # (DoChannel/DoRelationship/DoCausalEdge/DoSpatialEdge) and
-            # affect-layer surgeries (DoBelief/DoConcern) need not
-            # produce a node-level delta to be functionally applied —
-            # the world-state mirror writes happen regardless.
-            if typed_do_targets:
+            # Skipped only when typed do-targets include edge surgeries
+            # (DoChannel/DoRelationship/DoCausalEdge/DoSpatialEdge) or
+            # affect-layer surgeries (DoBelief/DoConcern) — those
+            # land via ``apply_do_targets`` without producing a
+            # node-level mutation the vacuity check would detect.
+            # Typed targets that round-trip via
+            # :func:`_lift_do_targets_to_legacy_dict` (DoEvent / DoTrait
+            # / DoProposition / DoWorldTrait / DoNarrativeObject) are
+            # indistinguishable from legacy dict surgeries; vacuity
+            # MUST still fire on those so the engine cannot silently
+            # swallow a no-op.
+            #
+            # Additional guard: even when an edge-surgery target is
+            # present, only skip vacuity if at least one edge surgery
+            # actually mutated the sandbox (counter on the engine).
+            # Otherwise an edge surgery that early-returned (missing
+            # endpoints, invalid payload) would silently disable
+            # vacuity for the whole query.
+            if (
+                _typed_targets_require_vacuity_skip(typed_do_targets)
+                and getattr(engine, "_edge_do_targets_applied", 0) > 0
+            ):
                 vacuous = None
             else:
                 vacuous = _check_engine_vacuity(
@@ -727,7 +753,13 @@ def calculate_narrative_physics(
 
             # Tier-2 vacuity check: did the abductive simulation produce anything?
             # Skipped when typed historical surgeries ran; see rung-2 rationale.
-            if typed_historical_do_targets:
+            # Additionally require that at least one edge surgery actually
+            # applied so an early-returning edge target doesn't disable
+            # vacuity for a complete no-op counterfactual.
+            if (
+                _typed_targets_require_vacuity_skip(typed_historical_do_targets)
+                and getattr(engine, "_edge_do_targets_applied", 0) > 0
+            ):
                 vacuous = None
             else:
                 vacuous = _check_engine_vacuity(
@@ -1939,6 +1971,42 @@ def _do_target_seed_ids(do_targets: List[Any]) -> set:
             seeds.add(t.source_id)
             seeds.add(t.target_id)
     return {s for s in seeds if s}
+
+
+def _typed_targets_require_vacuity_skip(do_targets: List[Any]) -> bool:
+    """Return True iff any typed target carries a surgery shape that
+    legitimately bypasses the vacuity check.
+
+    Only edge-typed surgeries (DoChannel / DoRelationship / DoCausalEdge
+    / DoSpatialEdge) qualify: those rewrite the sandbox topology
+    directly and do not produce a node-level mutation
+    :func:`_check_engine_vacuity` would observe.
+
+    DoBelief and DoConcern are intentionally NOT in this set, even
+    though they reach the sandbox via :meth:`apply_do_targets` rather
+    than the legacy dict path: their handlers
+    (:meth:`CausalPhysicsEngine._apply_do_belief` /
+    :meth:`_apply_do_concern`) can silently early-return when the
+    holder / concern is missing, and we want vacuity to surface that
+    as implausibility rather than mask it as success. The recorded
+    BeliefMutation / ConcernMutation lists feed into vacuity already
+    (see :func:`_check_engine_vacuity`), so a successful Belief /
+    Concern surgery WILL bypass vacuity through the mutation-list
+    short-circuit rather than the typed-target short-circuit.
+
+    The five legacy-round-trippable variants (DoEvent / DoTrait /
+    DoProposition / DoWorldTrait / DoNarrativeObject) are also
+    excluded: vacuity MUST still fire on those (otherwise the engine
+    could silently swallow a no-op without the implausibility
+    disclosure)."""
+    from shadow_loom.query_models import (
+        DoCausalEdge,
+        DoChannel,
+        DoRelationship,
+        DoSpatialEdge,
+    )
+    edge_only = (DoCausalEdge, DoChannel, DoRelationship, DoSpatialEdge)
+    return any(isinstance(t, edge_only) for t in (do_targets or []))
 
 
 def _lift_do_targets_to_legacy_dict(do_targets: List[Any]) -> Dict[str, Any]:

@@ -1045,6 +1045,13 @@ class OAuthSettings(BaseSettings):
 
     storage_secret: str = Field(default="")
     oauth_redirect_base: str = Field(default="http://localhost:7860")
+    # When true, the UI middleware refuses to serve protected routes
+    # unless at least one OAuth provider is configured. Without this
+    # flag, an accidental misconfiguration (provider env vars missing
+    # in production) silently flips ``auth_enabled`` to False and
+    # opens every route to anonymous traffic. Set
+    # ``SHADOW_LOOM_OAUTH__AUTH_REQUIRED=true`` in non-dev environments.
+    auth_required: bool = Field(default=False)
     github_client_id: str = Field(default="")
     github_client_secret: str = Field(default="")
     google_client_id: str = Field(default="")

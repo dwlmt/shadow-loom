@@ -775,7 +775,27 @@ def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
     _record_schema_versions(_engine)
     ensure_example_user()
     ensure_default_cost_rule()
-    logger.info("[DB] Tables initialised on %s", database_url)
+    # Redact credentials from the DSN before logging \u2014 Postgres
+    # connection strings carry ``user:password@host`` which would
+    # leak to shared log aggregators (round-3 audit).
+    try:
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(database_url)
+        if parsed.username or parsed.password:
+            host = parsed.hostname or ""
+            if parsed.port:
+                host = f"{host}:{parsed.port}"
+            netloc = f"***@{host}" if host else "***"
+            redacted = urlunparse((
+                parsed.scheme, netloc, parsed.path,
+                parsed.params, "", parsed.fragment,
+            ))
+        else:
+            redacted = database_url
+    except Exception:  # noqa: BLE001
+        # Fall back to scheme-only so we never leak on a parse failure.
+        redacted = database_url.split("://", 1)[0] + "://***"
+    logger.info("[DB] Tables initialised on %s", redacted)
 
 
 def _record_schema_versions(engine) -> None:  # noqa: ANN001
@@ -847,18 +867,43 @@ def _run_lightweight_migrations(engine) -> None:  # noqa: ANN001
     if not statements:
         return
 
-    with engine.begin() as conn:
-        for sql in statements:
+    # Round-6 audit: only swallow the specific "already exists" race
+    # raised by concurrent migrators; let real DDL errors propagate so
+    # the boot fails loudly rather than silently leaving the schema
+    # half-migrated. Re-inspect after each ALTER so a racing peer that
+    # already added the column is treated as a no-op.
+    benign_fragments = (
+        "duplicate column",
+        "already exists",
+    )
+    for sql in statements:
+        with engine.begin() as conn:
             try:
                 conn.execute(text(sql))
-            except Exception:  # noqa: BLE001
-                # Concurrent migrators (multiple workers booting in
-                # parallel) may race the ALTER. Re-inspect rather than
-                # propagate so the second arrival just no-ops.
-                logger.exception(
-                    "[DB·migrate] Failed to apply: %s (treating as already applied).",
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc).lower()
+                if any(frag in msg for frag in benign_fragments):
+                    logger.info(
+                        "[DB\u00b7migrate] Skipped (already applied by peer): %s",
+                        sql,
+                    )
+                    continue
+                # Re-inspect to handle dialects whose error message
+                # doesn't include either fragment.
+                fresh = {c["name"] for c in inspect(engine).get_columns("versions")}
+                if "ADD COLUMN" in sql.upper():
+                    parts = sql.upper().split("ADD COLUMN", 1)[1].strip().split()
+                    if parts and parts[0].lower() in fresh:
+                        logger.info(
+                            "[DB\u00b7migrate] Skipped (column already present): %s",
+                            sql,
+                        )
+                        continue
+                logger.error(
+                    "[DB\u00b7migrate] Failed to apply: %s \u2014 re-raising.",
                     sql,
                 )
+                raise
     logger.info(
         "[DB·migrate] Applied %d additive column migration(s) to 'versions'.",
         len(statements),
@@ -1987,6 +2032,26 @@ def save_version(
     # When an explicit version is supplied we honour it (single attempt).
     max_attempts = 1 if version is not None else 5
     last_err: Exception | None = None
+    # Round-6 audit: refuse cross-project ancestry. ``ancestor_id``
+    # references a VersionRow row id; without this guard a caller can
+    # attach a version of project B to an ancestor in project A,
+    # corrupting later ancestry walks (delete cascades, branch
+    # promotion, AMWN history) by crossing project boundaries.
+    if ancestor_id is not None:
+        with get_session() as s_check:
+            anc = s_check.get(VersionRow, ancestor_id)
+            if anc is None:
+                raise ValueError(
+                    f"save_version: ancestor_id={ancestor_id} does not "
+                    f"exist."
+                )
+            if anc.project_id != project_id:
+                raise ValueError(
+                    f"save_version: ancestor_id={ancestor_id} belongs "
+                    f"to project {anc.project_id}, not target project "
+                    f"{project_id}; refusing to create cross-project "
+                    f"ancestry."
+                )
     for attempt in range(max_attempts):
         with get_session() as s:
             assigned_version = (
@@ -2769,12 +2834,25 @@ class VersionMutationError(Exception):
 
 
 def _collect_descendant_ids(s, root_id: int) -> set[int]:
-    """BFS over the version tree to collect all descendants (inclusive)."""
+    """BFS over the version tree to collect all descendants (inclusive).
+
+    Restricted to the root's ``project_id`` so a pre-existing
+    cross-project ancestor link (legacy data from before the
+    save_version cross-project guard) cannot drag rows from another
+    project into a cascade delete (round-6 audit).
+    """
+    root = s.get(VersionRow, root_id)
+    if root is None:
+        return {root_id}
+    root_pid = root.project_id
     seen: set[int] = {root_id}
     frontier = [root_id]
     while frontier:
         children = s.exec(
-            select(VersionRow).where(VersionRow.ancestor_id.in_(frontier))
+            select(VersionRow).where(
+                VersionRow.ancestor_id.in_(frontier),
+                VersionRow.project_id == root_pid,
+            )
         ).all()
         new_ids = [c.id for c in children if c.id not in seen]
         if not new_ids:

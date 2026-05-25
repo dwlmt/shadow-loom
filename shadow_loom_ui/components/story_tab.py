@@ -343,8 +343,12 @@ def _start_reingest(state: AppState, edited_text: str) -> None:
                 notify_task_complete(task)
                 return
 
-            db.update_project(project_id, raw_text=edited_text)
-
+            # Persist the new version FIRST. If this fails we abort
+            # without having mutated the project's ``raw_text`` column
+            # \u2014 callers can safely retry. Updating raw_text before
+            # save_version would leave the project pointing at edited
+            # text with no matching world snapshot, a state the rest
+            # of the UI cannot recover from (round-3 audit).
             new_ver = db.save_version(
                 project_id=project_id,
                 world_state_json=ws.model_dump_json(),
@@ -355,6 +359,18 @@ def _start_reingest(state: AppState, edited_text: str) -> None:
                 world_id=parent_world_id,  # type: ignore[arg-type]
                 branch_label=parent_branch_label,
             )
+
+            try:
+                db.update_project(project_id, raw_text=edited_text)
+            except Exception:
+                logger.exception(
+                    "[Re-ingest] save_version succeeded (v%s) but "
+                    "update_project(raw_text) failed; the new version "
+                    "is recorded but project.raw_text was not refreshed.",
+                    new_ver.version,
+                )
+                # Continue \u2014 the version row is authoritative for the
+                # world; the next manual edit can re-sync raw_text.
 
             state.raw_text = edited_text
             # Atomic version swap: resets cursors + emits the matching

@@ -287,6 +287,16 @@ class PipelineConfig(BaseModel):
         default=False,
         description="Skip prose re-extraction and world-model merge (Step 6–7).",
     )
+    merge_on_audit_failure: bool = Field(
+        default=False,
+        description=(
+            "Allow merge (Steps 6–7) to proceed even when the auditor did "
+            "not converge or failed-open. Default False — a failed/non-"
+            "converged audit blocks the merge so unaudited prose cannot "
+            "pollute the canonical world model. Set True only for "
+            "explicit unsafe / debug flows."
+        ),
+    )
     defer_reextraction: bool = Field(
         default=False,
         description=(
@@ -2564,7 +2574,20 @@ def run_pipeline(
             "[Pipeline] Query type '%s' — answering question over physics state.",
             query.query_type,
         )
-        _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
+        try:
+            _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
+        except Exception:
+            logger.exception(
+                "[Pipeline] Answer step failed for query_type=%s — "
+                "returning a degraded result with no answer prose.",
+                query.query_type,
+            )
+            physics_result["answer_failed"] = True
+            physics_result.setdefault(
+                "answer",
+                "(The model could not produce an answer for this "
+                "question; please retry or rephrase.)",
+            )
         return result
 
     # =================================================================
@@ -2855,6 +2878,31 @@ def run_pipeline(
         if cfg.skip_reextraction:
             logger.info("[Pipeline] Steps 6–7: Re-extraction skipped.")
             return
+        if (
+            result.converged is False
+            and not cfg.merge_on_audit_failure
+        ):
+            # The audit did not converge (or failed open). Merging
+            # unaudited prose into the canonical world model would let
+            # narrative drift past the contract-checking gate. Refuse
+            # the merge by default; callers can set
+            # ``merge_on_audit_failure=True`` to override for explicit
+            # unsafe / debug flows.
+            logger.error(
+                "[Pipeline] Steps 6–7: Re-extraction blocked — "
+                "auditor did not converge (iterations=%s). Set "
+                "PipelineConfig.merge_on_audit_failure=True to force.",
+                result.audit_iterations,
+            )
+            result.reextraction_failed = True
+            result.reextraction_error = (
+                "Skipped re-extraction: auditor did not converge."
+            )
+            history.record(
+                "reextraction_merge",
+                {"error": "audit_not_converged"},
+            )
+            return
         if getattr(result.scene, "generation_error", None):
             # The renderer fell back to a placeholder scene; merging that
             # text into the canonical world state would pollute the graph
@@ -3121,7 +3169,21 @@ async def run_pipeline_async(
             "[Pipeline\u00b7Async] Query type '%s' \u2014 answering question over physics state.",
             query.query_type,
         )
-        _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
+        try:
+            _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
+        except Exception:
+            logger.exception(
+                "[Pipeline\u00b7Async] Answer step failed for "
+                "query_type=%s \u2014 returning a degraded result with "
+                "no answer prose.",
+                query.query_type,
+            )
+            physics_result["answer_failed"] = True
+            physics_result.setdefault(
+                "answer",
+                "(The model could not produce an answer for this "
+                "question; please retry or rephrase.)",
+            )
         return result
 
     # Pearl-Rung-2/3 queries also get a rung-aware answer card
@@ -3321,6 +3383,24 @@ async def run_pipeline_async(
     # Steps 6–7: Re-extraction + merge (same as sync)
     if cfg.skip_reextraction:
         logger.info("[Pipeline·Async] Steps 6–7: Re-extraction skipped.")
+    elif (
+        result.converged is False
+        and not cfg.merge_on_audit_failure
+    ):
+        logger.error(
+            "[Pipeline·Async] Steps 6–7: Re-extraction blocked — "
+            "auditor did not converge (iterations=%s). Set "
+            "PipelineConfig.merge_on_audit_failure=True to force.",
+            result.audit_iterations,
+        )
+        result.reextraction_failed = True
+        result.reextraction_error = (
+            "Skipped re-extraction: auditor did not converge."
+        )
+        history.record(
+            "reextraction_merge",
+            {"error": "audit_not_converged"},
+        )
     elif getattr(result.scene, "generation_error", None):
         logger.error(
             "[Pipeline·Async] Steps 6–7: Re-extraction skipped — scene "
@@ -3511,6 +3591,39 @@ def _run_answer_step(
         {"id": nid, "kind": "evidence"}
         for nid in card.evidence_node_ids
     ]
+
+    # Enforce ``require_proof`` semantics: if the caller explicitly
+    # demanded a causal proof (evidence-id grounding) and the answer
+    # agent could not produce any, surface the failure rather than
+    # silently returning an unsupported answer card. Without this
+    # gate ``require_proof=True`` was advisory only — the LLM was
+    # told "back claims with evidence" but the pipeline accepted
+    # whatever came back even when no evidence ids were grounded.
+    if require_proof and not card.evidence_node_ids:
+        physics_result["status"] = "implausible"
+        physics_result["implausibility_reason"] = "proof_required_but_unavailable"
+        physics_result["implausibility_details"] = {
+            "reason": "proof_required_but_unavailable",
+            "require_proof": True,
+            "evidence_node_ids": [],
+            "message": (
+                "Query specified require_proof=True but the answer agent "
+                "did not produce any evidence node ids to ground its claims."
+            ),
+        }
+        # Down-rank confidence so downstream consumers (renderer,
+        # auditor, UI) do not surface the unbacked answer as
+        # high-confidence.
+        physics_result["confidence"] = min(
+            float(card.confidence or 0.0), 0.1,
+        )
+        # Preface the caveat list so the chat card / Answer panel
+        # always shows the proof-unavailable banner first.
+        caveats = list(physics_result.get("caveats") or [])
+        caveats.insert(
+            0, "Proof required but no supporting evidence ids returned.",
+        )
+        physics_result["caveats"] = caveats
 
     history.record("answer", {
         "query_type": qtype,

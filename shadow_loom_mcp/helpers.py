@@ -53,10 +53,18 @@ def resolve_project(
     project_id: int | None,
     project_name: str | None,
     ctx: Context,
+    *,
+    min_role: str = "viewer",
 ) -> tuple[int | None, str | None]:
-    """Resolve a project by ID or name. Returns (project_id, error)."""
+    """Resolve a project by ID or name. Returns (project_id, error).
+
+    ``min_role`` defaults to ``"viewer"`` (read access). Mutation tools
+    MUST pass ``min_role="editor"`` (or ``"admin"``) so viewer-level
+    project members cannot mutate project data via an MCP write tool
+    that only checks the global ``write`` scope.
+    """
     if project_id is not None:
-        err = check_project_access(project_id, ctx)
+        err = check_project_access(project_id, ctx, min_role=min_role)
         if err:
             return None, err
         return project_id, None
@@ -68,7 +76,7 @@ def resolve_project(
             proj = find_project_by_name(project_name)
         if proj is None:
             return None, f"Project '{project_name}' not found."
-        err = check_project_access(proj.id, ctx)
+        err = check_project_access(proj.id, ctx, min_role=min_role)
         if err:
             return None, err
         return proj.id, None
@@ -235,17 +243,41 @@ def run_and_save(
 
     # Activate per-user model overrides (default model, per-stage
     # models, custom OpenAI-compat providers) for this MCP request.
+    # The token MUST be reset in ``finally`` so that worker threads
+    # (this function is invoked from ``asyncio.to_thread`` by MCP
+    # tools) don't leak this user's overrides into the NEXT request
+    # served by the same reused worker.
+    _user_context_token: object | None = None
     try:
         from shadow_loom.settings import set_user_context as _set_user_context
-        _set_user_context(user_row_id)
+        _user_context_token = _set_user_context(user_row_id)
     except Exception:  # noqa: BLE001 — never block the pipeline call
         logger.debug("[MCP] Failed to activate user model overrides", exc_info=True)
 
     try:
-        result: PipelineResult = run_pipeline(query, versioned_model=vwm, config=cfg)
-    except Exception as e:
-        logger.exception("Pipeline failed")
-        return {"error": f"Pipeline failed: {e}"}
+        try:
+            result: PipelineResult = run_pipeline(query, versioned_model=vwm, config=cfg)
+        except Exception as e:
+            logger.exception("Pipeline failed")
+            # Sanitised public error \u2014 raw ``str(e)`` could leak
+            # internal paths / SQL / provider error bodies. Full
+            # exception detail is captured by ``logger.exception``.
+            return {
+                "error": "Pipeline failed",
+                "error_type": type(e).__name__,
+            }
+    finally:
+        if _user_context_token is not None:
+            try:
+                from shadow_loom.settings import (
+                    reset_user_context as _reset_user_context,
+                )
+                _reset_user_context(_user_context_token)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[MCP] Failed to reset user model overrides",
+                    exc_info=True,
+                )
 
     # If the engine deemed the request implausible AND the caller did NOT
     # ask to force generation, we explicitly skip persisting a new version
@@ -340,6 +372,37 @@ def run_and_save(
         # Auto-advance the user's active-version pointer to the row we
         # just created so subsequent tool calls default to it.
         if user_row_id is not None:
+            # Optimistic concurrency: detect concurrent writers by
+            # comparing the pointer's pre-write value to the ancestor
+            # this call expected. A mismatch means another tool /
+            # session advanced the pointer while we were running the
+            # pipeline; we still publish our new version (callers can
+            # always rebase manually) but flag the response so clients
+            # can warn and refresh their cached view (round-3 audit).
+            prior_active_id: int | None = None
+            try:
+                prior_active = get_active_version(project_id, user_row_id)
+                if prior_active is not None:
+                    prior_active_id = prior_active.id
+            except Exception:
+                logger.exception(
+                    "Failed to read prior active-version pointer for "
+                    "concurrency check"
+                )
+            if (
+                prior_active_id is not None
+                and ancestor_row_id is not None
+                and prior_active_id != ancestor_row_id
+            ):
+                response["active_version_conflict"] = {
+                    "expected_ancestor_id": ancestor_row_id,
+                    "actual_active_id": prior_active_id,
+                }
+                logger.warning(
+                    "Active-version pointer drifted during MCP call "
+                    "(expected ancestor %s, found %s); flagging response.",
+                    ancestor_row_id, prior_active_id,
+                )
             try:
                 set_active_version(project_id, user_row_id, ver.id)
             except Exception:
@@ -375,6 +438,11 @@ def run_and_save(
         answer = result.physics_result.get("answer")
         if answer:
             response["answer"] = answer
+        # Round-5 audit: surface answer-step failures so MCP clients
+        # can distinguish a real answer from the placeholder string
+        # the pipeline returns when ``_run_answer_step`` raised.
+        if result.physics_result.get("answer_failed"):
+            response["answer_failed"] = True
         # ctf-calculus pre-flight surface (Correa & Bareinboim 2025).
         # Surfaced on the MCP envelope so external clients can see which
         # interventions/evidence the engine dropped before simulation

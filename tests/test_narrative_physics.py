@@ -2126,7 +2126,7 @@ class TestResolveFocusEntities:
         """Intervention on EVT_X must resolve to the event's actor."""
         query = InterventionQuery(interventions={
             "EVT_DUNCAN_MURDER.event_type": "outcome",
-        })
+        }, force_implausible=True)
         result = calculate_narrative_physics(query, macbeth_ws)
         assert result["status"] == "success"
 
@@ -2388,7 +2388,10 @@ class TestEngineVacuityImplausibility:
         import shadow_loom.narrative_physics as np_mod
 
         class _FakeEngine:
-            def __init__(self, *a, **kw): pass
+            def __init__(self, *a, **kw):
+                self._last_legacy_interventions: dict = {}
+            def apply_do_targets(self, *a, **kw):  # narrative_physics calls this when typed historical surgeries are supplied
+                return None
             def execute(self, *a, **kw):
                 return CausalPhysicsResult(
                     sandbox_data={"nodes": [], "links": []},
@@ -2413,7 +2416,10 @@ class TestEngineVacuityImplausibility:
         import shadow_loom.narrative_physics as np_mod
 
         class _FakeEngine:
-            def __init__(self, *a, **kw): pass
+            def __init__(self, *a, **kw):
+                self._last_legacy_interventions: dict = {}
+            def apply_do_targets(self, *a, **kw):
+                return None
             def execute(self, *a, **kw):
                 return CausalPhysicsResult(
                     sandbox_data={"nodes": [], "links": []},

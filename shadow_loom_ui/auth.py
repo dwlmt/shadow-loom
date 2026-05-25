@@ -180,6 +180,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
 
         if not config.AUTH_ENABLED:
+            # When AUTH_REQUIRED is set but no provider could be loaded
+            # the process refuses to start (see ``shadow_loom_ui.config``),
+            # so reaching here means the operator has explicitly chosen
+            # single-user mode. Otherwise treat as anonymous-open dev
+            # mode.
             return await call_next(request)
 
         # Check NiceGUI app.storage.user for auth flag
@@ -302,6 +307,16 @@ async def auth_callback(request: Request):
 
     # Set session
     storage = app.storage.user
+    # Rotate the session identifier on privilege transition to close
+    # the session-fixation window: any pre-auth session id that may
+    # have been attacker-set is now discarded before the
+    # ``authenticated=True`` flag is written (round-3 audit).
+    try:
+        import uuid as _uuid
+        app.storage.browser["id"] = f"sess-{_uuid.uuid4().hex}"
+    except Exception:  # noqa: BLE001
+        logger.debug("[Auth] Session id rotation skipped", exc_info=True)
+    storage.clear()
     storage["authenticated"] = True
     storage["user_id"] = db_user.id
     storage["username"] = username
@@ -314,7 +329,27 @@ async def auth_callback(request: Request):
 
 
 async def auth_logout(request: Request):
-    """Clear session and redirect to home."""
+    """Clear session and redirect to home.
+
+    POST-only with a same-origin check so a third-party site cannot
+    force a logout via a cross-site image / link request (CSRF).
+    """
+    # Same-origin guard: reject when the Origin / Referer header
+    # points to a different host than the one serving the request.
+    request_host = request.headers.get("host", "")
+    origin = request.headers.get("origin") or request.headers.get("referer") or ""
+    if origin and request_host:
+        from urllib.parse import urlparse as _urlparse
+        try:
+            origin_host = _urlparse(origin).netloc
+        except Exception:  # noqa: BLE001
+            origin_host = ""
+        if origin_host and origin_host != request_host:
+            logger.warning(
+                "[Auth] Rejected cross-origin logout from %s (host=%s)",
+                origin, request_host,
+            )
+            return RedirectResponse("/", status_code=403)
     from nicegui import app
     storage = app.storage.user
     storage.clear()

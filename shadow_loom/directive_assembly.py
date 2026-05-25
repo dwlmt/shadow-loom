@@ -5916,7 +5916,19 @@ class DirectiveAssembler:
 
         for candidate in candidates:
             forked = deepcopy(self.sandbox)
-            engine = CausalPhysicsEngine(forked, self.world_state)
+            # World-state must ALSO be forked per candidate. The typed
+            # ``_apply_do_*`` handlers mirror surgical writes onto the
+            # canonical world_state (object owner/location, event traits,
+            # proposition truth, world-trait value, etc.). If we share
+            # ``self.world_state`` across all K candidates each candidate
+            # bleeds its mutations into the next candidate's "before"
+            # state, and the scorer below would read from a polluted
+            # snapshot rather than this candidate's post-intervention
+            # state. Deep-copy isolates per-candidate mutations and
+            # makes ``forked_world`` the actual post-intervention
+            # world-state passed to ``compute_affective_score``.
+            forked_world = deepcopy(self.world_state)
+            engine = CausalPhysicsEngine(forked, forked_world)
             physics = engine.execute(
                 rung=2,
                 interventions=candidate,
@@ -5926,9 +5938,23 @@ class DirectiveAssembler:
 
             # --- Pruning: intervention failed AND all propagations blocked ---
             # A candidate is physically impossible only if the surgery itself
-            # was blocked (no intervened nodes) and no mutations occurred.
+            # was blocked (no intervened nodes) and no mutations of ANY
+            # mutation family occurred. Trait mutations alone are too
+            # narrow: a candidate may legitimately produce only
+            # object-, proposition-, belief-, concern-, world-trait-,
+            # or social-relationship-mutations (e.g. a PROP truth clamp,
+            # an OBJ owner clamp, a DoBelief surgery). Surface those as
+            # effectful so the candidate isn't wrongly pruned.
             surgery_applied = len(physics.intervened_nodes) > 0
-            has_mutations = len(physics.mutations) > 0
+            has_mutations = (
+                bool(physics.mutations)
+                or bool(physics.social_mutations)
+                or bool(getattr(physics, "object_mutations", None))
+                or bool(getattr(physics, "proposition_mutations", None))
+                or bool(getattr(physics, "belief_mutations", None))
+                or bool(getattr(physics, "concern_mutations", None))
+                or bool(getattr(physics, "world_trait_mutations", None))
+            )
             all_blocked = len(physics.blocked) > 0 and not has_mutations
             # Rule-3 (ctf-calculus exclusion) can drop every intervention
             # silently before the do-surgery runs *when the engine is
@@ -5961,11 +5987,16 @@ class DirectiveAssembler:
                 continue
 
             # --- Affective scoring on the post-intervention state ---
-            # Build a fresh assembler on the forked sandbox
+            # Build a fresh assembler on the forked sandbox AND the
+            # candidate-mutated world projection so scorers that read
+            # from ``world_state`` (object owner/location, event traits,
+            # proposition truth, world traits) see this candidate's
+            # actual post-intervention state rather than the canonical
+            # pre-intervention baseline.
             forked_ego = self.ego  # ego is read-only, safe to share
             forked_assembler = DirectiveAssembler(
                 sandbox=forked, ego_payload=forked_ego,
-                world_state=self.world_state,
+                world_state=forked_world,
             )
             aff_score = forked_assembler.compute_affective_score(
                 target_effect, entity_ids, syuzhet_anchor,

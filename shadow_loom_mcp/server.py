@@ -104,6 +104,7 @@ from shadow_loom.projections import (
 )
 from shadow_loom.query_models import (
     DirectiveQuery,
+    GeneralQuery,
     InterrogationQuery,
     ManualEditQuery,
 )
@@ -179,7 +180,15 @@ mcp = FastMCP(
 # ── Error-handling decorator ──────────────────────────────────────
 
 def _safe_tool(fn):
-    """Wrap an MCP tool function so unhandled exceptions return an error dict."""
+    """Wrap an MCP tool function so unhandled exceptions return an error dict.
+
+    Client-facing error text is sanitised to ``"<tool> failed"`` plus the
+    exception class name (no message body, no stack). Full exception
+    detail is logged server-side via ``logger.exception`` so operators
+    can still triage. Without this the raw ``str(exc)`` was returned to
+    the caller, which can leak internal paths, SQL fragments, provider
+    error bodies, and stack-derived identifiers (round-3 audit).
+    """
     if _inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
@@ -187,7 +196,10 @@ def _safe_tool(fn):
                 return await fn(*args, **kwargs)
             except Exception as e:
                 logger.exception("Tool %s failed", fn.__name__)
-                return {"error": f"{fn.__name__} failed: {e}"}
+                return {
+                    "error": f"{fn.__name__} failed",
+                    "error_type": type(e).__name__,
+                }
     else:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
@@ -195,7 +207,10 @@ def _safe_tool(fn):
                 return fn(*args, **kwargs)
             except Exception as e:
                 logger.exception("Tool %s failed", fn.__name__)
-                return {"error": f"{fn.__name__} failed: {e}"}
+                return {
+                    "error": f"{fn.__name__} failed",
+                    "error_type": type(e).__name__,
+                }
     return wrapper
 
 
@@ -1205,7 +1220,9 @@ def promote_branch(
     err = require_scope(ctx, "write")
     if err:
         return {"error": err}
-    pid, err = resolve_project(project_id, project_name, ctx)
+    pid, err = resolve_project(
+        project_id, project_name, ctx, min_role="editor",
+    )
     if err:
         return {"error": err}
     # IDOR guard: promote_branch takes a row id but db_promote_branch
@@ -1344,12 +1361,23 @@ def ask(
     )
 
     if not parse_result.is_valid or parse_result.query is None:
-        # Fallback: run as general physics query
-        query = InterrogationQuery(
-            question=question,
-            require_proof=(qmode == "interrogate"),
-            original_query=question,
-        )
+        # Fallback: build a typed query matching the caller's requested
+        # mode. The previous fallback always constructed an
+        # InterrogationQuery, which forced general-mode questions down
+        # the pathfinding-with-proof path and produced wrong-shaped
+        # answers for open-ended questions. Honour ``qmode`` so a
+        # parse-failure in general mode still runs as a general query.
+        if qmode == "general":
+            query = GeneralQuery(
+                question=question,
+                original_query=question,
+            )
+        else:
+            query = InterrogationQuery(
+                question=question,
+                require_proof=True,
+                original_query=question,
+            )
     else:
         query = parse_result.query
 
@@ -1846,7 +1874,9 @@ async def narrate(
     if err:
         return {"error": err}
 
-    pid, err = resolve_project(project_id, project_name, ctx)
+    pid, err = resolve_project(
+        project_id, project_name, ctx, min_role="editor",
+    )
     if err:
         return {"error": err}
 
@@ -1970,7 +2000,9 @@ async def direct(
     if err:
         return {"error": err}
 
-    pid, err = resolve_project(project_id, project_name, ctx)
+    pid, err = resolve_project(
+        project_id, project_name, ctx, min_role="editor",
+    )
     if err:
         return {"error": err}
 
@@ -2078,7 +2110,9 @@ def write(
     if over:
         return over
 
-    pid, err = resolve_project(project_id, project_name, ctx)
+    pid, err = resolve_project(
+        project_id, project_name, ctx, min_role="editor",
+    )
     if err:
         return {"error": err}
 
@@ -2442,13 +2476,16 @@ def research_topic(
     Calls ``provider.search(topic)``, runs the research-extraction agent
     to distil the snippets into a single ``WorldFact``, caches the raw
     provider call (per-user) and persists the resulting fact under the
-    project. Requires ``write`` scope.
+    project. Requires ``write`` scope and at least the ``editor``
+    project role.
     """
     err = require_scope(ctx, "write")
     if err:
         return {"error": err}
 
-    pid, err = resolve_project(project_id, project_name, ctx)
+    pid, err = resolve_project(
+        project_id, project_name, ctx, min_role="editor",
+    )
     if err:
         return {"error": err}
 
@@ -2516,7 +2553,9 @@ def delete_world_fact(
     err = require_scope(ctx, "write")
     if err:
         return {"error": err}
-    pid, err = resolve_project(project_id, project_name, ctx)
+    pid, err = resolve_project(
+        project_id, project_name, ctx, min_role="editor",
+    )
     if err:
         return {"error": err}
     removed = db_delete_world_fact(project_id=pid, fact_id=fact_id)
@@ -2591,7 +2630,12 @@ def get_research_status(ctx: Context) -> dict:
     provider = extraction.research_provider
     api_key_present = False
     if provider == "tavily":
-        api_key_present = bool(getattr(settings, "tavily_api_key", "") or "")
+        # ``tavily_api_key`` lives on the ``core`` sub-settings group
+        # (CoreSettings), not on the top-level Settings facade. The old
+        # ``getattr(settings, "tavily_api_key", "")`` silently returned ""
+        # for every caller, so api_key_present was always False even
+        # when correctly configured.
+        api_key_present = bool(getattr(settings.core, "tavily_api_key", "") or "")
     return {
         "enabled": bool(extraction.enable_research_agent),
         "provider": provider,
@@ -3473,6 +3517,27 @@ def manage(
     payload = payload or {}
     p = lambda k, default=None: payload.get(k, default)  # noqa: E731
 
+    def _resolve_pid(min_role: str = "viewer") -> tuple[Optional[int], Optional[dict]]:
+        """Resolve project_id from id or name with the given min_role.
+
+        Round-5 audit: several manage sub-actions previously required
+        ``project_id`` directly and silently ignored the top-level
+        ``project_name`` argument the docstring advertised. Routing
+        through ``resolve_project`` honours the documented name path
+        and enforces per-action role minima at the helper boundary.
+        """
+        nonlocal project_id
+        if project_id is not None:
+            pid, err = resolve_project(project_id, None, ctx, min_role=min_role)
+            return pid, ({"error": err} if err else None)
+        if project_name:
+            pid, err = resolve_project(None, project_name, ctx, min_role=min_role)
+            if err:
+                return None, {"error": err}
+            project_id = pid
+            return pid, None
+        return None, None
+
     def _coerce_int(value, *, field: str) -> tuple[Optional[int], Optional[dict]]:
         """Return (int, None) or (None, error_dict) for a payload value."""
         if value is None:
@@ -3493,23 +3558,32 @@ def manage(
         from_v, err = _coerce_int(p("from_version"), field="from_version")
         if err:
             return err
-        if from_v is None or project_id is None:
-            return {"error": "manage(action='branch') requires project_id and payload.from_version"}
-        return branch(ctx, project_id=project_id, from_version=from_v)
+        pid, perr = _resolve_pid(min_role="editor")
+        if perr:
+            return perr
+        if from_v is None or pid is None:
+            return {"error": "manage(action='branch') requires project_id or project_name and payload.from_version"}
+        return branch(ctx, project_id=pid, from_version=from_v)
     if action == "fork":
         new_name = p("new_name")
-        if not new_name or project_id is None:
-            return {"error": "manage(action='fork') requires project_id and payload.new_name"}
-        return fork(ctx, project_id=project_id, new_name=new_name)
+        pid, perr = _resolve_pid(min_role="editor")
+        if perr:
+            return perr
+        if not new_name or pid is None:
+            return {"error": "manage(action='fork') requires project_id or project_name and payload.new_name"}
+        return fork(ctx, project_id=pid, new_name=new_name)
     if action == "share":
-        if project_id is None:
-            return {"error": "manage(action='share') requires project_id"}
+        pid, perr = _resolve_pid(min_role="admin")
+        if perr:
+            return perr
+        if pid is None:
+            return {"error": "manage(action='share') requires project_id or project_name"}
         username = p("username")
         if not username:
             return {"error": "manage(action='share') requires payload.username"}
         return share(
             ctx=ctx,
-            project_id=project_id,
+            project_id=pid,
             username=username,
             role=p("role", "viewer"),
         )
@@ -3527,19 +3601,25 @@ def manage(
             description=p("description", ""),
         )
     if action == "update_project":
-        if project_id is None:
-            return {"error": "manage(action='update_project') requires project_id"}
+        pid, perr = _resolve_pid(min_role="admin")
+        if perr:
+            return perr
+        if pid is None:
+            return {"error": "manage(action='update_project') requires project_id or project_name"}
         return update_project_tool(
             ctx=ctx,
-            project_id=project_id,
+            project_id=pid,
             name=p("name"),
             description=p("description"),
             is_public=p("is_public"),
         )
     if action == "delete_project":
-        if project_id is None:
-            return {"error": "manage(action='delete_project') requires project_id"}
-        return delete_project(ctx, project_id=project_id)
+        pid, perr = _resolve_pid(min_role="admin")
+        if perr:
+            return perr
+        if pid is None:
+            return {"error": "manage(action='delete_project') requires project_id or project_name"}
+        return delete_project(ctx, project_id=pid)
     if action == "delete_version":
         vrid, err = _coerce_int(p("version_row_id"), field="version_row_id")
         if err:
@@ -3568,8 +3648,11 @@ def manage(
             new_ancestor_id=new_anc,
         )
     if action == "set_active_version":
-        if project_id is None:
-            return {"error": "manage(action='set_active_version') requires project_id"}
+        pid, perr = _resolve_pid(min_role="editor")
+        if perr:
+            return perr
+        if pid is None:
+            return {"error": "manage(action='set_active_version') requires project_id or project_name"}
         vrid, err = _coerce_int(p("version_row_id"), field="version_row_id")
         if err:
             return err
@@ -3578,14 +3661,17 @@ def manage(
             return err
         return set_active_version(
             ctx,
-            project_id=project_id,
+            project_id=pid,
             version=version_num,
             version_row_id=vrid,
         )
     if action == "get_active_version":
-        if project_id is None:
-            return {"error": "manage(action='get_active_version') requires project_id"}
-        return get_active_version(ctx, project_id=project_id)
+        pid, perr = _resolve_pid(min_role="viewer")
+        if perr:
+            return perr
+        if pid is None:
+            return {"error": "manage(action='get_active_version') requires project_id or project_name"}
+        return get_active_version(ctx, project_id=pid)
     if action == "get_settings":
         return get_project_settings(
             ctx, project_id=project_id, project_name=project_name,
@@ -3594,9 +3680,26 @@ def manage(
         topics = p("research_topics")
         if topics is None:
             return {"error": "manage(action='set_settings') requires payload.research_topics"}
+        # ``list(topics)`` happily iterates strings character-by-character,
+        # silently turning "foreshadowing" into
+        # ["f","o","r","e","s","h","a","d","o","w","i","n","g"]. Require
+        # an actual sequence (list/tuple) and reject str/bytes outright
+        # so the caller gets an explicit error instead of garbage data.
+        if isinstance(topics, (str, bytes)):
+            return {"error": (
+                "manage(action='set_settings'): payload.research_topics "
+                "must be a list of strings, not a single string."
+            )}
+        try:
+            topics_list = [str(t) for t in topics]
+        except TypeError:
+            return {"error": (
+                "manage(action='set_settings'): payload.research_topics "
+                "must be an iterable of strings."
+            )}
         return set_project_settings(
             ctx,
-            research_topics=list(topics),
+            research_topics=topics_list,
             project_id=project_id,
             project_name=project_name,
         )

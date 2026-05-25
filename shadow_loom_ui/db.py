@@ -74,6 +74,10 @@ from shadow_loom.db import (  # noqa: F401 — re-exports
     get_user_lifetime_usage,
     get_project_usage_summaries,
     get_recent_agent_activity,
+    # Per-user model overrides (Settings page → pipeline ContextVar)
+    get_user_model_settings,
+    set_user_model_settings,
+    UserModelSettingsRow,
     # Backward-compatible aliases
     save_snapshot,
     load_latest_snapshot,

@@ -52,6 +52,7 @@ def _resolve_model(model_str: str, *, stage: str = "extraction"):
 from shadow_loom.models import (
     AmbientVector,
     Belief,
+    BeliefConfidenceShift,
     CausalEdge,
     Channel,
     Concern,
@@ -1023,6 +1024,19 @@ class ExtractionConfig(BaseModel):
             "the round-trip the post-pass belief-clustering stage would "
             "otherwise need. Disable to skip the catalogue and fall back "
             "to legacy post-pass clustering only."
+        ),
+    )
+    strict_affect_phase: bool = Field(
+        default=False,
+        description=(
+            "When True, ingestion raises if any of the Phase C / 5c / "
+            "5d / 5e affect-layer steps fail (reconcile_affect, entity "
+            "concerns extraction, belief proposition clustering, "
+            "audience synthesis). The default is False for backward "
+            "compatibility with existing pipelines that tolerate a "
+            "degraded affect layer; set to True in production to fail "
+            "closed rather than persisting a world whose affect "
+            "substrate is silently incomplete (round-3 audit)."
         ),
     )
     proposition_catalogue_chunked: bool = Field(
@@ -11169,12 +11183,29 @@ def assemble_world_state(
     all_entity_updates: Dict[str, List[EntityStateSnapshot]] = {}
     for topo in topologies:
         for eu in topo.entity_updates:
+            # Lift per-chunk BeliefConfidenceUpdate into the snapshot's
+            # BeliefConfidenceShift slot. Same field shape; without this
+            # the Pearl-Rung-2 BeliefMutation bridge / Affect-driven
+            # confidence drifts were silently dropped at snapshot
+            # assembly time and never replayed by ``reconstruct_entity_at``
+            # (round-3 audit \u2014 EntityUpdate.belief_confidence_updates
+            # lost on merge).
+            shifts = [
+                BeliefConfidenceShift(
+                    target_id=bcu.target_id,
+                    proposition_id=bcu.proposition_id,
+                    new_confidence=bcu.new_confidence,
+                    new_inertia=bcu.new_inertia,
+                )
+                for bcu in (eu.belief_confidence_updates or [])
+            ]
             snap = EntityStateSnapshot(
                 fabula_time=eu.fabula_time,
                 triggered_by=eu.triggered_by,
                 traits=eu.trait_updates,
                 beliefs_added=eu.new_beliefs,
                 beliefs_invalidated=eu.invalidated_belief_targets,
+                belief_confidence_updates=shifts,
                 status=eu.new_status,
                 location_id=eu.new_location_id,
             )
@@ -11833,7 +11864,25 @@ def reconcile_affect(
         for tc in topo.proposition_truth_commits:
             if tc.proposition_id not in prop_index:
                 continue
-            chunk_truth_commits[(tc.proposition_id, tc.fabula_time)] = tc.truth
+            _key = (tc.proposition_id, tc.fabula_time)
+            _prev = chunk_truth_commits.get(_key)
+            if _prev is not None and _prev != tc.truth:
+                # Two chunks committed CONTRADICTORY truth values for
+                # the same (proposition, fabula_time). The original
+                # ``dict[__setitem__]`` was silent last-write-wins,
+                # which made truth flips order-dependent on the
+                # extraction-traversal order (round-3 audit). Log
+                # loudly so operators can investigate \u2014 we keep
+                # last-write-wins semantics for now to preserve
+                # backward compatibility, but the diagnostic is now
+                # surfaced rather than hidden.
+                logger.warning(
+                    "[Phase C] Conflicting truth commits for %s @ "
+                    "fabula_time=%s: previous=%s, new=%s. Applying "
+                    "last-write-wins; review chunk-extraction order.",
+                    tc.proposition_id, tc.fabula_time, _prev, tc.truth,
+                )
+            chunk_truth_commits[_key] = tc.truth
         for cs in topo.concern_snapshots:
             concern_snap_buckets.setdefault(cs.concern_id, []).append(
                 ConcernSnapshot(
@@ -18683,13 +18732,38 @@ def validate_world_state(
         llm_suggestions = []
 
     # Merge programmatic + LLM issues
-    all_issues = prog_issues + llm_issues
+    # Round-6 audit: dedup on (severity, code, path, message) so the
+    # combined report doesn't show the same issue twice when the LLM
+    # echoes a programmatic finding back at us.
+    all_issues_raw = prog_issues + llm_issues
+    _seen_issue_keys: set[tuple[str, str, str, str]] = set()
+    all_issues: list = []
+    for _issue in all_issues_raw:
+        _key = (
+            getattr(_issue, "severity", "") or "",
+            getattr(_issue, "code", "") or "",
+            getattr(_issue, "path", "") or "",
+            getattr(_issue, "message", "") or "",
+        )
+        if _key in _seen_issue_keys:
+            continue
+        _seen_issue_keys.add(_key)
+        all_issues.append(_issue)
+    # Also dedup suggestions on string identity.
+    _seen_sugg: set[str] = set()
+    deduped_suggestions: list = []
+    for _s in llm_suggestions:
+        _key_s = str(_s)
+        if _key_s in _seen_sugg:
+            continue
+        _seen_sugg.add(_key_s)
+        deduped_suggestions.append(_s)
     has_errors = any(i.severity == "error" for i in all_issues)
 
     merged = ValidationReport(
         is_valid=not has_errors,
         issues=all_issues,
-        suggestions=llm_suggestions,
+        suggestions=deduped_suggestions,
     )
     logger.info(
         "[Step 3] Validation complete — is_valid=%s, %d total issues.",
@@ -19077,6 +19151,8 @@ async def run_extraction_async(
                 "[Pipeline·Async] Phase C affect reconciliation FAILED — "
                 "leaving propositions / concerns at their pre-reconciler state.",
             )
+            if config.strict_affect_phase:
+                raise
 
         # Step 5: Post-assembly world trait timeline extraction
         world_state = await extract_world_trait_timelines_async(world_state, config)
@@ -19089,6 +19165,8 @@ async def run_extraction_async(
                 "[Pipeline·Async] Step 5c concern extraction failed — leaving "
                 "entity.concerns empty.",
             )
+            if config.strict_affect_phase:
+                raise
 
         # Step 5d: LLM proposition clustering for non-event beliefs
         # (Affect Unification, Step 3 LLM half).
@@ -19099,6 +19177,8 @@ async def run_extraction_async(
                 "[Pipeline·Async] Step 5d belief clustering failed — leaving "
                 "non-event beliefs without proposition_id.",
             )
+            if config.strict_affect_phase:
+                raise
 
         # Step 5e: synthesise ENT_AUDIENCE (Affect Unification, Step 4).
         # Deterministic, no LLM cost — walks the syuzhet stream and
@@ -19111,6 +19191,8 @@ async def run_extraction_async(
                 "[Pipeline·Async] Step 5e audience synthesis failed — the "
                 "unified scorers will synthesise lazily on first call.",
             )
+            if config.strict_affect_phase:
+                raise
 
         # Validation calls a sync LLM agent internally; offload it to a
         # worker thread so we don't block the event loop while it runs
