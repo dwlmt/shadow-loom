@@ -1,0 +1,38 @@
+# =====================================================================
+# Shadow-Loom — runtime requirements (local pip install)
+# =====================================================================
+# pyproject.toml is the source of truth. This file mirrors the runtime
+# `[project].dependencies` table so users can:
+#
+#     python -m venv .venv && source .venv/bin/activate
+#     pip install -r requirements.txt
+#     pip install -e . --no-deps     # then expose the `shadow_loom*` packages
+#
+# Equivalent one-shot:
+#     pip install -e .
+#
+# Optional dependency groups live in pyproject.toml under
+# [project.optional-dependencies]; install them with:
+#     pip install -e ".[dev]"           # pytest, ruff, mypy
+#     pip install -e ".[research]"      # tavily-python (external research)
+#
+# Python: requires >= 3.13 (see pyproject.toml).
+# =====================================================================
+
+# ── Core engine ──────────────────────────────────────────────────
+networkx>=3.6.1
+ollama>=0.6.1
+pydantic-ai>=1.84.1
+
+# ── UI + auth ────────────────────────────────────────────────────
+nicegui>=2.0
+sqlalchemy>=2.0
+sqlmodel>=0.0.22
+psycopg[binary]>=3.2
+authlib>=1.4
+itsdangerous>=2.2
+httpx>=0.28
+langfuse>=2.60.2
+
+# ── MCP ──────────────────────────────────────────────────────────
+fastmcp>=3.0

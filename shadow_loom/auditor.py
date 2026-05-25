@@ -2350,7 +2350,7 @@ def _build_auditor_agent(
 ) -> Agent[_AuditorDeps, AuditResult]:
     """Construct the Step 11 auditor LLM agent."""
     agent: Agent[_AuditorDeps, AuditResult] = Agent(
-        _resolve_model(config.auditor_model),
+        _resolve_model(config.auditor_model, stage="auditor"),
         deps_type=_AuditorDeps,
         output_type=NativeOutput(AuditResult),
         system_prompt=_load_prompt("auditor.md"),
@@ -2373,7 +2373,7 @@ def _build_evaluation_agent(
 ) -> Agent[_EvaluationDeps, StoryQualitySynthesis]:
     """Construct the evaluation LLM agent for literary critique."""
     agent: Agent[_EvaluationDeps, StoryQualitySynthesis] = Agent(
-        _resolve_model(config.auditor_model),
+        _resolve_model(config.auditor_model, stage="auditor"),
         deps_type=_EvaluationDeps,
         output_type=NativeOutput(StoryQualitySynthesis),
         system_prompt=_load_prompt("evaluation.md"),

@@ -3059,7 +3059,7 @@ def parse_query(
         and any validation errors.
     """
     cfg = config or QueryParsingConfig()
-    model = _resolve_model(cfg.model)
+    model = _resolve_model(cfg.model, stage="query_parsing")
 
     system_prompt = _resolve_system_prompt(query_type)
     output_model, constrained = _select_output_model(query_type, world_state)
@@ -3115,7 +3115,7 @@ async def parse_query_async(
 ) -> QueryParseResult:
     """Async version of :func:`parse_query`."""
     cfg = config or QueryParsingConfig()
-    model = _resolve_model(cfg.model)
+    model = _resolve_model(cfg.model, stage="query_parsing")
 
     system_prompt = _resolve_system_prompt(query_type)
     output_model, constrained = _select_output_model(query_type, world_state)

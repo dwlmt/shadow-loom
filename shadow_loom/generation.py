@@ -5780,7 +5780,7 @@ def _build_generation_agent(
         explicitly knows it is in rewrite mode.
     """
     agent: Agent[_GenerationDeps, GeneratedScene] = Agent(
-        _resolve_model(config.model),
+        _resolve_model(config.model, stage="generation"),
         deps_type=_GenerationDeps,
         output_type=NativeOutput(GeneratedScene),
         system_prompt=_load_prompt(prompt_filename),

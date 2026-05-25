@@ -161,14 +161,25 @@ class TestResolveModel:
             _resolve_model("openrouter:google/gemini-2.0-flash")
 
     @pytest.mark.parametrize("prefix", [
+        # Cloud providers — must raise without API key.
         "fireworks", "featherless", "together", "deepinfra",
-        "groq", "anyscale", "perplexity",
+        "groq", "anyscale", "perplexity", "huggingface",
+        "mistral", "xai", "deepseek", "moonshot",
+        "cerebras", "sambanova", "nebius", "novita", "hyperbolic",
     ])
     def test_builtin_openai_compat_prefix_requires_key(self, prefix, monkeypatch):
-        """Each registered OpenAI-compat provider raises a clear error without its key."""
+        """Each registered cloud OpenAI-compat provider raises a clear error without its key."""
         monkeypatch.delenv(f"{prefix.upper()}_API_KEY", raising=False)
         with pytest.raises(ValueError, match=f"{prefix.upper()}_API_KEY"):
             _resolve_model(f"{prefix}:some-model")
+
+    @pytest.mark.parametrize("prefix", ["llamacpp", "vllm", "lmstudio", "localai"])
+    def test_local_provider_no_key_required(self, prefix, monkeypatch):
+        """Local OpenAI-compat servers (llama.cpp etc.) resolve without an API key."""
+        monkeypatch.delenv(f"{prefix.upper()}_API_KEY", raising=False)
+        model = _resolve_model(f"{prefix}:some-model")
+        assert model is not None
+        assert not isinstance(model, str)
 
     def test_fireworks_with_key_returns_model(self, monkeypatch):
         """With an API key set, a Fireworks model string resolves to an instance."""

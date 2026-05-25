@@ -59,6 +59,25 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       ANYSCALE_API_KEY: ${ANYSCALE_API_KEY:-}
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
+      HUGGINGFACE_API_KEY: ${HUGGINGFACE_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+      SAMBANOVA_API_KEY: ${SAMBANOVA_API_KEY:-}
+      NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
+      NOVITA_API_KEY: ${NOVITA_API_KEY:-}
+      HYPERBOLIC_API_KEY: ${HYPERBOLIC_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      # Local OpenAI-compat servers (llama.cpp / vLLM / LM Studio / LocalAI)
+      # default to localhost; override the base URL when running inside Docker
+      # so the container reaches the host daemon via host.docker.internal.
+      LLAMACPP_BASE_URL: ${LLAMACPP_BASE_URL:-http://host.docker.internal:8080/v1}
+      VLLM_BASE_URL: ${VLLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      LMSTUDIO_BASE_URL: ${LMSTUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
+      LOCALAI_BASE_URL: ${LOCALAI_BASE_URL:-http://host.docker.internal:8080/v1}
       SHADOW_LOOM_PROVIDERS: ${SHADOW_LOOM_PROVIDERS:-}
       DEFAULT_MODEL: ${DEFAULT_MODEL:-ollama:qwen3.6:35b}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}

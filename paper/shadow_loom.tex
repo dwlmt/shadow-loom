@@ -271,6 +271,21 @@ App.~\ref{app:ui}) and through a Model-Context-Protocol server
 with roughly forty tools, so a downstream agent can drive
 shadow-branch creation, scoring, and promotion programmatically.
 
+The LLM substrate is deliberately pluggable. PydanticAI's
+\texttt{<provider>:<model-id>} strings let any pipeline stage
+target any OpenAI-compatible endpoint; the runtime ships with a
+registry of twenty-three providers spanning cloud SaaS (e.g.\
+OpenRouter, OpenAI, Fireworks, Mistral, Groq, Cerebras) and
+locally-hosted runtimes (Ollama, llama.cpp, vLLM, LM~Studio,
+LocalAI, Unsloth~Studio). Operators may register additional
+providers via a single environment variable, and each signed-in
+user can override the deployment default --- including per-stage
+models and private endpoints --- from a settings panel; the
+override is propagated to every pipeline call via a context
+variable. The system is therefore as comfortable running entirely
+off-line on a workstation as it is fanning out across multiple
+hosted backends.
+
 
 \section{Theoretical lineage and computational counterparts}
 \label{sec:lineage}

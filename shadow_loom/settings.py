@@ -49,6 +49,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # ``MISTRAL_API_KEY``.
 #
 _BUILTIN_OPENAI_COMPAT_PROVIDERS: dict[str, str] = {
+    # ── Cloud aggregators / multi-model ─────────────────────────
     "openrouter":    "https://openrouter.ai/api/v1",
     "openai":        "https://api.openai.com/v1",
     "fireworks":     "https://api.fireworks.ai/inference/v1",
@@ -59,7 +60,41 @@ _BUILTIN_OPENAI_COMPAT_PROVIDERS: dict[str, str] = {
     "anyscale":      "https://api.endpoints.anyscale.com/v1",
     "perplexity":    "https://api.perplexity.ai",
     "huggingface":   "https://api-inference.huggingface.co/v1",
+    # ── First-party frontier APIs (OpenAI-compatible endpoints) ─
+    "mistral":       "https://api.mistral.ai/v1",
+    "xai":           "https://api.x.ai/v1",
+    "deepseek":      "https://api.deepseek.com/v1",
+    "moonshot":      "https://api.moonshot.ai/v1",
+    # ── Fast/cheap inference clouds ─────────────────────────────
+    "cerebras":      "https://api.cerebras.ai/v1",
+    "sambanova":     "https://api.sambanova.ai/v1",
+    "nebius":        "https://api.studio.nebius.ai/v1",
+    "novita":        "https://api.novita.ai/v3/openai",
+    "hyperbolic":    "https://api.hyperbolic.xyz/v1",
+    # ── Local OpenAI-compatible servers (no API key required) ───
+    # llama.cpp:  llama-server -m <gguf> --port 8080
+    # vLLM:       python -m vllm.entrypoints.openai.api_server ...
+    # LM Studio:  Local Server tab (default port 1234)
+    # LocalAI:    docker run -p 8080:8080 localai/localai
+    # Unsloth:    Unsloth Studio / unsloth-zoo inference (vLLM-backed,
+    #             default Gradio port 7860; override via UNSLOTH_BASE_URL)
+    "llamacpp":      "http://localhost:8080/v1",
+    "vllm":          "http://localhost:8000/v1",
+    "lmstudio":      "http://localhost:1234/v1",
+    "localai":       "http://localhost:8080/v1",
+    "unsloth":       "http://localhost:7860/v1",
 }
+
+# Providers that run locally and don't require an API key. Users may
+# still set ``<PREFIX>_API_KEY`` if their server enforces auth (e.g. a
+# llama.cpp server started with --api-key), in which case it's honoured.
+_LOCAL_OPENAI_COMPAT_PROVIDERS: frozenset[str] = frozenset({
+    "llamacpp",
+    "vllm",
+    "lmstudio",
+    "localai",
+    "unsloth",
+})
 
 
 def _parse_custom_providers(spec: str) -> dict[str, str]:
@@ -78,10 +113,119 @@ def _parse_custom_providers(spec: str) -> dict[str, str]:
 
 
 def get_openai_compat_providers() -> dict[str, str]:
-    """Return the merged provider registry (built-ins + ``SHADOW_LOOM_PROVIDERS``)."""
+    """Return the merged provider registry.
+
+    Merge order (later wins): built-ins → ``SHADOW_LOOM_PROVIDERS`` env
+    var → per-user custom providers from the active user context (see
+    :func:`set_user_context`).
+    """
     merged = dict(_BUILTIN_OPENAI_COMPAT_PROVIDERS)
     merged.update(_parse_custom_providers(os.environ.get("SHADOW_LOOM_PROVIDERS", "")))
+    overrides = _user_overrides_var.get()
+    for prov in overrides.get("custom_providers", []):
+        name = (prov.get("prefix") or "").strip().lower()
+        url = (prov.get("base_url") or "").strip()
+        if name and url:
+            merged[name] = url
     return merged
+
+
+# =====================================================================
+# Per-user override context (UI-driven settings take precedence over env)
+# =====================================================================
+#
+# When a user opens the UI and signs in, ``set_user_context(user_id)``
+# loads their saved model preferences (default model, per-stage model
+# overrides, custom OpenAI-compatible providers) into a ContextVar that
+# lives for the duration of the request / worker thread. The settings
+# resolver consults this context before falling back to environment
+# variables, so an empty deployment (no ``DEFAULT_MODEL`` set in env)
+# becomes valid as long as every signed-in user has saved their own
+# preferences via the Settings page.
+#
+# Schema produced by ``shadow_loom.db.get_user_model_settings``::
+#
+#     {
+#         "default_model":          str,   # "" → fall back to env
+#         "stage_models": {                 # all values "" → fall back
+#             "generation":   str,
+#             "auditor":      str,
+#             "auditor_generation": str,
+#             "extraction":   str,
+#             "query_parsing": str,
+#         },
+#         "custom_providers": [
+#             {"prefix": str, "base_url": str, "api_key": str, "is_local": bool},
+#             ...
+#         ],
+#     }
+
+from contextvars import ContextVar  # noqa: E402  — kept near usage for clarity
+
+_EMPTY_OVERRIDES: dict = {
+    "default_model": "",
+    "stage_models": {},
+    "custom_providers": [],
+}
+
+_user_overrides_var: ContextVar[dict] = ContextVar(
+    "shadow_loom_user_overrides", default=_EMPTY_OVERRIDES,
+)
+
+
+def set_user_context(user_id: Optional[int]) -> object:
+    """Activate per-user model overrides for the current context.
+
+    Returns an opaque token suitable for ``reset_user_context(token)`` so
+    callers can restore the previous state (e.g. on worker thread exit).
+    Passing ``user_id=None`` is a no-op that activates the empty
+    overrides dict — useful for tests.
+    """
+    if user_id is None:
+        return _user_overrides_var.set(_EMPTY_OVERRIDES)
+    try:
+        # Import lazily to avoid a settings ↔ db import cycle at module
+        # load time.
+        from shadow_loom.db import get_user_model_settings  # noqa: WPS433
+        overrides = get_user_model_settings(int(user_id))
+    except Exception:  # noqa: BLE001 — never let a stale DB block the LLM call
+        overrides = _EMPTY_OVERRIDES
+    return _user_overrides_var.set(overrides or _EMPTY_OVERRIDES)
+
+
+def reset_user_context(token: object) -> None:
+    """Restore a previous user-context token returned by :func:`set_user_context`."""
+    try:
+        _user_overrides_var.reset(token)  # type: ignore[arg-type]
+    except (LookupError, ValueError):
+        # Token from a different context (e.g. thread re-use) — fall back
+        # to clearing the slot rather than raising.
+        _user_overrides_var.set(_EMPTY_OVERRIDES)
+
+
+def get_user_overrides() -> dict:
+    """Return the active per-user overrides dict (read-only)."""
+    return _user_overrides_var.get()
+
+
+def _user_default_model() -> str:
+    """Return the active user's chosen default model, or ``""`` if unset."""
+    return (_user_overrides_var.get().get("default_model") or "").strip()
+
+
+def _user_stage_model(stage: str) -> str:
+    """Return the active user's per-stage override, or ``""`` if unset."""
+    return (_user_overrides_var.get().get("stage_models", {}).get(stage) or "").strip()
+
+
+def _user_custom_provider(prefix: str) -> Optional[dict]:
+    """Return the active user's custom provider entry for ``prefix``, or ``None``."""
+    plc = prefix.lower()
+    for prov in _user_overrides_var.get().get("custom_providers", []):
+        if (prov.get("prefix") or "").lower() == plc:
+            return prov
+    return None
+
 
 # ── Discover config.env next to this file's package root ──────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -139,10 +283,13 @@ class CoreSettings(BaseSettings):
             "Fallback PydanticAI model string when a stage-specific model "
             "is not set. Format is ``<provider>:<model>``. Built-in providers: "
             "ollama, openrouter, openai, fireworks, featherless, together, "
-            "deepinfra, groq, anyscale, perplexity, huggingface. Add custom OpenAI-compat "
-            "providers via the SHADOW_LOOM_PROVIDERS env var. Strings without "
-            "a recognised prefix are passed through to PydanticAI for native "
-            "resolution."
+            "deepinfra, groq, anyscale, perplexity, huggingface, mistral, xai, "
+            "deepseek, moonshot, cerebras, sambanova, nebius, novita, "
+            "hyperbolic, and the local servers llamacpp, vllm, lmstudio, "
+            "localai (no API key required). Add custom OpenAI-compat providers "
+            "via the SHADOW_LOOM_PROVIDERS env var. Strings without a recognised "
+            "prefix are passed through to PydanticAI for native resolution "
+            "(e.g. anthropic:claude-3-5-sonnet, google-gla:gemini-1.5-pro)."
         ),
     )
     openrouter_provider_sort: str = Field(
@@ -1231,7 +1378,7 @@ _PROVIDER_RETRY_ATTEMPTS = 6
 _PROVIDER_RETRY_BACKOFF_S = 1.5
 
 
-def resolve_model(model_str: str):
+def resolve_model(model_str: str, *, stage: Optional[str] = None):
     """Resolve a ``<provider>:<model>`` string to a PydanticAI model instance.
 
     Special-cased prefixes:
@@ -1248,8 +1395,44 @@ def resolve_model(model_str: str):
 
     Anything else is returned as-is for PydanticAI's native resolver
     (e.g. ``anthropic:claude-3-sonnet``, ``google-gla:gemini-1.5-pro``).
+
+    Per-user overrides (set via :func:`set_user_context`) take precedence
+    over both env vars and the built-in registry. When the prefix matches
+    a user-configured custom provider, its ``base_url`` and ``api_key``
+    are used in place of the registry / env values.
+
+    ``stage`` is an optional stage label (``"generation"``, ``"auditor"``,
+    ``"auditor_generation"``, ``"extraction"``, ``"query_parsing"``); when
+    set and the active user has a per-stage override, that wins over both
+    the incoming ``model_str`` and the user's default.
     """
     core = get_settings().core
+
+    # ── Empty model string → fall back chain ─────────────────────────
+    # 1. user-context per-stage override
+    # 2. user-context default
+    # 3. env-derived core.default_model
+    user_stage = _user_stage_model(stage) if stage else ""
+    user_default = _user_default_model()
+    env_default = (core.default_model or "").strip()
+    incoming = (model_str or "").strip()
+    if user_stage:
+        # Per-stage user override wins outright.
+        model_str = user_stage
+    elif not incoming:
+        fallback = user_default or env_default
+        if not fallback:
+            raise ValueError(
+                "No model configured. Set DEFAULT_MODEL in the environment "
+                "or save a default in Settings → Models & Providers."
+            )
+        model_str = fallback
+    elif user_default and incoming == env_default:
+        # Stage config inherited the env default but the user has saved
+        # their own override — honour the user's choice.
+        model_str = user_default
+    else:
+        model_str = incoming
 
     if model_str.startswith("ollama:"):
         model_name = model_str.split(":", 1)[1]
@@ -1263,16 +1446,34 @@ def resolve_model(model_str: str):
         prefix_lc = prefix.lower()
         if prefix_lc in providers:
             env_prefix = prefix_lc.upper()
-            api_key = os.environ.get(f"{env_prefix}_API_KEY", "").strip()
+            user_prov = _user_custom_provider(prefix_lc)
+            # User-configured credentials win over env vars.
+            api_key = (
+                (user_prov or {}).get("api_key", "").strip()
+                or os.environ.get(f"{env_prefix}_API_KEY", "").strip()
+            )
+            is_local = (
+                prefix_lc in _LOCAL_OPENAI_COMPAT_PROVIDERS
+                or bool((user_prov or {}).get("is_local"))
+            )
             if not api_key:
-                raise ValueError(
-                    f"{env_prefix}_API_KEY must be set to use '{prefix_lc}:' "
-                    f"models. Set it in config.env, .env, or as an environment "
-                    f"variable."
-                )
-            base_url = os.environ.get(
-                f"{env_prefix}_BASE_URL", providers[prefix_lc]
-            ).strip() or providers[prefix_lc]
+                if is_local:
+                    # Local OpenAI-compatible servers (llama.cpp, vLLM,
+                    # LM Studio, LocalAI, Unsloth Studio) don't require
+                    # auth out of the box. Most still demand a non-empty
+                    # Authorization header, so we send a placeholder.
+                    api_key = "sk-no-key-required"
+                else:
+                    raise ValueError(
+                        f"{env_prefix}_API_KEY must be set to use '{prefix_lc}:' "
+                        f"models. Set it in config.env, .env, an environment "
+                        f"variable, or Settings → Models & Providers."
+                    )
+            base_url = (
+                (user_prov or {}).get("base_url", "").strip()
+                or os.environ.get(f"{env_prefix}_BASE_URL", "").strip()
+                or providers[prefix_lc]
+            )
             from pydantic_ai.models.openai import OpenAIChatModel
             from pydantic_ai.providers.openai import OpenAIProvider
             # OpenRouter-specific: forward the configured provider-routing

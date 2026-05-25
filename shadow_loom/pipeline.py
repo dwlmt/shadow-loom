@@ -2166,7 +2166,6 @@ def _augment_topology_with_sandbox_deltas(
                     "shadow merge: %s",
                     query_type, len(prune_roots), len(cause_broken),
                     len(closure), sorted(closure),
-                    sorted(closure),
                 )
 
     return topology

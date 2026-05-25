@@ -100,6 +100,41 @@ services:
       - key: QUERY_PARSING_MAX_TOKENS
         value: "16000"
 
+      # ─ Optional alternative LLM providers ───────────────────────
+      # All OpenAI-compatible. Set <PREFIX>_API_KEY and switch
+      # DEFAULT_MODEL (or any per-stage *_MODEL) to <prefix>:<model>.
+      # See shadow_loom/settings.py for the full registry.
+      - key: FIREWORKS_API_KEY
+        sync: false
+      - key: TOGETHER_API_KEY
+        sync: false
+      - key: DEEPINFRA_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: SAMBANOVA_API_KEY
+        sync: false
+      - key: NEBIUS_API_KEY
+        sync: false
+      - key: NOVITA_API_KEY
+        sync: false
+      - key: HYPERBOLIC_API_KEY
+        sync: false
+      # Native-PydanticAI providers (no prefix in our registry; PydanticAI
+      # resolves anthropic:... and google-gla:... directly).
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+
       # ─ OAuth providers (set at least one; rest can stay blank) ──
       - key: GITHUB_CLIENT_ID
         sync: false

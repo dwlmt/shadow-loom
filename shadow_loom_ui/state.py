@@ -531,6 +531,14 @@ class AppState:
         run_cfg = self.pipeline_config
         if defer_this_run and not run_cfg.defer_reextraction:
             run_cfg = run_cfg.model_copy(update={"defer_reextraction": True})
+        # Activate the signed-in user's per-user model overrides
+        # (default model, per-stage models, custom OpenAI-compat
+        # providers) so every LLM call in this thread picks them up.
+        # No explicit reset is needed: this method runs under
+        # ``asyncio.to_thread`` which gives a fresh ContextVar context
+        # per invocation.
+        from shadow_loom.settings import set_user_context as _set_user_context
+        _set_user_context(ctx_user_id)
         try:
             pipeline_result = run_pipeline(
                 query,
@@ -705,6 +713,18 @@ class AppState:
         ``WORLD_STATE_CHANGED`` so panels refresh.
         """
         def _worker() -> None:
+            # Re-activate the user's model overrides inside this daemon
+            # thread (threading.Thread does not propagate ContextVars).
+            try:
+                from shadow_loom.settings import (
+                    set_user_context as _set_user_context,
+                )
+                _set_user_context(user_id)
+            except Exception:  # noqa: BLE001 — never block re-extraction
+                logger.debug(
+                    "[AppState] Failed to activate user model overrides "
+                    "for deferred worker", exc_info=True,
+                )
             try:
                 finish_reextraction(pipeline_result)
             except Exception:

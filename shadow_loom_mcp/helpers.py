@@ -233,6 +233,14 @@ def run_and_save(
         skip_reextraction=skip_reextraction,
     )
 
+    # Activate per-user model overrides (default model, per-stage
+    # models, custom OpenAI-compat providers) for this MCP request.
+    try:
+        from shadow_loom.settings import set_user_context as _set_user_context
+        _set_user_context(user_row_id)
+    except Exception:  # noqa: BLE001 — never block the pipeline call
+        logger.debug("[MCP] Failed to activate user model overrides", exc_info=True)
+
     try:
         result: PipelineResult = run_pipeline(query, versioned_model=vwm, config=cfg)
     except Exception as e:

@@ -837,7 +837,7 @@ def _build_answer_agent(
     else:
         system_prompt = _SYSTEM_PROMPT_GENERAL
     agent: Agent[None, AnswerCard] = Agent(
-        _resolve_model(config.model),
+        _resolve_model(config.model, stage="generation"),
         output_type=NativeOutput(AnswerCard),
         system_prompt=system_prompt,
         retries=config.output_retries,

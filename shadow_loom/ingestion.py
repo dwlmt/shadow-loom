@@ -39,7 +39,15 @@ if TYPE_CHECKING:
 from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent, ModelRetry, NativeOutput, PromptedOutput, RunContext
 
-from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
+from shadow_loom.settings import get_settings as _get_settings, resolve_model as __resolve_model
+
+
+def _resolve_model(model_str: str, *, stage: str = "extraction"):
+    """Stage-tagged shim so every ingestion call site picks up the
+    user's ``extraction`` per-stage override automatically.
+    """
+    return __resolve_model(model_str, stage=stage)
+
 
 from shadow_loom.models import (
     AmbientVector,

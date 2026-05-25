@@ -231,9 +231,9 @@ async def auth_callback(request: Request):
     elif provider_name == "google":
         userinfo = token.get("userinfo", {})
         user_id = userinfo.get("sub", "")
-        username = userinfo.get("email", "unknown").split("@")[0]
-        display_name = userinfo.get("name")
         email = userinfo.get("email")
+        username = (email or "unknown").split("@")[0] or "unknown"
+        display_name = userinfo.get("name")
         avatar = userinfo.get("picture")
     elif provider_name == "discord":
         resp = await client.get("users/@me", token=token)
@@ -250,7 +250,8 @@ async def auth_callback(request: Request):
     elif provider_name == "microsoft":
         userinfo = token.get("userinfo", {})
         user_id = userinfo.get("sub", "") or userinfo.get("oid", "")
-        username = (userinfo.get("preferred_username", "unknown").split("@")[0])
+        preferred = userinfo.get("preferred_username") or "unknown"
+        username = preferred.split("@")[0] or "unknown"
         display_name = userinfo.get("name")
         email = userinfo.get("email") or userinfo.get("preferred_username")
         avatar = None  # Microsoft Graph photo requires separate API call

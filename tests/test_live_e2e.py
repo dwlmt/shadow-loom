@@ -115,16 +115,67 @@ def _ollama_available() -> bool:
         return False
 
 
+def _ollama_model_loadable(model_tag: str) -> bool:
+    """Probe the chosen model with a tiny generate; return True if Ollama
+    can actually load it. This guards against the common case where the
+    daemon is up but the model is too big for the host's RAM/VRAM."""
+    import json as _json
+    try:
+        req = urllib.request.Request(
+            "http://localhost:11434/api/generate",
+            data=_json.dumps({
+                "model": model_tag,
+                "prompt": "hi",
+                "stream": False,
+                "options": {"num_predict": 1},
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            body = _json.loads(resp.read().decode())
+        return "error" not in body
+    except Exception:
+        return False
+
+
+# Model is overridable via env so contributors with smaller hardware can
+# point the suite at e.g. ``ollama:qwen3.6:27b`` or any OpenAI-compatible
+# provider string (``openrouter:openai/gpt-4o-mini``).
+_MODEL = os.environ.get("SHADOW_LOOM_E2E_MODEL", "ollama:qwen3.6:35b")
+
+
+def _is_ollama_model(tag: str) -> bool:
+    return tag.startswith("ollama:")
+
+
+def _e2e_skip_reason() -> str | None:
+    """Return a skip reason string or None if e2e tests can run."""
+    if _is_ollama_model(_MODEL):
+        if not _ollama_available():
+            return "Ollama not reachable at localhost:11434"
+        model_tag = _MODEL.split(":", 1)[1]
+        if not _ollama_model_loadable(model_tag):
+            return (
+                f"Ollama model {_MODEL!r} failed to load on this host "
+                "(likely resource limits). Set SHADOW_LOOM_E2E_MODEL "
+                "to a smaller model."
+            )
+    return None
+
+
+_SKIP_REASON = _e2e_skip_reason()
+
 requires_ollama = pytest.mark.skipif(
-    not _ollama_available(),
-    reason="Ollama not reachable at localhost:11434",
+    _SKIP_REASON is not None,
+    reason=_SKIP_REASON or "",
 )
+
+
+requires_loadable_model = requires_ollama  # back-compat alias
 
 # =========================================================================
 # Shared config — keep max_iterations low for test speed
 # =========================================================================
-
-_MODEL = "ollama:qwen3.6:35b"
 
 
 def _test_pipeline_config(*, skip_audit: bool = False, skip_reextraction: bool = False) -> PipelineConfig:

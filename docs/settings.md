@@ -48,18 +48,63 @@ defaults as the settings module — keep them in sync if you change one.
 
 ## 2. Core / providers
 
+Shadow-Loom understands three families of LLM providers:
+
+1. **Ollama** — local-first default, addressed via `ollama:<model-id>`.
+2. **OpenAI-compatible HTTP endpoints** — addressed via
+   `<prefix>:<model-id>`. The built-in registry covers 23 providers:
+
+   | Group  | Prefixes |
+   |---|---|
+   | Cloud SaaS | `openrouter`, `openai`, `fireworks`, `featherless`, `together`, `deepinfra`, `groq`, `anyscale`, `perplexity`, `huggingface`, `mistral`, `xai`, `deepseek`, `moonshot`, `cerebras`, `sambanova`, `nebius`, `novita`, `hyperbolic` |
+   | Local runtimes | `llamacpp` (port 8080), `vllm` (port 8000), `lmstudio` (port 1234), `localai` (port 8080), `unsloth` (Unsloth Studio, port 7860) |
+
+   Local prefixes do not require an API key — the resolver injects a
+   placeholder. Every cloud prefix expects a `<PREFIX>_API_KEY` env var
+   (e.g. `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`) and optionally a
+   `<PREFIX>_BASE_URL` override. You may register additional providers
+   at runtime with `SHADOW_LOOM_PROVIDERS="prefix=https://host/v1,..."`.
+
+3. **Per-user overrides (UI)** — see [§2a](#2a-per-user-overrides). Any
+   signed-in user can set their own default model, per-stage models, and
+   private OpenAI-compatible providers from the **Settings → Models &
+   Providers** card. User overrides take precedence over the env vars
+   below, so a deployment can ship with no `DEFAULT_MODEL` at all and
+   let each user wire up their own keys.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///shadow_loom.db` | SQLModel connection string. Swap for Postgres in production. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1/` | Ollama OpenAI-compatible endpoint. |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter endpoint. |
-| `OPENROUTER_API_KEY` | *(empty)* | Required when any `*_MODEL` uses the `openrouter:` prefix. |
-| `OPENAI_API_KEY` | *(empty)* | Required when any `*_MODEL` uses the `openai:` prefix. |
+| `<PREFIX>_BASE_URL` | *(provider-specific default)* | Override the HTTP endpoint for any built-in provider. |
+| `<PREFIX>_API_KEY` | *(empty)* | Required when any model string uses that prefix (cloud only). |
+| `SHADOW_LOOM_PROVIDERS` | *(empty)* | Comma-separated `prefix=base_url` pairs to extend the built-in registry without touching code. |
 | `LANGFUSE_*` | *(public demo keys)* | Optional tracing — replace with your own project keys or blank to disable. |
-| `DEFAULT_MODEL` | `ollama:qwen3.6:35b` | Fallback model string. Every stage-specific `*_MODEL` below inherits this value when left unset or blank — setting `DEFAULT_MODEL` alone is enough to route every pipeline stage at one model. |
+| `DEFAULT_MODEL` | `ollama:qwen3.6:35b` | Deployment-wide fallback. Every stage-specific `*_MODEL` below inherits this value when left unset, and every user without an explicit override inherits it too. May be left blank if every user is expected to configure their own default in the UI. |
 
 Model strings are parsed by PydanticAI: the prefix selects the provider
-(`ollama:`, `openrouter:`, `openai:`) and the suffix is the model id.
+and the suffix is the model id.
+
+### 2a. Per-user overrides
+
+The **Settings → Models & Providers** UI lets each signed-in user
+persist their own:
+
+- **Default model** — overrides `DEFAULT_MODEL` for that user.
+- **Per-stage models** — separately override Generation, Auditor,
+  Auditor re-renders, Extraction, and Query parsing.
+- **Custom OpenAI-compatible providers** — prefix, base URL, API key,
+  and "local" flag. Once saved, they appear in every model field as
+  `<prefix>:<model-id>` and override the built-in registry entry of the
+  same name (so a user can bring their own API key for a built-in
+  provider too).
+
+Saved values live in the `user_model_settings` table and are activated
+at the start of every pipeline call (UI submission, deferred
+re-extraction worker, and MCP API requests) via a ContextVar. Stages
+that were started against the env default are transparently re-routed
+to the user's default; stages that were given an explicit non-default
+model string are left alone.
 
 ---
 

@@ -399,6 +399,46 @@ class ProjectSettingsRow(SQLModel, table=True):
     )
 
 
+class UserModelSettingsRow(SQLModel, table=True):
+    """Per-user LLM provider & model preferences.
+
+    Lets each signed-in user override the deployment's ``DEFAULT_MODEL``
+    env var (and any per-stage ``*_MODEL`` env var) from the Settings
+    page, and register their own OpenAI-compatible providers — e.g. a
+    private llama.cpp endpoint, a paid Mistral key, or a self-hosted
+    vLLM cluster. The values are merged into the resolver via
+    :func:`shadow_loom.settings.set_user_context`.
+
+    Stored as JSON blobs to avoid schema churn when adding new stages
+    or provider fields.
+    """
+
+    __tablename__ = "user_model_settings"
+
+    user_id: int = Field(
+        primary_key=True,
+        foreign_key="users.id",
+    )
+    # Empty string → fall back to env var.
+    default_model: str = Field(default="")
+    # JSON object: {"generation": "openrouter:...", "auditor": "...", ...}.
+    # Recognised stage keys: generation, auditor, auditor_generation,
+    # extraction, query_parsing.
+    stage_models_json: str = Field(default="{}", sa_column=Column(Text))
+    # JSON array of {"prefix": str, "base_url": str, "api_key": str,
+    # "is_local": bool}. Prefix is lowercased and used as the
+    # ``<prefix>:`` model-string scheme.
+    custom_providers_json: str = Field(default="[]", sa_column=Column(Text))
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(
+            DateTime,
+            default=lambda: datetime.now(timezone.utc),
+            onupdate=lambda: datetime.now(timezone.utc),
+        ),
+    )
+
+
 class AgentCallLogRow(SQLModel, table=True):
     """Log every agent execution with performance and cost tracking.
 
@@ -3376,6 +3416,147 @@ def set_project_settings(
             s.add(row)
         else:
             row.research_topics_json = _json.dumps(cleaned)
+            row.updated_at = datetime.now(timezone.utc)
+        s.commit()
+        s.refresh(row)
+        return row
+
+
+# =====================================================================
+# UserModelSettings persistence helpers
+# =====================================================================
+
+# Recognised stage keys, mirroring the per-stage Settings classes in
+# shadow_loom/settings.py. Unknown keys are silently dropped.
+_RECOGNISED_STAGE_KEYS: frozenset[str] = frozenset({
+    "generation",
+    "auditor",
+    "auditor_generation",
+    "extraction",
+    "query_parsing",
+})
+
+
+def get_user_model_settings(user_id: int) -> dict:
+    """Return the user's saved model settings as a plain dict.
+
+    Always returns a dict with the same shape — empty string / empty
+    list / empty dict members mean "fall back to the env default". A
+    user that has never opened the Settings page returns the all-empty
+    template.
+    """
+    import json as _json
+
+    empty: dict = {
+        "default_model": "",
+        "stage_models": {},
+        "custom_providers": [],
+    }
+    with get_session() as s:
+        row = s.get(UserModelSettingsRow, user_id)
+        if row is None:
+            return empty
+        try:
+            stage_models = _json.loads(row.stage_models_json or "{}")
+        except (ValueError, TypeError):
+            stage_models = {}
+        try:
+            providers = _json.loads(row.custom_providers_json or "[]")
+        except (ValueError, TypeError):
+            providers = []
+        if not isinstance(stage_models, dict):
+            stage_models = {}
+        if not isinstance(providers, list):
+            providers = []
+        # Sanitise.
+        cleaned_stages = {
+            k: str(v).strip()
+            for k, v in stage_models.items()
+            if k in _RECOGNISED_STAGE_KEYS and isinstance(v, str) and v.strip()
+        }
+        cleaned_providers: list[dict] = []
+        seen: set[str] = set()
+        for p in providers:
+            if not isinstance(p, dict):
+                continue
+            prefix = str(p.get("prefix", "")).strip().lower()
+            base_url = str(p.get("base_url", "")).strip()
+            if not prefix or not base_url or prefix in seen:
+                continue
+            seen.add(prefix)
+            cleaned_providers.append({
+                "prefix": prefix,
+                "base_url": base_url,
+                "api_key": str(p.get("api_key", "")),
+                "is_local": bool(p.get("is_local", False)),
+            })
+        return {
+            "default_model": (row.default_model or "").strip(),
+            "stage_models": cleaned_stages,
+            "custom_providers": cleaned_providers,
+        }
+
+
+def set_user_model_settings(
+    user_id: int,
+    *,
+    default_model: str = "",
+    stage_models: Optional[dict[str, str]] = None,
+    custom_providers: Optional[list[dict]] = None,
+) -> "UserModelSettingsRow":
+    """Upsert per-user model preferences. Returns the persisted row.
+
+    All arguments are optional — pass the subset you want to update.
+    Empty / ``None`` values clear the override. Unknown stage keys are
+    silently dropped. Custom providers are de-duplicated by ``prefix``
+    (last occurrence wins).
+    """
+    import json as _json
+
+    stage_models = stage_models or {}
+    custom_providers = custom_providers or []
+
+    # Sanitise stage models.
+    cleaned_stages: dict[str, str] = {}
+    for k, v in stage_models.items():
+        if k in _RECOGNISED_STAGE_KEYS and isinstance(v, str) and v.strip():
+            cleaned_stages[k] = v.strip()
+
+    # Sanitise providers.
+    cleaned_providers: list[dict] = []
+    seen: set[str] = set()
+    for p in custom_providers:
+        if not isinstance(p, dict):
+            raise ValueError("custom_providers entries must be dicts")
+        prefix = str(p.get("prefix", "")).strip().lower()
+        base_url = str(p.get("base_url", "")).strip()
+        if not prefix or not base_url:
+            continue
+        if prefix in seen:
+            # Last wins — drop earlier dup.
+            cleaned_providers = [x for x in cleaned_providers if x["prefix"] != prefix]
+        seen.add(prefix)
+        cleaned_providers.append({
+            "prefix": prefix,
+            "base_url": base_url,
+            "api_key": str(p.get("api_key", "")),
+            "is_local": bool(p.get("is_local", False)),
+        })
+
+    with get_session() as s:
+        row = s.get(UserModelSettingsRow, user_id)
+        if row is None:
+            row = UserModelSettingsRow(
+                user_id=user_id,
+                default_model=default_model.strip(),
+                stage_models_json=_json.dumps(cleaned_stages),
+                custom_providers_json=_json.dumps(cleaned_providers),
+            )
+            s.add(row)
+        else:
+            row.default_model = default_model.strip()
+            row.stage_models_json = _json.dumps(cleaned_stages)
+            row.custom_providers_json = _json.dumps(cleaned_providers)
             row.updated_at = datetime.now(timezone.utc)
         s.commit()
         s.refresh(row)
