@@ -2657,6 +2657,91 @@ class CausalPhysicsEngine:
                     removed_channels.add(node_id)
         return removed_events, removed_channels
 
+    def _mirror_belief_pruning_to_canonical(
+        self,
+        *,
+        removed_event_ids: Optional[set[str]] = None,
+        removed_channel_ids: Optional[set[str]] = None,
+        severed_speaker_addressee_pairs: Optional[set[tuple[str, str]]] = None,
+    ) -> int:
+        """Mirror sandbox belief-provenance pruning onto ``world_state``.
+
+        ``AMWNInstantiator._prune_beliefs_by_provenance`` mutates the
+        sandbox graph in place. For the canonical ``self.world_state``
+        view to stay consistent (so downstream readers — auditors,
+        scorers, MCP queries — see the same beliefs the engine reasoned
+        over), the same predicate must be applied to
+        :class:`Entity.beliefs` and every
+        :class:`EntityStateSnapshot.beliefs_added` in
+        ``state_timeline``.
+
+        Returns the number of canonical beliefs removed.
+        """
+        removed_event_ids = set(removed_event_ids or ())
+        removed_channel_ids = set(removed_channel_ids or ())
+        severed_pairs = set(severed_speaker_addressee_pairs or ())
+
+        if not (removed_event_ids or removed_channel_ids or severed_pairs):
+            return 0
+
+        # Resolve utterance speakers from the canonical event list so the
+        # third match condition (severed speaker→addressee dyad) works
+        # without having to walk the sandbox.
+        utterance_speaker: Dict[str, str] = {}
+        for evt in self.world_state.events or []:
+            if getattr(evt, "event_type", None) == "utterance":
+                sp = getattr(evt, "speaker_id", None)
+                if sp:
+                    utterance_speaker[evt.id] = sp
+
+        def _is_dangling(belief: Any, holder_id: str) -> bool:
+            ev = getattr(belief, "acquired_via_event_id", None)
+            ch = getattr(belief, "acquired_via_channel_id", None)
+            if ev and ev in removed_event_ids:
+                return True
+            if ch and ch in removed_channel_ids:
+                return True
+            if ev and ev in utterance_speaker:
+                if (utterance_speaker[ev], holder_id) in severed_pairs:
+                    return True
+            return False
+
+        pruned = 0
+        for ent_id, ent in (self.world_state.entities or {}).items():
+            beliefs = getattr(ent, "beliefs", None)
+            if isinstance(beliefs, list):
+                kept = []
+                for b in beliefs:
+                    if _is_dangling(b, ent_id):
+                        pruned += 1
+                        continue
+                    kept.append(b)
+                if len(kept) != len(beliefs):
+                    ent.beliefs = kept
+            timeline = getattr(ent, "state_timeline", None)
+            if isinstance(timeline, list):
+                for snap in timeline:
+                    added = getattr(snap, "beliefs_added", None)
+                    if not isinstance(added, list):
+                        continue
+                    kept_added = []
+                    for b in added:
+                        if _is_dangling(b, ent_id):
+                            pruned += 1
+                            continue
+                        kept_added.append(b)
+                    if len(kept_added) != len(added):
+                        snap.beliefs_added = kept_added
+
+        if pruned:
+            logger.debug(
+                "[CausalPhysics·_mirror_belief_pruning_to_canonical] "
+                "Pruned %d canonical belief(s) (events=%d channels=%d pairs=%d).",
+                pruned, len(removed_event_ids), len(removed_channel_ids),
+                len(severed_pairs),
+            )
+        return pruned
+
     def _perform_graph_surgery_edge_removal(
         self,
         interventions: Dict[str, Any],
