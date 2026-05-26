@@ -1763,12 +1763,23 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
         # Match by (target_id, proposition_id when set); silently skip
         # entries that don't match a current belief — Affect must not
         # forge new beliefs (that's Consequences' job).
+        #
+        # When the shift carries a ``proposition_id`` it is strictly
+        # scoped to the belief joined to that proposition; a same-
+        # target belief without a ``proposition_id`` must NOT be
+        # treated as a wildcard match (audit 2026-05-26 — the previous
+        # ``not in (None, shift.proposition_id)`` rule let a None-
+        # proposition belief absorb the update before the loop could
+        # find the actual PROP_X belief, silently shifting confidence
+        # on the wrong belief when an entity held multiple beliefs
+        # about the same target).
         for shift in getattr(snap, "belief_confidence_updates", []) or []:
             for b in beliefs:
                 if b.get("target_id") != shift.target_id:
                     continue
-                if shift.proposition_id and b.get("proposition_id") not in (None, shift.proposition_id):
-                    continue
+                if shift.proposition_id is not None:
+                    if b.get("proposition_id") != shift.proposition_id:
+                        continue
                 b["confidence"] = float(shift.new_confidence)
                 if shift.new_inertia is not None:
                     b["inertia"] = float(shift.new_inertia)

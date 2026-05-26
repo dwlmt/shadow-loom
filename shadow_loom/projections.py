@@ -164,10 +164,23 @@ def reconstruct_world_trait_at_causal(
 
     snap = reconstruct_world_trait_at(wt, fabula_time)
     snap_mag = snap.get("magnitude") or {}
-    if snap_mag and (
-        snap_mag.get("value") != wt.magnitude.value
-        or snap_mag.get("inertia") != wt.magnitude.inertia
-    ):
+    # Authored snapshots are authoritative — but only when one was
+    # actually written. The previous equality-vs-baseline guard
+    # silently ignored a snapshot that intentionally reset the
+    # magnitude back to its baseline value (e.g. baseline 0.5 →
+    # mutation pushes to 0.8 → snapshot writes 0.5 to override),
+    # leaving the causal-accumulated 0.8 in place (audit 2026-05-26).
+    # Discriminate the same way the entity-side projection does:
+    # check whether any state_timeline snapshot at-or-before the
+    # horizon actually wrote a magnitude on this branch.
+    holder_world = getattr(wt, "world_id", "factual") or "factual"
+    snapshot_wrote_magnitude = any(
+        s.fabula_time <= fabula_time
+        and s.magnitude is not None
+        and (getattr(s, "world_id", holder_world) or holder_world) == holder_world
+        for s in wt.state_timeline
+    )
+    if snapshot_wrote_magnitude and snap_mag:
         value = snap_mag.get("value", value)
         inertia = snap_mag.get("inertia", inertia)
 

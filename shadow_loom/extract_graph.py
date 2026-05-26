@@ -2384,8 +2384,18 @@ def _apply_belief_confidence_updates(
             for belief in ent.beliefs:
                 if belief.target_id != upd.target_id:
                     continue
-                if upd.proposition_id and belief.proposition_id and belief.proposition_id != upd.proposition_id:
-                    continue
+                # When the merge update is proposition-scoped, it must
+                # only land on the belief joined to that exact
+                # proposition. The previous rule
+                # ``upd.proposition_id and belief.proposition_id and
+                # belief.proposition_id != upd.proposition_id`` only
+                # skipped when BOTH ids were set and differed, which
+                # silently let a None-proposition same-target belief
+                # absorb the update before the loop reached the true
+                # PROP_* belief (audit 2026-05-26).
+                if upd.proposition_id is not None:
+                    if belief.proposition_id != upd.proposition_id:
+                        continue
                 belief.confidence = float(upd.new_confidence)
                 if upd.new_inertia is not None:
                     belief.inertia = float(upd.new_inertia)
