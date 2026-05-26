@@ -2272,6 +2272,7 @@ def _build_refinement_prompt(
     engine_failures: Optional[List[str]] = None,
     prior_violations: Optional[List[AuditViolation]] = None,
     brief: Optional[CreativeBrief] = None,
+    previous_prose: Optional[str] = None,
 ) -> str:
     """Augment the original rendering prompt with auditor feedback.
 
@@ -2289,6 +2290,15 @@ def _build_refinement_prompt(
     fixes (a classic failure mode where the model fixes
     ``style_mismatch`` by stripping voice, then regresses on
     ``meta_narration`` next iteration, then back).
+
+    ``previous_prose`` (added in the round-7 audit, 2026-05-26) is the
+    verbatim text of the draft the auditor just flagged. When supplied,
+    the rewrite footer asks the model to **minimally edit** the prior
+    draft rather than render from scratch — the from-scratch rewrite
+    pattern routinely loses POV / style / anti-meta constraints the
+    previous draft already got right and introduces fresh violation
+    types. Without this anchor, a draft that was style-bad but had
+    correct POV gets rewritten into style-better prose that breaks POV.
     """
     feedback_lines: List[str] = [
         "",
@@ -2297,6 +2307,23 @@ def _build_refinement_prompt(
         "previous draft. You MUST address ALL of them in this rewrite:",
         "",
     ]
+
+    # Anchor the rewrite to the prior draft so the model can perform a
+    # surgical edit instead of re-rolling every surface choice from
+    # scratch (audit 2026-05-26 — see docstring). Capped to keep the
+    # refinement prompt under the model's working-attention budget;
+    # the auditor's evidence quotes localize the offending spans even
+    # when the cap truncates the tail of a long draft.
+    _PREV_DRAFT_BUDGET_CHARS = 6000
+    if previous_prose:
+        prev = previous_prose.strip()
+        if len(prev) > _PREV_DRAFT_BUDGET_CHARS:
+            prev = prev[:_PREV_DRAFT_BUDGET_CHARS] + "\n\u2026 (truncated)"
+        feedback_lines.extend([
+            "=== PREVIOUS DRAFT (the prose the auditor just flagged) ===",
+            prev,
+            "",
+        ])
 
     for i, v in enumerate(violations, 1):
         feedback_lines.append(
@@ -2362,9 +2389,21 @@ def _build_refinement_prompt(
 
     feedback_lines.append(
         "=== REWRITE TASK ===\n"
-        "Rewrite the prose passage from scratch, honouring ALL original "
-        "constraints AND the auditor corrections above. The auditor will "
-        "check again."
+        + (
+            "You have the PREVIOUS DRAFT above. Produce a MINIMAL EDIT "
+            "of it that fixes every violation listed above (and respects "
+            "the non-regression constraints, when present). Preserve every "
+            "surface choice the previous draft already got right — POV "
+            "lock, rendering mode, opening framing, anti-meta-narration "
+            "discipline, blocked-trait silence, style register — unless a "
+            "specific violation requires changing it. Do NOT re-render "
+            "from scratch; surgical edits only. The auditor will check "
+            "again."
+            if previous_prose else
+            "Rewrite the prose passage from scratch, honouring ALL original "
+            "constraints AND the auditor corrections above. The auditor will "
+            "check again."
+        )
     )
     
     # P1-FIX: Token budget protection - truncate if feedback exceeds limit
@@ -4411,6 +4450,11 @@ def run_feedback_loop(
             engine_failures=engine_failures,
             prior_violations=list(accumulated_violations),
             brief=brief,
+            # Round-7 audit (2026-05-26): pass the verbatim previous
+            # draft so the rewriter can perform a minimal surgical
+            # edit instead of a full re-roll that loses correct POV/
+            # style/anti-meta choices.
+            previous_prose=getattr(current_scene, "prose", None),
         )
 
         # Now extend with this iteration's violations so the *next*

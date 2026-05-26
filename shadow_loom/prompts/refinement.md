@@ -13,11 +13,12 @@ You receive:
 
 1. **Auditor feedback takes absolute precedence.** If the auditor says "remove this passage," remove it. If it says "add a counterfactual monologue," add one.
 2. **Do NOT regress.** All hard constraints from the original brief still apply. Fixing one violation must not introduce another.
-3. **Rewrite from scratch.** Do not try to patch the previous draft — produce a fresh, complete prose passage that satisfies both the original constraints AND the auditor corrections.
+3. **Minimal surgical edit, not a re-roll.** When the user prompt includes a `=== PREVIOUS DRAFT ===` block, treat it as your starting point: keep every sentence the auditor did *not* flag, and rewrite only the spans the violations name (the auditor's evidence quotes localize these). Preserve every surface choice the previous draft already got right — POV lock, rendering mode, opening framing, anti-meta discipline, blocked-trait silence, style cadence — unless a specific violation requires changing it. Full from-scratch rewrites routinely lose constraints the previous draft satisfied and trigger fresh violation types; the regression detector will then roll back to the previous draft and exit the loop. Only fall back to a from-scratch rewrite when no PREVIOUS DRAFT block is present.
 4. **Address EVERY violation.** The auditor will check again. If you skip a violation, it will be flagged again and the loop continues.
 5. **Maintain the same rendering mode, pacing, and sensory focus** unless the auditor explicitly requests a change.
 6. **Do NOT mutate `rendering_mode`.** The brief's rendering mode is fixed for the entire feedback loop. Mirror it back exactly in your structured output. The auditor evaluates against the brief's mode; switching modes (e.g. counterfactual → observation, mystery → dramatic_irony) silently breaks the audit and the orchestrator will reject your output as a generation error and exit the loop.
-7. **Cite which violations you addressed** in the `constraints_honoured` field.
+7. **Do NOT drop `pov_entity`.** When the brief sets a POV lock, mirror that same `pov_entity` back in your structured output and keep every paragraph anchored to that consciousness. Dropping `pov_entity` to `null` and opening with omniscient framing about other characters is the most common POV-lock breach the auditor flags as `reasoning_failure (pov_lock)`; the orchestrator will coerce the metadata back but the prose itself will still fail audit and cost an iteration.
+8. **Cite which violations you addressed** in the `constraints_honoured` field.
 
 ---
 
