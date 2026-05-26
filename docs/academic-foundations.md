@@ -404,6 +404,37 @@ forward propagation needing to fire. This is the engine reporting
 that the do-surgery + evidence is *consistent* with the observed
 downstream, the strongest Rung-3 outcome shape.
 
+### 2.6 Post-audit Pearl/AMWN hardening (2026-05-26)
+
+An internal review (`AUDIT_2026-05-26.md`) walked the implementation
+against Pearl (2009), Bareinboim *et al.* (2022), and Correa &
+Bareinboim (ICML 2025) and closed four divergences that matter for
+the formal reading of the symbolic layers. The fixes are intentionally
+small but they sharpen the alignment with the theory the system
+claims to implement.
+
+| Divergence | Pearl/AMWN expectation | Pre-audit behaviour | Post-audit behaviour |
+|---|---|---|---|
+| **Per-axis minimal surgery** | $G_{\overline{X}}$ removes only incoming edges *into the intervened variable*; sibling-trait edges survive. | `do_state` severed every incoming `mutation_*` edge regardless of `trait_target`, collapsing trait-level surgery to entity-level. | `_intervene_state` filters by `trait_target == intervened_trait` (untyped legacy edges still drop, since they could carry mutations into the pinned axis). Validated by `TestPerAxisTraitSurgery::test_sibling_axis_edge_survives`. |
+| **Relationship surgery completeness** | The do operator is a graph mutation on the *variable*; for relationship metrics the variable is `REL::src::tgt::metric`. | `do_relationship` updated the lifted node but did not drop incoming `mutation_social` edges, so a downstream propagation could re-write the pinned axis through a phantom social mutation. | `_intervene_relationship` now severs every incoming `mutation_social` edge whose `(rel_counterpart_id, trait_target)` matches the do-target. Validated by `TestRelationshipSurgery::test_mutation_social_edge_severed_on_per_axis_do`. |
+| **AMWN context granularity (Rules 2/3)** | Two interventions on the *same entity* but on *different traits* are different variables and must yield different AMWN contexts; otherwise node-shadowing over-collapses worlds. | `_to_context` truncated dotted intervention paths to entity id, so `do(ENT_A.traits.fear)` and `do(ENT_A.traits.guilt)` produced identical contexts and Rules 2/3 saw a single "world over $A$". | `_to_context` preserves the full dotted path so trait-level interventions are distinguishable at the AMWN ancestral set. Validated by `TestAMWNContextGranularity::test_distinct_trait_axes_yield_distinct_contexts`. |
+| **Strict temporal acyclicity** | A causal DAG over fabula-time must not contain same-tick edges except where the modeller explicitly encodes them. | `do_causal_edge` allowed `source_ft == target_ft` for every causality type, opening the door to silent cycles at a single `fabula_time`. | `do_causal_edge` rejects same-tick edges unless `causality_type == "chain_reaction"` (the one type where simultaneity is the modelling intent). Validated by `TestStrictTemporalAcyclicity::test_same_tick_mutation_edge_refused` and `test_same_tick_chain_reaction_edge_accepted`. |
+
+The remaining gap is acknowledged honestly: shadow-loom does not
+materialise explicit response functions $f_V(\mathrm{pa}_V,\, U_V)$
+nor pin exogenous draws $U$ across factual and shadow worlds, so the
+implementation is a *Pearl-approximation* (a typed graph with
+schema-level interventions and abduction by precision-weighted
+Bayesian blend) rather than a Pearl-rigorous SCM. The new
+`spurious_abduction` and `premature_payoff` violation types
+(registered in `auditor.VIOLATION_EXPLANATIONS`) close the
+renderer-side gap by surfacing the two failure modes Pearl's
+abduction–action–prediction recipe is most vulnerable to under an
+LLM brief–to–prose handoff: a Rung-2 narration that invents
+background premises (spurious abduction), and a directive that
+stages a `withheld_cause` event before its `syuzhet_index`
+(premature payoff).
+
 ---
 
 ## 3. Computational models of suspense, surprise, and curiosity

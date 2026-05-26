@@ -117,6 +117,25 @@ EFFECT_AUDIT_CATEGORIES: Dict[str, List[str]] = {
 UNIVERSAL_AUDIT_CATEGORIES: List[str] = ["meta", "style"]
 
 
+#: Effects the resolver is willing to silently fall back to a
+#: physics-only baseline for. Anything else logs a warning so typos
+#: surface fast instead of producing a quietly-under-powered audit.
+#: Source of truth: ``query_models.target_effect`` Literal +
+#: ``RenderingDirective.rendering_mode`` docstring +
+#: ``EFFECT_AUDIT_CATEGORIES`` keys.
+_KNOWN_TARGET_EFFECTS: frozenset[str] = frozenset({
+    "observation", "intervention", "counterfactual",
+    "mystery", "dramatic_irony", "surprise", "suspense",
+    "fear", "joy", "regret", "grief", "rage", "love",
+    "narrative_tension",
+    "general", "interrogate",
+    # Renderer-side fallback labels that occasionally surface in
+    # briefs constructed by the orchestrator when the user-side
+    # effect was untyped:
+    "manual_edit", "fallback", "default",
+})
+
+
 def resolve_audit_categories(target_effect: str) -> List[str]:
     """Return the full audit-category list for a given target effect.
 
@@ -124,7 +143,21 @@ def resolve_audit_categories(target_effect: str) -> List[str]:
     :data:`UNIVERSAL_AUDIT_CATEGORIES` (deduplicated, order-preserving).
     Use this single helper at every call-site so the auditor prompt and
     the run-audit log stay in sync.
+
+    An unknown ``target_effect`` is a typo / drift signal: the per-effect
+    map silently falls back to ``["physics"]`` which downgrades the audit
+    to physics + universal only. We log a warning so the regression is
+    visible rather than silently shipping a weakened audit.
     """
+    if target_effect not in _KNOWN_TARGET_EFFECTS:
+        logger.warning(
+            "[Auditor] resolve_audit_categories received unknown "
+            "target_effect=%r; falling back to physics-only base. "
+            "This is usually a typo or a renamed effect that was not "
+            "propagated to _KNOWN_TARGET_EFFECTS / "
+            "EFFECT_AUDIT_CATEGORIES. Known effects: %s",
+            target_effect, sorted(_KNOWN_TARGET_EFFECTS),
+        )
     base = EFFECT_AUDIT_CATEGORIES.get(target_effect, ["physics"])
     seen: set[str] = set()
     out: List[str] = []
@@ -453,6 +486,26 @@ class AuditViolation(BaseModel):
         # (``critical``) when the justification is missing entirely or
         # the name collides with an existing element.
         "unjustified_introduction",
+        # AUDIT (post-2026-05-26): spurious_abduction \u2014 Rung-3 prose
+        # introduces a *new* historical cause (a confession, a hidden
+        # accomplice, an off-page event) that the engine never abduced.
+        # Pearl Rung-3 abduction is monotone over the *engine's* U
+        # ledger; the renderer cannot mint new exogenous antecedents
+        # because the auditor's only ground truth for the past is the
+        # engine's posterior. Violations of this kind silently fabricate
+        # backstory and make the counterfactual unfalsifiable. Critical
+        # by default \u2014 it breaks ctf-calculus Rule-3 (Exclusion)
+        # for the introduced cause.
+        "spurious_abduction",
+        # AUDIT (post-2026-05-26): premature_payoff \u2014 directive prose
+        # resolves a concern / proposition the brief left explicitly
+        # open (``concern.activation_fabula_window`` still pending,
+        # ``proposition.truth_at_fabula`` uncommitted at this anchor).
+        # Authored payoffs that fire ahead of the engine schedule
+        # collapse downstream suspense and contaminate the next merge
+        # with a forced commit. Major by default; critical when the
+        # affected proposition is part of an active SuspenseProfile.
+        "premature_payoff",
     ]
     severity: Literal["critical", "major", "minor"]
     description: str = Field(
@@ -3936,6 +3989,33 @@ def run_feedback_loop(
             brief.rendering, "rendering_mode", None,
         )
 
+    # Iteration-0 metadata coercion. The original (pre-refinement)
+    # render is also free to mislabel ``rendering_mode`` on its
+    # structured output: the LLM occasionally emits ``"observation"``
+    # under a ``narrative_tension`` brief, etc. Previously the
+    # refinement branch contained the only coercion site, which meant
+    # that when iteration 1 already passed the audit, the returned
+    # ``GeneratedScene.rendering_mode`` could differ from the brief's
+    # mode \u2014 silently breaking the UI mode-filter, the next merge's
+    # branch policy, and any downstream consumer keyed off the mode.
+    # Coerce once here, with the same warning-then-continue semantics
+    # the refinement branch uses, BEFORE the first audit runs.
+    if (
+        expected_rendering_mode is not None
+        and current_scene.rendering_mode
+        and current_scene.rendering_mode != expected_rendering_mode
+    ):
+        logger.warning(
+            "[FeedbackLoop] Initial render emitted rendering_mode "
+            "(%r != brief %r); coercing metadata to the brief's mode "
+            "before the first audit. Prose is unchanged \u2014 only the "
+            "structured label is normalised.",
+            current_scene.rendering_mode, expected_rendering_mode,
+        )
+        current_scene = current_scene.model_copy(update={
+            "rendering_mode": expected_rendering_mode,
+        })
+
     # Track the prior iteration's violation count and scene so we can
     # roll back when the refinement agent INTRODUCES more violations
     # than it closes. Without this guard the loop happily accepts a
@@ -4191,17 +4271,29 @@ def run_feedback_loop(
         # (including semantic regressions a rewriter could fix) is
         # silently waved through. Anything outside the allowlist
         # keeps ``llm_passed`` False so the loop continues.
+        #
+        # The allowlist is intentionally narrow: only violation types
+        # the auditor's own prose explicitly classifies as "do NOT
+        # spend a regeneration cycle on this alone" belong here.
+        # Prior versions of this set listed speculative future types
+        # (``prose_density``, ``stylistic_drift``, ``register_drift``,
+        # ``pacing``, ``diction``, ``tone``, ``wordcount``,
+        # ``sentence_length``, ``repetition``, ``filler``) that were
+        # never wired through ``AuditViolation.violation_type``. They
+        # were dead config surface — the bypass could never fire on
+        # them — and were pruned in the 2026-05-26 round-2 audit.
+        # Re-add a value here only after it is added to the
+        # ``AuditViolation.violation_type`` Literal above.
         _MINOR_BYPASS_ALLOWLIST = {
-            "prose_density",
-            "stylistic_drift",
-            "register_drift",
-            "pacing",
-            "diction",
-            "tone",
-            "wordcount",
-            "sentence_length",
-            "repetition",
-            "filler",
+            # ``style_mismatch`` at minor severity is the canonical
+            # "do NOT spend a regeneration cycle on this alone" case
+            # documented in ``assemble_audit_prompt`` and ``auditor.md``
+            # (the auditor classifies pure prose-density drift inside
+            # the loosened word band + intact form-class as minor and
+            # tells the loop to skip it). Without ``style_mismatch`` on
+            # this allowlist the loop still burns iterations on the
+            # exact case the prompt was written to skip.
+            "style_mismatch",
         }
         if (
             not llm_passed
@@ -4485,6 +4577,71 @@ def run_feedback_loop(
     final_engine_passed, final_engine_failures = _engine_thresholds_check(
         final_impact, auditor_config,
     )
+
+    # --- Terminal audit on the post-refinement draft ---
+    # The loop structure is (audit \u2192 refine) per iteration: the
+    # refinement at the bottom of the final iteration mutates
+    # ``current_scene`` but the loop exits before the *next*
+    # iteration's audit fires. Without a terminal audit here, the
+    # returned ``final_scene`` is one generation step ahead of the
+    # last snapshot in ``history`` \u2014 the metadata says
+    # "audited N times" but the prose the caller sees was never
+    # audited at all. Run one final audit, append the snapshot, and
+    # tag it ``iteration=max_iterations`` so consumers can
+    # distinguish a terminal pass from a regular loop pass.
+    #
+    # Guards:
+    #   * Skip when ``correction_error`` is set (the prose IS the
+    #     pre-refinement scene; auditing it again is redundant).
+    #   * Skip when the last history entry already covers
+    #     ``current_scene.prose`` verbatim (the loop exited mid-
+    #     iteration BEFORE refinement \u2014 e.g. via the regression
+    #     rollback path \u2014 in which case the existing snapshot is
+    #     authoritative).
+    #   * Skip when the scene is a generation_error placeholder.
+    if (
+        not correction_error
+        and not current_scene.generation_error
+        and (
+            not history
+            or history[-1].prose != current_scene.prose
+        )
+    ):
+        logger.info(
+            "[FeedbackLoop] Running terminal audit on the "
+            "post-refinement draft (iteration=%d) so the returned "
+            "scene is never one step ahead of its last audit.",
+            auditor_config.max_iterations,
+        )
+        try:
+            terminal_audit = run_audit(
+                prose=current_scene.prose,
+                brief=brief,
+                config=auditor_config,
+                prior_feedback=accumulated_feedback or None,
+                causal_feedback=cycle_causal,
+                world_state=world_state,
+                affective_feedback=cycle_affective,
+                introduced_elements=getattr(
+                    current_scene, "introduced_elements", None,
+                ),
+            )
+            terminal_audit.change_impact = final_impact
+            history.append(AuditCycleSnapshot(
+                iteration=auditor_config.max_iterations,
+                prose=current_scene.prose,
+                audit_result=terminal_audit,
+                graph_version=graph_version,
+                graph_data=graph_data,
+                change_impact=final_impact,
+            ))
+        except Exception:
+            logger.exception(
+                "[FeedbackLoop] Terminal audit FAILED; returning the "
+                "unaudited post-refinement draft as non-converged. "
+                "Callers gating on convergence will still refuse the "
+                "merge; this only affects the audit_summary surface.",
+            )
 
     return FeedbackLoopResult(
         final_scene=current_scene,

@@ -248,7 +248,7 @@ class TestAssembleWorldState:
 
     def test_spatial_deduplicated(self):
         reg = self._register()
-        reg.locations["LOC_B"] = Location(name="B", description="b", ambient_state={})
+        reg.locations["LOC_B"] = Location(id="LOC_B", name="B", description="b", ambient_state={})
         topos = [
             ChunkTopology(spatial_topology=[
                 SpatialEdge(source_id="LOC_A", target_id="LOC_B", established_at_fabula=0),

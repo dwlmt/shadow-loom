@@ -58,6 +58,7 @@ from shadow_loom.db import (
     fork_project,
     get_active_version as db_get_active_version,
     get_all_prose,
+    get_lineage_to_root,
     get_project,
     get_project_activity,
     get_project_settings as db_get_project_settings,
@@ -212,6 +213,21 @@ def _safe_tool(fn):
                     "error_type": type(e).__name__,
                 }
     return wrapper
+
+
+def _sanitised_error(op: str, exc: BaseException) -> dict:
+    """Return a client-safe error envelope for caught exceptions.
+
+    AUDIT (post-2026-05-26): inline ``return {"error": str(e)}`` /
+    ``f"... {e}"`` patterns inside ``@_safe_tool`` tools still leaked
+    provider error bodies, SQL fragments, and stack-derived identifiers
+    because they ran *before* the wrapper's blanket handler. Use this
+    helper at every caught-exception return site so the client only
+    sees ``{op} failed`` plus the exception class name; full detail is
+    logged server-side via ``logger.exception`` for operator triage.
+    """
+    logger.exception("%s failed", op)
+    return {"error": f"{op} failed", "error_type": type(exc).__name__}
 
 
 # =====================================================================
@@ -1242,7 +1258,7 @@ def promote_branch(
             version_row_id, user_id=user_row_id, description=description,
         )
     except VersionMutationError as e:
-        return {"error": str(e)}
+        return _sanitised_error("promote_branch", e)
     return {
         "project_id": pid,
         "version_row_id": promoted.id,
@@ -1388,8 +1404,7 @@ def ask(
             global_world_state=ws,
         )
     except Exception as e:
-        logger.exception("Physics calculation failed")
-        return {"error": f"Analysis failed: {e}"}
+        return _sanitised_error("analyze", e)
 
     # Run the LLM Q&A step over the physics-state slice so the MCP
     # response carries a real natural-language answer (matches what
@@ -1561,8 +1576,7 @@ def compute_tension(
         return scores
 
     except Exception as e:
-        logger.exception("Tension computation failed")
-        return {"error": f"Tension computation failed: {e}"}
+        return _sanitised_error("tension", e)
 
 
 def _resolve_vector_state(ws: WorldStateV1, vector_id: str) -> dict:
@@ -1910,12 +1924,25 @@ async def narrate(
             f"[utterance constraints: {'; '.join(hints)}]"
         )
 
-    # Map mode to query_type
+    # Map mode to query_type.
+    # AUDIT (post-2026-05-26): contract drift fix — ``narrate`` previously
+    # accepted any string and silently fell back to ``None`` (then to the
+    # parser default ``directive``). Now we validate strictly, mirroring
+    # the ``ask`` tool: an unknown mode is rejected with a typed error.
     mode_map = {
         "observe": "observation",
         "intervene": "intervention",
         "counterfactual": "counterfactual",
+        "directive": "directive",
     }
+    if mode is not None and mode not in mode_map:
+        return {
+            "error": (
+                f"unknown narrate mode {mode!r}; expected one of "
+                f"{sorted(mode_map)}"
+            ),
+            "code": "INVALID_MODE",
+        }
     query_type = mode_map.get(mode) if mode else None
 
     # Stage 1: Parse
@@ -2249,8 +2276,7 @@ async def ingest(
     try:
         ws, report = await run_extraction_async(text, config)
     except Exception as e:
-        logger.exception("Ingestion failed")
-        return {"error": f"Ingestion failed: {e}"}
+        return _sanitised_error("ingest", e)
 
     await ctx.report_progress(2, 3, "Saving project...")
 
@@ -2278,7 +2304,7 @@ async def ingest(
             db_delete_project(proj.id)
         except Exception:
             logger.exception("Failed to roll back orphan project %s", proj.id)
-        return {"error": f"Ingestion save failed: {e}"}
+        return _sanitised_error("ingest", e)
 
     await ctx.report_progress(3, 3, "Complete")
 
@@ -2336,7 +2362,7 @@ def evaluate(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
+    ws, ver_row_id = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -2373,8 +2399,25 @@ def evaluate(
             assembler, eids[:6],
         )
 
-        # Collect all prose for evaluation
-        prose_list = get_all_prose(pid)
+        # Collect all prose for evaluation — scoped to the loaded
+        # version's lineage so a shadow-branch evaluation grades the
+        # shadow's own prose (plus the factual prefix it diverged
+        # from), not an arbitrary linear union of every branch's prose
+        # for the project. Without this scoping the scorecard is
+        # contaminated by sibling branches the user is not asking
+        # about.
+        branch_path: Optional[List[int]] = None
+        if ver_row_id is not None:
+            try:
+                branch_path = get_lineage_to_root(ver_row_id) or None
+            except Exception:
+                logger.exception(
+                    "[evaluate] Failed to build branch_path for ver_row_id=%s; "
+                    "falling back to project-wide prose.",
+                    ver_row_id,
+                )
+                branch_path = None
+        prose_list = get_all_prose(pid, branch_path=branch_path)
         all_prose = "\n\n".join(entry["prose"] for entry in prose_list if entry.get("prose"))
 
         if all_prose:
@@ -2405,8 +2448,7 @@ def evaluate(
             }
 
     except Exception as e:
-        logger.exception("Evaluation failed")
-        return {"error": f"Evaluation failed: {e}"}
+        return _sanitised_error("evaluate", e)
 
 
 @mcp.tool()
@@ -2609,7 +2651,7 @@ def set_project_settings(
     try:
         db_set_project_settings(pid, research_topics=list(research_topics))
     except ValueError as e:
-        return {"error": str(e)}
+        return _sanitised_error("set_research_topics", e)
     return {"project_id": pid, **db_get_project_settings(pid)}
 
 
@@ -2719,13 +2761,12 @@ def patch_world_state(
     try:
         typed_patch = WorldStatePatch.model_validate(patch)
     except Exception as exc:
-        return {"error": f"Invalid patch payload: {exc}"}
+        return _sanitised_error("patch_world_state", exc)
 
     try:
         new_ws, changes = _apply_world_state_patch(ws, typed_patch)
     except Exception as exc:
-        logger.exception("[patch_world_state] Apply failed")
-        return {"error": f"Patch application failed: {exc}"}
+        return _sanitised_error("patch_world_state", exc)
 
     user_row_id = get_user_id(ctx)
     desc = description or typed_patch.notes or (
@@ -2747,8 +2788,7 @@ def patch_world_state(
             branch_label=ancestor_branch_label,
         )
     except Exception as exc:
-        logger.exception("[patch_world_state] save_version failed")
-        return {"error": f"Persisting patched world failed: {exc}"}
+        return _sanitised_error("patch_world_state", exc)
 
     return {
         "project_id": pid,
@@ -3119,7 +3159,7 @@ def set_active_version(
     if user_row_id is None:
         return {"error": "Authentication required to set active version."}
 
-    err = check_project_access(project_id, ctx)
+    err = check_project_access(project_id, ctx, min_role="editor")
     if err:
         return {"error": err}
 
@@ -3573,8 +3613,13 @@ def manage(
         pid, perr = _resolve_pid(min_role="editor")
         if perr:
             return perr
-        if not new_name or pid is None:
-            return {"error": "manage(action='fork') requires project_id or project_name and payload.new_name"}
+        # AUDIT (post-2026-05-26): the granular ``fork`` tool defaults
+        # ``new_name`` to ``"<project> (fork)"`` when omitted; manage()
+        # now mirrors that contract so both surfaces accept the same
+        # payload (previously manage required ``new_name`` and rejected
+        # callers who relied on the default).
+        if pid is None:
+            return {"error": "manage(action='fork') requires project_id or project_name"}
         return fork(ctx, project_id=pid, new_name=new_name)
     if action == "share":
         pid, perr = _resolve_pid(min_role="admin")

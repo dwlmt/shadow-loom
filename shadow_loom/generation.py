@@ -55,7 +55,9 @@ from shadow_loom.directive_assembly import (
     build_object_coherence_constraints,
     build_prevented_event_constraints,
     build_prune_cascade_context_constraints,
+    build_true_proposition_constraints,
     build_unrealised_concern_constraints,
+    build_world_invariant_constraints,
     compute_hidden_channels_for,
 )
 from shadow_loom.models import WorldStateV1
@@ -354,9 +356,13 @@ _NON_NARRATIVE_FORMS: frozenset[str] = frozenset({
 # Rendering modes whose default template language pulls toward scenic
 # rendering. We override only these; modes like ``mystery`` already
 # carry their own register cues that survive the form-class
-# constraint.
+# constraint. ``narrative_tension`` is included because the composite
+# triad mode (added 2026-05-26) does NOT carry per-source-format
+# register cues of its own — without the override, synopsis-shaped
+# briefs in narrative_tension mode get inflated to full scenic prose.
 _SCENIC_MODES: frozenset[str] = frozenset({
-    "observation", "intervention", "counterfactual", "default", "fallback",
+    "observation", "intervention", "counterfactual", "default",
+    "fallback", "narrative_tension",
 })
 
 
@@ -2187,6 +2193,16 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
         kind = getattr(do_target, "target_kind", None)
         _gloss = getattr(cf, "do_target_gloss", None)
         _gloss_str = f" (\"{_gloss}\")" if _gloss else ""
+        # Round-3 audit fix: track whether any kind-branch emitted a
+        # hint. When ``do_target`` is present but its required
+        # payload fields are missing, the branches below silently
+        # fall through and the renderer never learns which Pearl-3
+        # surgery kind the engine intended. Emit an explicit fallback
+        # so the prompt at least tells the renderer the engine
+        # *meant* to surgically intervene but the payload was
+        # incomplete, rather than letting the LLM render a free-form
+        # divergence that ignores the typed surgery entirely.
+        _pre_len = len(lines)
         if kind == "proposition":
             pid = getattr(do_target, "proposition_id", None)
             truth = getattr(do_target, "truth", None)
@@ -2276,10 +2292,23 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
             active = getattr(do_target, "active", None)
             if chn_id:
                 chn_label = _gloss or chn_id
+                # ``active=None`` is genuinely unknown transmissibility
+                # (round-3 audit fix). Previously the formatter mapped
+                # falsy ``active`` — including ``None`` — to "severed",
+                # silently inverting informational counterfactuals
+                # where the surgery left transmissibility unspecified.
+                if active is None:
+                    state_phrase = (
+                        "had its transmissibility been different"
+                    )
+                elif active:
+                    state_phrase = "been open"
+                else:
+                    state_phrase = "been severed"
                 lines.append(
                     f"  RUNG-3 SURGERY KIND: channel — render as \"had "
-                    f"{chn_label} been {'open' if active else 'severed'}\". "
-                    f"This is an *informational* counterfactual: the "
+                    f"{chn_label} {state_phrase}\". This is an "
+                    f"*informational* counterfactual: the "
                     f"transmission capability itself was different."
                 )
         elif kind == "relationship":
@@ -2326,6 +2355,18 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
                     f"This is a *prop* counterfactual: the object's "
                     f"availability or affordances were different."
                 )
+
+        if len(lines) == _pre_len:
+            # No branch emitted a hint — either ``kind`` was unknown
+            # or the payload was missing required fields. Tell the
+            # renderer explicitly so it doesn't silently lose the
+            # typed surgery (round-3 audit fix).
+            lines.append(
+                f"  RUNG-3 SURGERY KIND: {kind or 'unknown'} — incomplete "
+                f"do_target payload; falling back to the generic divergence "
+                f"framing above. Render the actual\u2192simulated contrast "
+                f"directly without inventing surgery-specific mechanics."
+            )
 
     if cf.do_target_context:
         lines.append("  " + cf.do_target_context.replace("\n", "\n  "))
@@ -4023,6 +4064,50 @@ def assemble_rendering_prompt(
                 )
             sections.append("")
 
+    # === World-trait shifts (ambient regime changes) ===
+    # Round-3 audit fix: ``brief.world_trait_shifts`` (populated by
+    # ``DirectiveAssembler.compute_world_trait_shifts``) was being
+    # silently dropped before the renderer ever saw it. Surface
+    # recent magnitude movements on WORLD_ traits so prose can
+    # depict mood reversals, prophecy resolutions, weather shifts
+    # and other regime changes the engine has folded onto the
+    # global state timeline. Filtered to non-trivial moves.
+    if getattr(brief, "world_trait_shifts", None):
+        non_trivial = [
+            ws for ws in brief.world_trait_shifts
+            if abs(getattr(ws, "delta", 0.0)) >= 0.05
+        ]
+        if non_trivial:
+            sections.append(
+                "=== WORLD-TRAIT SHIFTS (ambient regime — show, don't name) ==="
+            )
+            sections.append(
+                "Recent magnitude movements on global / ambient traits. "
+                "Depict the *felt consequence* of each shift through "
+                "weather, mood, social atmosphere, or environmental "
+                "cues. Do NOT name 'world trait', 'magnitude', 'inertia' "
+                "or any engine vocabulary in the prose."
+            )
+            for ws in non_trivial[:6]:
+                direction = "rose" if ws.delta > 0 else "fell"
+                desc = (
+                    f" — {ws.description}" if ws.description else ""
+                )
+                domains = (
+                    f" affecting {', '.join(ws.affected_domains)}"
+                    if ws.affected_domains else ""
+                )
+                sections.append(
+                    f"  - {ws.trait_name} {direction} "
+                    f"{ws.previous_value:.2f} → {ws.current_value:.2f} "
+                    f"(\u0394={ws.delta:+.2f}){domains}{desc}"
+                )
+            if len(non_trivial) > 6:
+                sections.append(
+                    f"  … (+{len(non_trivial) - 6} more world-trait shifts)"
+                )
+            sections.append("")
+
     # === Utterance & Channel Fidelity ===
     # Hidden channels (carrier capabilities + future utterances) and
     # on-page utterance metadata (truth_value, intelligibility) impose
@@ -4258,6 +4343,48 @@ def build_observation_brief(
     ))
     constraints.extend(build_false_proposition_constraints(
         world_state, syuzhet_anchor, world_label="observed",
+    ))
+    # AUDIT brief/auditor consistency: positive mirror of the FALSE
+    # block. Observation prose lands on the canonical timeline; truths
+    # the physics has committed must be honoured by the narration even
+    # if no character on-page is asserting them.
+    constraints.extend(build_true_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="observed",
+    ))
+    # AUDIT brief/auditor consistency: WORLD_* invariants block. The
+    # observation must remain consistent with load-bearing global
+    # traits at this anchor (surveillance, magic system, wartime
+    # economy, …).
+    constraints.extend(build_world_invariant_constraints(
+        world_state, syuzhet_anchor, world_label="observed",
+    ))
+    # AUDIT Rung-1 no-unwarranted-novelty (HARD). Observation prose
+    # must not introduce *new* entities, locations, objects, world
+    # traits, or proposition truths that the canonical world does not
+    # already carry at this anchor — Rung-1 is an authored re-render
+    # of the existing world slice, not a generative continuation. New
+    # nominal content (a stranger, a new room, an unknown artefact)
+    # signals extraction drift, not authorial intent, and pollutes the
+    # re-ingest merge with phantom ids.
+    constraints.append(ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=(
+            "=== NO UNWARRANTED NOVELTY (HARD) === — this scene is an"
+            " observation of the existing world at this anchor. Do NOT"
+            " introduce new named characters, locations, objects, world"
+            " traits, or proposition truths that are not already present"
+            " in the world model. Reference existing entities by their"
+            " canonical names; do not promote unnamed background"
+            " presences into named individuals; do not invent off-stage"
+            " events that the timeline does not record. New presence"
+            " here is a re-extraction hazard — if the prose stages a"
+            " character/location/object whose id does not exist, the"
+            " downstream merge will either drop the reference (silent"
+            " loss) or coin a phantom id (id drift). Stay inside the"
+            " world."
+        ),
+        evidence={},
     ))
     constraints.extend(build_unrealised_concern_constraints(
         world_state, syuzhet_anchor, world_label="observed",
@@ -5163,6 +5290,12 @@ def build_intervention_brief(
     constraints.extend(build_false_proposition_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
     ))
+    constraints.extend(build_true_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="intervened",
+    ))
+    constraints.extend(build_world_invariant_constraints(
+        world_state, syuzhet_anchor, world_label="intervened",
+    ))
     constraints.extend(build_unrealised_concern_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
     ))
@@ -5679,6 +5812,21 @@ def build_counterfactual_brief(
         world_label="counterfactual",
     ))
     constraints.extend(build_false_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="counterfactual",
+    ))
+    # AUDIT brief/auditor consistency: positive proposition mirror so
+    # Rung-3 prose carries both "do not enact FALSE" and "must honour
+    # TRUE" commitments from the pre-divergence world slice.
+    constraints.extend(build_true_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="counterfactual",
+    ))
+    # AUDIT P0 counterfactual brief: WORLD_* invariants block. Without
+    # this the renderer is free to soften / contradict load-bearing
+    # world traits (surveillance state, magic system rules, wartime
+    # economy) when inventíng the counterfactual scene — the very
+    # constraints that make the counterfactual *coherent* relative to
+    # the rest of the storyworld.
+    constraints.extend(build_world_invariant_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
     ))
     constraints.extend(build_unrealised_concern_constraints(

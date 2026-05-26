@@ -814,13 +814,17 @@ class GlobalTrait(AMWNNode):
 # --- 2. THE NODES (The Nouns) ---
 class Location(AMWNNode):
     node_type: Literal["Location"] = "Location"
-    id: str = Field(description="Unique ID, e.g., LOC_CASTLE")
+    # AUDIT (post-2026-05-26) — sentinel default; populated from the
+    # ``WorldStateV1.locations`` dict key when constructed indirectly.
+    id: str = Field(default="", description="Unique ID, e.g., LOC_CASTLE")
     name: str
     description: str
     ambient_state: Dict[str, AmbientVector] = Field(default_factory=dict, description="e.g., {'temperature': AmbientVector(value=0.8, volatility=0.3)}")
 
 class NarrativeObject(AMWNNode):
-    id: str = Field(description="Unique ID, e.g., OBJ_DAGGER")
+    # AUDIT (post-2026-05-26) — sentinel default; populated from the
+    # ``WorldStateV1.objects`` dict key when constructed indirectly.
+    id: str = Field(default="", description="Unique ID, e.g., OBJ_DAGGER")
     name: str
     location_id: Optional[str] = Field(description="Where is it? Null if in an inventory.")
     owner_id: Optional[str] = Field(description="Who is holding it? Null if on the ground.")
@@ -841,7 +845,9 @@ class NarrativeObject(AMWNNode):
     )
 
 class Entity(AMWNNode):
-    id: str = Field(description="Unique ID, e.g., ENT_MACBETH")
+    # AUDIT (post-2026-05-26) — sentinel default; populated from the
+    # ``WorldStateV1.entities`` dict key when constructed indirectly.
+    id: str = Field(default="", description="Unique ID, e.g., ENT_MACBETH")
     name: str
     location_id: str = Field(description="Initial location (pre-story or earliest known).")
     status: Literal["healthy", "injured", "ill", "dead", "unconscious"]
@@ -2127,6 +2133,47 @@ class WorldStateV1(BaseModel):
     locations: Dict[str, Location]
     objects: Dict[str, NarrativeObject]
     entities: Dict[str, Entity]
+
+    # AUDIT (post-2026-05-26) — when callers (notably tests, fixture
+    # builders, and pipeline adapters) construct
+    # ``WorldStateV1(locations={"LOC_X": Location(name=..., ...)})``
+    # without restating ``id`` inside each ``Location``, accept the
+    # dict key as the authoritative id rather than raising.
+    # Pydantic schema-mode validation of nested dicts ignores the
+    # parent key, so we splice it in pre-validation. Mismatches
+    # (key != explicit id) raise loudly because they indicate a
+    # silent data-integrity bug elsewhere.
+    @model_validator(mode="before")
+    @classmethod
+    def _backfill_node_ids_from_keys(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        for field_name in ("locations", "objects", "entities"):
+            mapping = data.get(field_name)
+            if not isinstance(mapping, dict):
+                continue
+            for key, value in list(mapping.items()):
+                if isinstance(value, dict):
+                    if not value.get("id"):
+                        value["id"] = key
+                    elif value["id"] != key:
+                        raise ValueError(
+                            f"WorldStateV1.{field_name}: dict key {key!r} "
+                            f"does not match nested id {value['id']!r}"
+                        )
+                else:
+                    existing = getattr(value, "id", None)
+                    if not existing:
+                        try:
+                            value.id = key  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                    elif existing != key:
+                        raise ValueError(
+                            f"WorldStateV1.{field_name}: dict key {key!r} "
+                            f"does not match nested id {existing!r}"
+                        )
+        return data
     shadow_entities: Dict[str, Dict[str, Entity]] = Field(
         default_factory=dict,
         description=(

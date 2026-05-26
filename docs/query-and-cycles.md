@@ -140,7 +140,8 @@ fabricate an entity-level surrogate. Two more from the bundled corpus:
 class DirectiveQuery:
     target_entity_ids: List[str]
     target_effect: Literal["mystery","dramatic_irony","suspense","surprise",
-                           "grief","rage","joy","regret","love","fear"]
+                           "grief","rage","joy","regret","love","fear",
+                           "narrative_tension"]
     target_vector_id: Optional[str]
     intensity: float                  # 0.0–1.0
     force_implausible: bool

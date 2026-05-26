@@ -539,7 +539,7 @@ inertia.
 
 ```python
 RelationshipEdge(
-    source_id="ENT_FRANKENSTEIN", target_id="ENT_CREATURE",
+    source_entity_id="ENT_FRANKENSTEIN", target_entity_id="ENT_CREATURE",
     metrics={
         "affinity":      RelationshipMetric(value=-0.8, inertia=0.6, evidence_strength="strong"),
         "fear":          RelationshipMetric(value= 0.7, inertia=0.5, evidence_strength="strong"),
@@ -743,14 +743,14 @@ the `RelationshipEdge` is bidirectional and per-axis:
 
 ```python
 RelationshipEdge(
-    source_id="ENT_GATSBY", target_id="ENT_DAISY",
+    source_entity_id="ENT_GATSBY", target_entity_id="ENT_DAISY",
     metrics={
         "affinity":      RelationshipMetric(value=+0.95, inertia=0.85),
         "idealisation":  RelationshipMetric(value=+0.90, inertia=0.7),
     },
 ),
 RelationshipEdge(
-    source_id="ENT_DAISY", target_id="ENT_GATSBY",
+    source_entity_id="ENT_DAISY", target_entity_id="ENT_GATSBY",
     metrics={
         "affinity":      RelationshipMetric(value=+0.55, inertia=0.4),
         "fear_of_scandal": RelationshipMetric(value=+0.70, inertia=0.6),

@@ -199,7 +199,11 @@ def check_project_access(
     if proj is None:
         return "Project not found."
     # Owner always has access at every level.
-    if proj.owner_id == user_id:
+    # AUDIT (post-2026-05-26): require an authenticated user_id before
+    # matching owner equality. ``None == None`` was previously granting
+    # full owner privileges on ownerless / seeded projects to any
+    # unauthenticated caller.
+    if user_id is not None and proj.owner_id == user_id:
         return None
     required_rank = _ROLE_RANK.get(min_role, 0)
     # Public projects are readable by all, but writes still require an

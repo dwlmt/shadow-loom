@@ -160,12 +160,16 @@ class TestDoSpatialEdgeSeverBidirectional:
         eng.apply_do_targets([DoSpatialEdge(
             source_id="LOC_A", target_id="LOC_B", action="sever",
         )])
-        # Both directions must be gone now.
-        assert not any(
-            (e.source_id == "LOC_A" and e.target_id == "LOC_B")
+        # Round-4 audit fix: both directions are tombstoned, not
+        # filtered out. Assert that every matching edge now carries
+        # ``destroyed_at_fabula``.
+        matched = [
+            e for e in ws.spatial_topology
+            if (e.source_id == "LOC_A" and e.target_id == "LOC_B")
             or (e.source_id == "LOC_B" and e.target_id == "LOC_A")
-            for e in ws.spatial_topology
-        )
+        ]
+        assert matched, "severed edges must remain as tombstones"
+        assert all(e.destroyed_at_fabula is not None for e in matched)
 
     def test_sever_unidirectional_does_not_touch_reverse(self):
         # If the world only contained the forward arrow, the reverse
@@ -180,7 +184,15 @@ class TestDoSpatialEdgeSeverBidirectional:
         eng.apply_do_targets([DoSpatialEdge(
             source_id="LOC_A", target_id="LOC_B", action="sever",
         )])
-        assert ws.spatial_topology == []
+        # Round-4 audit fix: tombstone-preserve semantics. The
+        # forward edge stays in the topology with destroyed_at_fabula
+        # set; the reverse cut still must not fire (there was no
+        # reverse edge to mark in the first place).
+        assert len(ws.spatial_topology) == 1
+        survivor = ws.spatial_topology[0]
+        assert survivor.source_id == "LOC_A"
+        assert survivor.target_id == "LOC_B"
+        assert survivor.destroyed_at_fabula is not None
 
 
 # ---------------------------------------------------------------------

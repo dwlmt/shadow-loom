@@ -8,8 +8,10 @@ Standalone — no UI imports.  Configure via ``init_db(database_url)``.
 """
 
 import hashlib
+import hmac
 import json
 import logging
+import os
 import secrets
 from datetime import datetime, timezone
 from typing import Optional
@@ -215,7 +217,11 @@ class ApiKeyRow(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id")
     name: str = Field(max_length=128)
-    key_hash: str = Field(max_length=128)
+    # AUDIT (post-2026-05-26): explicit DB index on ``key_hash``.
+    # ``validate_api_key`` runs on every authenticated request and
+    # equality-filters on this column; without an index lookup was
+    # O(N) over the entire api_keys table.
+    key_hash: str = Field(max_length=128, index=True)
     key_prefix: str = Field(max_length=16)
     scopes: str = Field(default="read,write", max_length=128)
     is_active: bool = Field(default=True)
@@ -1403,6 +1409,15 @@ def list_projects(user_id: int | None = None) -> list[dict]:
             if shared_ids:
                 conditions.append(ProjectRow.id.in_(shared_ids))
             stmt = stmt.where(or_(*conditions))
+        else:
+            # AUDIT (post-2026-05-26): when no user context is supplied
+            # the listing previously leaked *every* project (private and
+            # all). Anonymous / pre-auth callers may only see
+            # ownerless seeds and explicitly public projects.
+            stmt = stmt.where(
+                or_(ProjectRow.owner_id.is_(None),
+                    ProjectRow.is_public.is_(True))
+            )
 
         # Always hide example-user projects from the regular listing.
         if example_id is not None:
@@ -1770,8 +1785,43 @@ def list_starred_projects(user_id: int) -> list[int]:
 # =====================================================================
 
 
+def _api_key_pepper() -> bytes:
+    """Server-side HMAC pepper for API key hashing.
+
+    AUDIT (post-2026-05-26): plain SHA-256 over a high-entropy bearer
+    token is reasonable, but adding a server-side pepper means an
+    offline attacker who exfiltrates the ``api_keys`` table still
+    cannot brute-force matching candidate tokens without also
+    compromising the application secret. The pepper is read from
+    ``SHADOW_LOOM_API_KEY_PEPPER`` (preferred) or ``SECRET_KEY`` and
+    falls back to an empty value for legacy compatibility on dev
+    installs that have not yet provisioned one.
+    """
+    pep = os.environ.get("SHADOW_LOOM_API_KEY_PEPPER") or os.environ.get("SECRET_KEY") or ""
+    return pep.encode("utf-8")
+
+
 def _hash_api_key(raw_key: str) -> str:
-    """SHA-256 hash for API key storage."""
+    """Canonical API key hash: HMAC-SHA256 with server-side pepper.
+
+    Bearer tokens are ``sl_<32-byte token_urlsafe>`` — ~256 bits of
+    entropy — so a fast keyed hash (HMAC-SHA256) is preferred over a
+    memory-hard KDF: Argon2id on every authenticated request would add
+    >100ms latency for no meaningful brute-force resistance against a
+    256-bit secret. The pepper guards against offline attack on a
+    stolen DB snapshot.
+    """
+    pep = _api_key_pepper()
+    if not pep:
+        # Legacy / unconfigured installs: preserve previous behaviour
+        # so existing stored hashes still validate. Operators should
+        # set ``SHADOW_LOOM_API_KEY_PEPPER`` and rotate keys.
+        return hashlib.sha256(raw_key.encode()).hexdigest()
+    return hmac.new(pep, raw_key.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _legacy_hash_api_key(raw_key: str) -> str:
+    """Pre-pepper SHA-256 hash, kept for backward-compat key lookup."""
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
 
@@ -1807,11 +1857,17 @@ def create_api_key(
 
 def validate_api_key(raw_key: str) -> Optional[ApiKeyRow]:
     """Validate a bearer token. Returns the ApiKeyRow if valid, None otherwise."""
-    key_hash = _hash_api_key(raw_key)
+    candidate_hashes = {_hash_api_key(raw_key)}
+    legacy = _legacy_hash_api_key(raw_key)
+    if legacy not in candidate_hashes:
+        # AUDIT (post-2026-05-26): accept legacy SHA-256 hashes during
+        # the migration window so users whose keys predate the pepper
+        # rollout don't lose access. Re-issue + rotate on next login.
+        candidate_hashes.add(legacy)
     with get_session() as s:
         row = s.exec(
             select(ApiKeyRow).where(
-                ApiKeyRow.key_hash == key_hash,
+                ApiKeyRow.key_hash.in_(candidate_hashes),
                 ApiKeyRow.is_active.is_(True),
             )
         ).first()
@@ -2085,6 +2141,26 @@ def save_version(
                 s.commit()
             except IntegrityError as e:
                 s.rollback()
+                # Round-5 audit: the retry loop must only swallow
+                # version-uniqueness collisions (two writers racing for
+                # the same v-number). Other IntegrityErrors — e.g.
+                # ancestor_id FK violations, NOT NULL breaches, the
+                # cross-project ancestry guard rewriting itself — are
+                # programmer/data errors that must surface immediately,
+                # not get masked by N retries that re-trigger the same
+                # constraint and finally raise a generic RuntimeError
+                # with the original cause buried.
+                _msg = (str(getattr(e, "orig", e)) + " " + str(e)).lower()
+                _is_version_collision = (
+                    "unique" in _msg or "duplicate" in _msg
+                ) and "version" in _msg
+                if not _is_version_collision:
+                    logger.error(
+                        "[db.save_version] Non-retryable IntegrityError on "
+                        "project %s v%s: %s",
+                        project_id, assigned_version, e,
+                    )
+                    raise
                 last_err = e
                 logger.warning(
                     "[db.save_version] IntegrityError on project %s v%s (attempt %d/%d) \u2014 retrying with fresh version.",
@@ -2940,13 +3016,42 @@ def delete_version(
             for act in stale_acts:
                 act.version_id = None
             s.flush()
-            # Delete deepest-first to satisfy the self-FK on ancestor_id.
-            ordered = sorted(descendants, reverse=True)
-            for vid in ordered:
-                v = s.get(VersionRow, vid)
-                if v is not None:
+            # Delete in true depth order (leaves first) to satisfy the
+            # self-FK on ``ancestor_id`` regardless of row insertion
+            # order.
+            # AUDIT (post-2026-05-26): the previous ``sorted(..., reverse=True)``
+            # used row.id as a proxy for depth, which fails when a
+            # later-inserted row was *re-parented* to be an ancestor of
+            # earlier-inserted rows (a legal outcome of ``reparent_version``).
+            # We now build the parent map from the rows themselves and
+            # peel leaves iteratively.
+            desc_set = set(descendants)
+            rows_by_id = {
+                v.id: v
+                for v in s.exec(
+                    select(VersionRow).where(VersionRow.id.in_(descendants))
+                ).all()
+            }
+            remaining = set(desc_set)
+            while remaining:
+                # A "leaf" in this subtree has no remaining child in the set.
+                children_of: dict[int, set[int]] = {rid: set() for rid in remaining}
+                for rid in remaining:
+                    anc = rows_by_id[rid].ancestor_id
+                    if anc in children_of:
+                        children_of[anc].add(rid)
+                leaves = [rid for rid, kids in children_of.items() if not kids]
+                if not leaves:
+                    # Cycle (should be impossible — ``reparent_version``
+                    # rejects them) but fail safely rather than spinning.
+                    raise VersionMutationError(
+                        "Cascade delete encountered a cycle in version ancestry"
+                    )
+                for rid in leaves:
+                    v = rows_by_id.pop(rid)
                     s.delete(v)
-                    s.flush()
+                    remaining.remove(rid)
+                s.flush()
             proj.updated_at = datetime.now(timezone.utc)
             s.commit()
             return {"deleted": sorted(descendants), "reparented": {}}
@@ -3167,6 +3272,31 @@ def get_active_version(
         if ver is None:
             return None
         return ver
+
+
+def get_lineage_to_root(version_row_id: int) -> list[int]:
+    """Return the ancestor chain for ``version_row_id`` ordered root \u2192 leaf.
+
+    Walks ``VersionRow.ancestor_id`` upward, defends against cycles
+    (corrupt data) by short-circuiting on revisits, and returns the
+    list in *root-first* order so it can be passed directly as a
+    ``branch_path`` argument to :func:`get_all_prose` (which preserves
+    the supplied ordering). Returns an empty list when the version row
+    is missing.
+    """
+    chain: list[int] = []
+    seen: set[int] = set()
+    cur_id: int | None = version_row_id
+    with get_session() as s:
+        while cur_id is not None and cur_id not in seen:
+            seen.add(cur_id)
+            row = s.get(VersionRow, cur_id)
+            if row is None:
+                break
+            chain.append(row.id)
+            cur_id = row.ancestor_id
+    chain.reverse()
+    return chain
 
 
 def clear_active_version(project_id: int, user_id: int) -> bool:

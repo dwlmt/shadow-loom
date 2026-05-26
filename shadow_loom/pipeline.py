@@ -318,7 +318,10 @@ class PipelineConfig(BaseModel):
             "prose to the user and run the heavy ingestion in the "
             "background. The pipeline stashes a closure on the result; "
             "call ``finish_reextraction(result)`` later to drive it. Mutually "
-            "exclusive with ``skip_reextraction`` (skip wins)."
+            "exclusive with ``skip_reextraction`` (skip wins). "
+            "**Sync-only**: ``run_pipeline_async`` rejects this flag with "
+            "``ValueError`` because no async ``finish_reextraction`` parallel "
+            "exists yet."
         ),
     )
 
@@ -2315,9 +2318,15 @@ def _apply_manual_edit_replacements(
             eid: e for eid, e in new_ws.entities.items()
             if eid not in drop_entities
         }
+        # Round-6 audit: RelationshipEdge exposes ``source_entity_id`` /
+        # ``target_entity_id`` (per shadow_loom/models.py); the prior
+        # ``re.source_id`` / ``re.target_id`` access raised AttributeError
+        # on every manual_edit replacement that dropped an entity, so the
+        # cascade clean-up never ran and the merge aborted.
         new_ws.social_topology = [
             re for re in new_ws.social_topology
-            if re.source_id not in drop_entities and re.target_id not in drop_entities
+            if re.source_entity_id not in drop_entities
+            and re.target_entity_id not in drop_entities
         ]
         for ent in new_ws.entities.values():
             ent.beliefs = [
@@ -2333,9 +2342,15 @@ def _apply_manual_edit_replacements(
             lid: l for lid, l in new_ws.locations.items()
             if lid not in drop_locations
         }
+        # Round-6 audit: SpatialEdge exposes ``source_id`` / ``target_id``
+        # (per shadow_loom/models.py); the prior ``se.location_id`` access
+        # raised AttributeError on every manual_edit replacement that
+        # dropped a location, aborting the merge. Drop edges whose
+        # endpoints reference a removed location.
         new_ws.spatial_topology = [
             se for se in new_ws.spatial_topology
-            if se.location_id not in drop_locations
+            if se.source_id not in drop_locations
+            and se.target_id not in drop_locations
         ]
     if drop_traits:
         new_ws.world_traits = {
@@ -3136,6 +3151,23 @@ async def run_pipeline_async(
     history = PipelineHistory()
     result = PipelineResult(query_type=query.query_type, history=history)
 
+    # Round-5 audit: ``cfg.defer_reextraction`` requires a sync callable
+    # closure (see ``finish_reextraction``) that an async caller cannot
+    # drive without thread offload, and there is no
+    # ``finish_reextraction_async`` parallel yet. Reject the combination
+    # at the boundary instead of silently ignoring the flag (the prior
+    # behaviour ran steps 6\u20137 inline anyway, blocking the prose
+    # response on background ingest). Callers that need defer must use
+    # the sync ``run_pipeline``.
+    if cfg.defer_reextraction and not cfg.skip_reextraction:
+        raise ValueError(
+            "cfg.defer_reextraction=True is not supported by "
+            "run_pipeline_async (no async finish_reextraction parallel "
+            "exists). Use run_pipeline (sync) for deferred re-extraction, "
+            "or set cfg.defer_reextraction=False to run steps 6\u20137 "
+            "inline on the async pipeline."
+        )
+
     # =================================================================
     # Step 0: Resolve the world model (async ingestion when raw_text)
     # =================================================================
@@ -3309,7 +3341,8 @@ async def run_pipeline_async(
                 branch_world_id=_world_id,
                 branch_label=_branch_label,
             )
-            topology = extract_topology_from_prose(
+            topology = await asyncio.to_thread(
+                extract_topology_from_prose,
                 prose=result.prose, world_state=ws_for_extract,
                 config=cfg.extraction_config,
                 fabula_time_base=anchor_base,
@@ -3380,7 +3413,10 @@ async def run_pipeline_async(
 
     if cfg.skip_audit:
         gen_cfg = cfg.generation_config or GenerationConfig()
-        scene = render_from_query(
+        # AUDIT P0-7: offload synchronous LLM-backed render to a thread
+        # so the async pipeline doesn't block the event loop.
+        scene = await asyncio.to_thread(
+            render_from_query,
             query, physics_result, ws, gen_cfg,
             preceding_prose=_preceding_prose,
             branch_world_id=_branch_world_id,
@@ -3429,7 +3465,8 @@ async def run_pipeline_async(
             )
         else:
             gen_cfg = cfg.generation_config or GenerationConfig()
-            initial_scene = render_from_query(
+            initial_scene = await asyncio.to_thread(
+                render_from_query,
                 query, physics_result, ws, gen_cfg,
                 preceding_prose=_preceding_prose,
                 branch_world_id=_branch_world_id,
@@ -3463,6 +3500,11 @@ async def run_pipeline_async(
         _log_feedback_outcome(feedback, async_path=True)
 
     # Steps 6–7: Re-extraction + merge (same as sync)
+    # Round-5 audit: ``cfg.defer_reextraction`` is rejected at the top
+    # of ``run_pipeline_async`` (see the ValueError guard there) because
+    # no async ``finish_reextraction`` parallel exists; by the time we
+    # reach this branch the flag is guaranteed False, so steps 6\u20137
+    # run inline unconditionally.
     if cfg.skip_reextraction:
         logger.info("[Pipeline·Async] Steps 6–7: Re-extraction skipped.")
     elif (
@@ -3502,10 +3544,11 @@ async def run_pipeline_async(
     else:
         logger.info("[Pipeline·Async] Steps 6–7: Extracting topology from prose and merging.")
         try:
-            spawns = promote_sandbox_spawns(ws, physics_state)
+            spawns = await asyncio.to_thread(promote_sandbox_spawns, ws, physics_state)
             _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
             engine_priors = _render_engine_priors(physics_result)
-            topology = extract_topology_from_prose(
+            topology = await asyncio.to_thread(
+                extract_topology_from_prose,
                 prose=result.prose, world_state=ws, config=cfg.extraction_config,
                 spawns=spawns,
                 introduced_elements=getattr(
@@ -3735,10 +3778,30 @@ def _run_evaluation_branch(
 ) -> None:
     """Run a full-story quality audit and populate ``result.evaluation_result``."""
     logger.info("[Pipeline] Evaluation query — running full-story quality audit.")
-    # Collect all prose from versioned model history
+    # Resolve branch policy FIRST so prose collection can be branch-scoped.
+    # Without this, a shadow-branch evaluation pulls factual prose into
+    # the scorecard (and vice versa), conflating canon with counterfactual.
+    _eval_branch_id, _eval_branch_label = _resolve_branch_policy(
+        query, cfg, vwm,
+    )
+    # Collect all prose from versioned model history — branch-scoped.
     all_prose_parts: list[str] = []
     if vwm.history:
         for entry in vwm.history:
+            entry_world_id = getattr(entry, "world_id", None)
+            # Treat unset world_id as factual (legacy rows predate the tag).
+            if entry_world_id is None:
+                entry_world_id = "factual"
+            if entry_world_id != _eval_branch_id:
+                continue
+            # When evaluating a specific shadow label, isolate it from
+            # other shadow branches on the same vwm.
+            if (
+                _eval_branch_id == "shadow"
+                and _eval_branch_label is not None
+                and getattr(entry, "branch_label", None) != _eval_branch_label
+            ):
+                continue
             entry_prose = getattr(entry, "prose", None)
             if entry_prose:
                 all_prose_parts.append(entry_prose)
@@ -3751,11 +3814,11 @@ def _run_evaluation_branch(
     full_prose = "\n\n---\n\n".join(all_prose_parts)
 
     from shadow_loom.extract_graph import extract_ego_graph_from_memory
-    focus_ids = (
-        query.focus_entity_ids
-        if query.focus_entity_ids
-        else list(ws.entities.keys())[:5]
-    )
+    # Per EvaluationQuery contract: empty focus_entity_ids means "score
+    # the whole cast". The prior ``[:5]`` cap silently truncated the
+    # ego graph for any story with more than five entities, biasing
+    # the evaluator toward whatever five keys happened to come first.
+    focus_ids = list(query.focus_entity_ids or ws.entities.keys())
     ego_graph = extract_ego_graph_from_memory(ws, focus_ids)
     eval_assembler = DirectiveAssembler(
         sandbox=None, ego_payload=ego_graph.model_dump(), world_state=ws,
@@ -3763,9 +3826,6 @@ def _run_evaluation_branch(
 
     from shadow_loom.generation import _user_intent_constraints
     _nl = getattr(query, "original_query", None)
-    _eval_branch_id, _eval_branch_label = _resolve_branch_policy(
-        query, cfg, vwm,
-    )
     eval_brief = CreativeBrief(
         target_effect="observation",
         target_entities=focus_ids,

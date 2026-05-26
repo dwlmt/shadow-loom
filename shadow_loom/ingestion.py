@@ -4966,14 +4966,28 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
                 continue
             if ce.trait_target is None or ce.trait_delta is None:
                 continue
-            if ce.target_id not in entity_ids:
-                continue
-            ticks = update_index.get((ce.target_id, ce.trait_target), [])
-            if not any(abs(t - ce.fabula_time) <= 1 for t in ticks):
-                unmatched.append(
-                    f"{ce.source_id}→{ce.target_id} "
-                    f"({ce.trait_target}, fabula={ce.fabula_time})"
-                )
+            # ``mutation`` anchors one endpoint (``target_id``);
+            # ``mutation_social`` anchors the dyad and must produce a
+            # snapshot on BOTH endpoints (target + rel_counterpart) so
+            # the relationship reading is stored symmetrically.
+            endpoints_to_check: List[str] = []
+            if ce.target_id in entity_ids:
+                endpoints_to_check.append(ce.target_id)
+            if ce.causality_type == "mutation_social":
+                counterpart = getattr(ce, "rel_counterpart_id", None)
+                if (
+                    counterpart
+                    and counterpart in entity_ids
+                    and counterpart != ce.target_id
+                ):
+                    endpoints_to_check.append(counterpart)
+            for endpoint in endpoints_to_check:
+                ticks = update_index.get((endpoint, ce.trait_target), [])
+                if not any(abs(t - ce.fabula_time) <= 1 for t in ticks):
+                    unmatched.append(
+                        f"{ce.source_id}→{endpoint} "
+                        f"({ce.trait_target}, fabula={ce.fabula_time})"
+                    )
         if not unmatched:
             return result
         sample = "; ".join(unmatched[:6])
@@ -5743,19 +5757,28 @@ def _build_consequences_agent(
         for ce in ctx.deps.chunk_causal:
             if ce.causality_type not in ("mutation", "mutation_social"):
                 continue
-            target_ent = (
-                ce.target_id if ce.causality_type == "mutation"
-                else ce.target_id  # mutation_social: target_id is the perspective entity
-            )
-            if not target_ent.startswith("ENT_"):
-                continue
-            # Loose match: same entity touched by something in this chunk is OK.
-            # We only flag when the entity has no update at all.
-            if target_ent not in eu_entity_set:
-                missing.append(
-                    f"{ce.source_id} → {target_ent} "
-                    f"({ce.causality_type}, trait={ce.trait_target})"
-                )
+            # Both ``mutation`` and ``mutation_social`` require an
+            # EntityUpdate on the perspective-entity ``target_id``.
+            # ``mutation_social`` additionally requires one on the
+            # ``rel_counterpart_id`` so the relationship reading is
+            # anchored on BOTH endpoints (parity contract symmetric).
+            endpoints: List[str] = []
+            if ce.target_id.startswith("ENT_"):
+                endpoints.append(ce.target_id)
+            if ce.causality_type == "mutation_social":
+                counterpart = getattr(ce, "rel_counterpart_id", None)
+                if (
+                    counterpart
+                    and counterpart.startswith("ENT_")
+                    and counterpart != ce.target_id
+                ):
+                    endpoints.append(counterpart)
+            for endpoint in endpoints:
+                if endpoint not in eu_entity_set:
+                    missing.append(
+                        f"{ce.source_id} → {endpoint} "
+                        f"({ce.causality_type}, trait={ce.trait_target})"
+                    )
         if missing:
             logger.info(
                 "[Validator·Consequences] %d mutation edge(s) lack a "
@@ -5815,7 +5838,15 @@ def _build_consequences_agent(
                 "Bad ids:\n" + "\n".join(bad)
             )
 
-        return ConsequencesExtraction(entity_updates=fixed_updates)
+        # AUDIT P0-3: forward object_updates and world_trait_updates through
+        # the validator. Previously this returned only ``entity_updates``,
+        # silently dropping both lanes — prose-grounded object movement
+        # and world-trait drift never reached the merge layer.
+        return ConsequencesExtraction(
+            entity_updates=fixed_updates,
+            object_updates=list(result.object_updates or []),
+            world_trait_updates=list(result.world_trait_updates or []),
+        )
 
     return agent
 
@@ -6144,10 +6175,49 @@ def _build_affect_agent(
                 continue
             kept_new_seeds.append(ns)
 
+        # AUDIT P0-2: validate belief_snapshots and pass them through so the
+        # affect → belief-drift lane survives the validator. Each snapshot
+        # must reference (a) an entity in this chunk's register, (b) a
+        # triggering event from this chunk, and (c) a fabula_time aligned
+        # with the triggering event. Mis-aligned snapshots are realigned
+        # rather than dropped.
+        kept_belief_snaps: List[ChunkBeliefSnapshot] = []
+        for bs in getattr(result, "belief_snapshots", []) or []:
+            if bs.holder_id not in ent_ids:
+                logger.warning(
+                    "[Affect] Dropping belief_snapshot — unknown holder %r.",
+                    bs.holder_id,
+                )
+                continue
+            if bs.triggered_by not in chunk_evt_index:
+                logger.warning(
+                    "[Affect] Dropping belief_snapshot for %s — triggered_by %r "
+                    "not in this chunk's events.",
+                    bs.holder_id, bs.triggered_by,
+                )
+                continue
+            evt = chunk_evt_index[bs.triggered_by]
+            if bs.fabula_time != evt.fabula_time:
+                logger.warning(
+                    "[Affect] Realigning belief_snapshot %s fabula_time "
+                    "%d → %d to match triggering event %s.",
+                    bs.holder_id, bs.fabula_time, evt.fabula_time, evt.id,
+                )
+                bs = bs.model_copy(update={"fabula_time": evt.fabula_time})
+            if bs.proposition_id and bs.proposition_id not in prop_ids:
+                logger.warning(
+                    "[Affect] Belief_snapshot %s references unknown PROP_ id %r; "
+                    "clearing proposition discriminator.",
+                    bs.holder_id, bs.proposition_id,
+                )
+                bs = bs.model_copy(update={"proposition_id": None})
+            kept_belief_snaps.append(bs)
+
         return ChunkAffectExtraction(
             proposition_snapshots=kept_prop_snaps,
             proposition_truth_commits=kept_truth,
             concern_snapshots=kept_concern_snaps,
+            belief_snapshots=kept_belief_snaps,
             new_concern_seeds=kept_new_seeds,
         )
 
@@ -6763,7 +6833,29 @@ def _merge_consequences_retry(
         if key not in seen:
             seen.add(key)
             merged.append(eu)
-    return ConsequencesExtraction(entity_updates=merged)
+    # AUDIT P0-3: forward object_updates and world_trait_updates from both
+    # base and retry. Retry entries that collide on (id, fabula_time) with
+    # a base entry are skipped — base wins, matching the entity_updates
+    # policy above.
+    obj_seen = {(ou.object_id, ou.fabula_time) for ou in (base.object_updates or [])}
+    obj_merged = list(base.object_updates or [])
+    for ou in (retry.object_updates or []):
+        key = (ou.object_id, ou.fabula_time)
+        if key not in obj_seen:
+            obj_seen.add(key)
+            obj_merged.append(ou)
+    wt_seen = {(wu.world_trait_id, wu.fabula_time) for wu in (base.world_trait_updates or [])}
+    wt_merged = list(base.world_trait_updates or [])
+    for wu in (retry.world_trait_updates or []):
+        key = (wu.world_trait_id, wu.fabula_time)
+        if key not in wt_seen:
+            wt_seen.add(key)
+            wt_merged.append(wu)
+    return ConsequencesExtraction(
+        entity_updates=merged,
+        object_updates=obj_merged,
+        world_trait_updates=wt_merged,
+    )
 
 
 
@@ -6776,15 +6868,29 @@ def _consequences_mutation_parity_broken(
 
     Each ``mutation`` edge with an ``ENT_`` target should produce at
     least one ``EntityUpdate`` for that entity (the parity contract
-    spelt out at the top of ``consequences_extraction.md``). When the
-    parity is broken, the snapshot the UI shows for that entity will
-    sit at the pre-story baseline and the trait shift the edge declared
-    is never anchored on the timeline.
+    spelt out at the top of ``consequences_extraction.md``). For
+    ``mutation_social`` edges the parity contract is symmetric: a
+    relationship trait shift is a property of the dyad, so BOTH the
+    ``target_id`` and the ``rel_counterpart_id`` should carry an
+    EntityUpdate anchoring the new relationship reading on the
+    timeline. When parity is broken, the snapshot the UI shows for
+    that entity will sit at the pre-story baseline and the trait
+    shift the edge declared is never anchored.
     """
     targets: set[str] = set()
     for ce in physics.causal_topology:
         if ce.causality_type == "mutation" and ce.target_id.startswith("ENT_"):
             targets.add(ce.target_id)
+        elif ce.causality_type == "mutation_social":
+            # Both endpoints of the dyad need anchoring.
+            if ce.target_id.startswith("ENT_"):
+                targets.add(ce.target_id)
+            if (
+                getattr(ce, "rel_counterpart_id", None)
+                and ce.rel_counterpart_id.startswith("ENT_")
+                and ce.rel_counterpart_id != ce.target_id
+            ):
+                targets.add(ce.rel_counterpart_id)
     if not targets:
         return []
     covered: set[str] = {eu.entity_id for eu in consequences.entity_updates}
@@ -6795,6 +6901,7 @@ def _social_channel_underextracted(
     social: "SocialExtraction",
     *,
     min_repeated_dyad: int = 2,
+    prior_channels: Optional[Dict[str, "Channel"]] = None,
 ) -> bool:
     """True when the chunk's utterance pattern strongly implies a
     standing channel that the LLM failed to extract.
@@ -6802,6 +6909,12 @@ def _social_channel_underextracted(
     Heuristic: at least one ``(speaker_id, frozenset(addressee_ids))``
     pair appears in ``min_repeated_dyad`` or more utterance events
     AND none of those utterances carries a ``via_channel_id`` AND
+    no Channel (in this chunk or in ``prior_channels``) covers the
+    pair. ``prior_channels`` is the running channel catalog from
+    earlier chunks; without it the heuristic would fire false-
+    positive retries on dyads whose channel was already established
+    in a prior chunk but the current chunk's utterances happen to
+    omit ``via_channel_id`` (round-3 audit fix).
     no Channel was emitted that already covers that pair.
 
     The cue is weakly-but-consistently informative: two letters from
@@ -6838,12 +6951,22 @@ def _social_channel_underextracted(
     # superset of its participants — in that case we don't need to
     # retry just because via_channel_id wasn't filled in.
     covered_pairs: set[Tuple[str, frozenset]] = set()
+    # Iterate this chunk's channels first, then prior chunks' so the
+    # heuristic's coverage check matches the runtime channel catalog
+    # the validator hands to the next stage.
     for ch in social.channels.values():
         ch_pids = set(ch.participant_ids)
         for key in pair_counts:
             speaker, addrs = key
             if {speaker} <= ch_pids and set(addrs) <= ch_pids:
                 covered_pairs.add(key)
+    if prior_channels:
+        for ch in prior_channels.values():
+            ch_pids = set(getattr(ch, "participant_ids", []) or [])
+            for key in pair_counts:
+                speaker, addrs = key
+                if {speaker} <= ch_pids and set(addrs) <= ch_pids:
+                    covered_pairs.add(key)
     for key, count in pair_counts.items():
         if (
             count >= min_repeated_dyad
@@ -8365,6 +8488,9 @@ async def _extract_single_chunk_async(
     social = SocialExtraction()
     entity_updates_final = physics.entity_updates  # legacy fallback
     object_updates_final: List[ObjectUpdate] = list(physics.object_updates)
+    # AUDIT P0-3 lane: world-trait updates are owned exclusively by the
+    # Consequences agent (PhysicsExtraction has no world_trait_updates).
+    world_trait_updates_final: List["WorldTraitUpdate"] = []
 
     # Hoisted to outer scope so the mirror / anonymous-utterance retries
     # below (which reuse social_msg + social_deps) can see them after
@@ -8448,7 +8574,10 @@ async def _extract_single_chunk_async(
         # sync pipeline's check). Triggers when ≥2 utterances share a
         # speaker→addressee dyad with no `via_channel_id` and no
         # Channel covers the pair.
-        if _social_channel_underextracted(local_social):
+        if _social_channel_underextracted(
+            local_social,
+            prior_channels=params.previous_chunk_channels,
+        ):
             logger.info(
                 "[Step 3b·Async] Chunk %d: utterances cluster on a "
                 "speaker→addressee dyad with no Channel — retrying "
@@ -8479,7 +8608,10 @@ async def _extract_single_chunk_async(
                 merged_chn = _merge_social_retry(local_social, chn_retry)
                 if (
                     len(merged_chn.channels) > len(local_social.channels)
-                    and not _social_channel_underextracted(merged_chn)
+                    and not _social_channel_underextracted(
+                        merged_chn,
+                        prior_channels=params.previous_chunk_channels,
+                    )
                 ):
                     local_social = merged_chn
                     logger.info(
@@ -9065,6 +9197,13 @@ async def _extract_single_chunk_async(
             object_updates_final = object_updates_final + list(
                 consequences_out.object_updates
             )
+        if consequences_out.world_trait_updates:
+            # AUDIT P0-3: forward Consequences' world_trait_updates so the
+            # per-chunk WORLD_ trait drift lane (mirroring belief drift)
+            # reaches ChunkTopology and the Phase C merge.
+            world_trait_updates_final = list(
+                consequences_out.world_trait_updates
+            )
 
     # Merge utterance events from the Social Agent into the chunk's event list.
     merged_events = _merge_utterances_into_events(
@@ -9080,6 +9219,7 @@ async def _extract_single_chunk_async(
     affect_props: List[ChunkPropositionSnapshot] = []
     affect_truth: List[PropositionTruthCommit] = []
     affect_concerns: List[ChunkConcernSnapshot] = []
+    affect_belief_snaps: List[ChunkBeliefSnapshot] = []
     affect_new_seeds: List["ConcernSeed"] = []
     if affect_agent is not None and params.chunk_catalogue is not None:
         catalogue = params.chunk_catalogue
@@ -9124,12 +9264,15 @@ async def _extract_single_chunk_async(
                 affect_props = list(affect_out.proposition_snapshots)
                 affect_truth = list(affect_out.proposition_truth_commits)
                 affect_concerns = list(affect_out.concern_snapshots)
+                affect_belief_snaps = list(
+                    getattr(affect_out, "belief_snapshots", []) or []
+                )
                 affect_new_seeds = list(affect_out.new_concern_seeds)
                 logger.info(
                     "[Step 3d·Async] Chunk %d affect: %d prop_snaps, "
-                    "%d truth_commits, %d concern_snaps, %d new_seeds.",
+                    "%d truth_commits, %d concern_snaps, %d belief_snaps, %d new_seeds.",
                     i + 1, len(affect_props), len(affect_truth),
-                    len(affect_concerns), len(affect_new_seeds),
+                    len(affect_concerns), len(affect_belief_snaps), len(affect_new_seeds),
                 )
             except Exception as exc:
                 logger.exception(
@@ -9156,9 +9299,11 @@ async def _extract_single_chunk_async(
         spatial_topology=physics.spatial_topology,
         entity_updates=entity_updates_final,
         object_updates=object_updates_final,
+        world_trait_updates=world_trait_updates_final,
         proposition_snapshots=affect_props,
         proposition_truth_commits=affect_truth,
         concern_snapshots=affect_concerns,
+        belief_snapshots=affect_belief_snaps,
         new_concern_seeds=affect_new_seeds,
     )
     logger.info(
@@ -12185,6 +12330,53 @@ def reconcile_affect(
                     "\u2014 inspect the chunk log for [Phase C] "
                     "Auto-closing entries.", auto_closed,
                 )
+
+    # ----------------------------------------------------------------
+    # 6b. Fold per-chunk affect ``belief_snapshots`` onto each holder's
+    #     ``EntityStateSnapshot.belief_confidence_updates`` lane (AUDIT
+    #     P0-2). The Phase B4 Affect Agent's belief drift was previously
+    #     dropped at the validator (no schema/topology wiring),
+    #     silently bypassing the only path by which on-page belief
+    #     confidence shifts could reach the reconstructed timeline.
+    #     Synthetic snapshots are appended (rather than merged into
+    #     existing same-tick entries) to preserve the audit trail of
+    #     which agent emitted each shift; ``reconstruct_entity_at``
+    #     folds repeated same-tick snapshots in order.
+    belief_snap_count = 0
+    for topo in topologies:
+        bucket: Dict[Tuple[str, int, str], List[BeliefConfidenceShift]] = {}
+        for bs in getattr(topo, "belief_snapshots", []) or []:
+            shift = BeliefConfidenceShift(
+                target_id=bs.target_id,
+                proposition_id=bs.proposition_id,
+                new_confidence=bs.new_confidence,
+                new_inertia=bs.new_inertia,
+            )
+            key = (bs.holder_id, bs.fabula_time, bs.triggered_by)
+            bucket.setdefault(key, []).append(shift)
+        for (eid, fab, evt_id), shifts in bucket.items():
+            ent = world.entities.get(eid)
+            if ent is None:
+                logger.debug(
+                    "[Phase C] Dropping %d belief_snapshot(s) \u2014 entity %s "
+                    "missing from world.", len(shifts), eid,
+                )
+                continue
+            ent.state_timeline = list(ent.state_timeline) + [
+                EntityStateSnapshot(
+                    fabula_time=fab,
+                    triggered_by=evt_id,
+                    belief_confidence_updates=shifts,
+                )
+            ]
+            belief_snap_count += len(shifts)
+        for ent in world.entities.values():
+            ent.state_timeline.sort(key=lambda s: s.fabula_time)
+    if belief_snap_count:
+        logger.info(
+            "[Phase C] Folded %d affect-driven belief confidence shift(s) "
+            "onto entity timelines.", belief_snap_count,
+        )
 
     # ----------------------------------------------------------------
     # 7. Auto-derive WORLD_ snapshots from event evidence.

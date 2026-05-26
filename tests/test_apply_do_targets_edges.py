@@ -206,11 +206,20 @@ class TestDoSpatialEdge:
         eng.apply_do_targets([DoSpatialEdge(
             source_id="LOC_A", target_id="LOC_B", action="sever",
         )])
-        assert ws.spatial_topology == []
+        # Round-4 audit fix: severed edges are tombstoned
+        # (``destroyed_at_fabula`` set) rather than removed, so the
+        # extraction / instantiator layers can still reason about
+        # the historical passage.
+        survivors = [
+            e for e in ws.spatial_topology
+            if e.source_id == "LOC_A" and e.target_id == "LOC_B"
+        ]
+        assert len(survivors) == 1
+        assert survivors[0].destroyed_at_fabula is not None
 
     def test_add_appends_world_edge(self):
         ws = _make_world()
-        ws.locations["LOC_C"] = Location(name="C", description="C", ambient_state={})
+        ws.locations["LOC_C"] = Location(id="LOC_C", name="C", description="C", ambient_state={})
         eng = _build_engine(ws)
         eng.apply_do_targets([DoSpatialEdge(
             source_id="LOC_B", target_id="LOC_C", action="add",

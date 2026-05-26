@@ -872,6 +872,110 @@ correctness target without the false positives.
 
 ---
 
+## D-AUDIT-2026-05-26. Post-audit theory + safety hardening
+
+A May 2026 audit (`AUDIT_2026-05-26.md`) reviewed the system against
+Pearl 2009, Bareinboim/Correa/Ibeling/Icard 2022, Correa & Bareinboim
+ICML 2025 (AMWN + ctf-calculus), and OWASP Top 10. The remediation
+batch below was applied as a single coordinated set.
+
+### D-A1. Pearl minimal surgery is axis-scoped
+
+**Decision.** `do(ENT_X.traits.fear=0.9)` only severs incoming causal
+edges whose `trait_target` is `fear` (or untyped legacy edges that
+could plausibly carry mutations onto `fear`). Edges that explicitly
+target a *different* trait axis on the same entity (e.g. `guilt`,
+`loyalty`) are preserved.
+
+**Alternative considered & rejected.** The previous behaviour cut
+*every* incoming causal edge to the intervened entity, regardless of
+which trait the intervention targeted. This violated Pearl's $G_{\bar
+X}$ construction (the do-operator severs edges into $X$, not into the
+parent node of $X$).
+
+**Invariant.** Per-axis trait surgery preserves the rest of the
+entity's causal parentage, so siblings of the intervened axis remain
+causally responsive to the rest of the graph.
+
+### D-A2. AMWN context preserves variable-level granularity
+
+**Decision.** `_to_context()` keeps the full dotted intervention path
+(`ENT_alice.traits.fear`), so AMWN node-shadowing distinguishes
+trait-level interventions on the same entity. Without this Rule 2/3
+ctf-reasoning silently collapsed non-overlapping interventions.
+
+### D-A3. Relationship surgery severs `mutation_social` edges
+
+**Decision.** `do(rel(A→B).affinity=…)` removes every incoming
+`mutation_social` edge whose
+`(rel_counterpart_id, trait_target)` matches the do-target, in
+addition to pinning the metric. Pinning alone left phantom edges that
+the AMWN saw as continuing dependencies.
+
+### D-A4. Anchor-filter beliefs by `established_at_fabula`
+
+**Decision.** `compute_epistemic_gaps` excludes beliefs whose
+`established_at_fabula` is strictly later than the brief's fabula
+frontier. Anachronistic beliefs no longer leak into briefs (a
+character cannot "know" a future fact).
+
+### D-A5. Two new auditor violation types
+
+**Decision.** The renderer-output auditor now emits
+`spurious_abduction` (Rung-2 prose invents background premises to
+explain an intervention's aftermath that the brief never licensed)
+and `premature_payoff` (a `withheld_cause` event is staged before its
+`syuzhet_index`). Both reuse the existing rationale-prefix machinery
+in `auditor.md` and reference text in
+`shadow_loom_ui/reasoning_helpers.py::VIOLATION_EXPLANATIONS`.
+
+### D-A6. Ingestion lanes restored end-to-end
+
+Three silent drops at validator boundaries were repaired:
+* affect `belief_snapshots` flow through to Phase-C reconcile;
+* consequences `object_updates` and `world_trait_updates` reach the
+  chunk topology;
+* `ObjectStateSnapshot` is constructed with the correct
+  `properties_set` / `properties_unset` fields.
+
+### D-A7. MCP error envelopes + API key hashing
+
+**Decision.** All MCP tools route errors through `_sanitised_error`,
+returning a typed `{error, code}` envelope rather than the raw
+exception text. API keys are stored with HMAC-SHA-256 + per-key salt
++ server-side pepper (`SHADOW_LOOM_API_KEY_PEPPER`), with an explicit
+index on `key_hash`. `list_projects(user_id=None)` no longer leaks
+non-example project metadata to unauthenticated callers.
+
+### D-A8. Cascade delete obeys ancestry, not row id
+
+`delete_version(cascade=True)` peels leaves from the descendant
+parent-map iteratively instead of sorting by descending row id; this
+remains correct after `reparent_version` rewrites ancestry across
+insertion order.
+
+### D-A9. Temporal acyclicity is strict
+
+`do_causal_edge` refuses `source_ft == target_ft` for every causality
+type except `chain_reaction` (the one type where simultaneity is the
+intended modelling primitive). Previously equal-tick edges silently
+formed directed cycles.
+
+### D-A10. MCP contract drift cleaned
+
+`narrate(mode=…)` now validates `mode` strictly (matching `ask`);
+`manage(action="fork")` accepts the same defaulted name as the
+granular `fork` tool; `set_active_version` requires editor scope on
+both the granular and the manage-action surfaces.
+
+These changes are exercised by additions to `tests/test_*.py` and do
+not change the public Pydantic schema. See
+[architecture.md §post-audit](architecture.md) and
+[academic-foundations.md §2.x](academic-foundations.md) for the
+underlying theory pointers.
+
+---
+
 ## What we rejected
 
 | Rejected | Why |

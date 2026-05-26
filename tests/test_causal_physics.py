@@ -337,7 +337,7 @@ class TestSpatialAffordanceBlocking:
         ws = _make_minimal_world()
         # Put Bob in a disconnected location
         ws.locations["LOC_ISLAND"] = Location(
-            name="Island", description="Unreachable island", ambient_state={},
+            id="LOC_ISLAND", name="Island", description="Unreachable island", ambient_state={},
         )
         ws.entities["ENT_BOB"].location_id = "LOC_ISLAND"
         # No spatial edge connects LOC_A → LOC_ISLAND
@@ -469,20 +469,26 @@ class TestMechanismTraitMap:
 
     def test_psychological_mechanism_favors_matching_traits(self):
         """'psychological' mechanism must give guilt (matching) a larger impulse
-        than courage (non-matching) by factor of MECHANISM_FALLBACK_FACTOR."""
+        than courage (non-matching) by factor of MECHANISM_FALLBACK_FACTOR.
+
+        AUDIT (post-2026-05-26): Pearl-correct abduction only updates
+        ``exogenous_noise`` during Case-2 event evidence (forward
+        propagation lands the value during ``propagate()``); assert on
+        the noise signal that mechanism-gating actually emits.
+        """
         ws = self._make_mechanism_world("psychological")
         sandbox = _build_sandbox(ws, ["ENT_ALICE"])
         engine = CausalPhysicsEngine(sandbox, ws)
         engine.abduction_update(["EVT_CAUSE"])
 
-        guilt = sandbox.nodes["ENT_ALICE"]["traits"]["guilt"]["value"]
-        courage = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
+        guilt = sandbox.nodes["ENT_ALICE"]["traits"]["guilt"]
+        courage = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]
 
         # guilt is in MECHANISM_TRAIT_MAP["psychological"], courage is not
         assert "guilt" in MECHANISM_TRAIT_MAP["psychological"]
         assert "courage" not in MECHANISM_TRAIT_MAP["psychological"]
-        # guilt should have shifted more than courage
-        assert guilt > courage
+        # guilt must have absorbed exogenous noise; courage stays at baseline
+        assert guilt.get("exogenous_noise", 0.0) > courage.get("exogenous_noise", 0.0)
 
     def test_unknown_mechanism_applies_equally(self):
         """Mechanism not in MECHANISM_TRAIT_MAP must apply full impulse to ALL traits."""
@@ -615,17 +621,25 @@ class TestAbductionEventEvidence:
     """Abduction must handle EventNode evidence via causal edges."""
 
     def test_event_evidence_updates_downstream_traits(self):
-        """Evidence event must update downstream entity traits via causal topology."""
+        """Evidence event must update downstream entity trait exogenous_noise
+        via causal topology.
+
+        AUDIT (post-2026-05-26): Pearl-correct Case-2 abduction updates
+        ``exogenous_noise`` (the inferred hidden variance U|e), not the
+        trait value directly — forward propagation later renders the
+        value. Assert on the actual signal abduction emits.
+        """
         ws = _make_minimal_world()
         sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"], "counterfactual")
 
-        old_courage = sandbox.nodes["ENT_BOB"]["traits"]["courage"]["value"]
+        old_noise = sandbox.nodes["ENT_BOB"]["traits"]["courage"].get("exogenous_noise", 0.0)
         engine = CausalPhysicsEngine(sandbox, ws)
         engine.abduction_update(["EVT_FIGHT"])
 
-        # EVT_FIGHT → ENT_BOB causal edge exists; traits should have shifted
-        new_courage = sandbox.nodes["ENT_BOB"]["traits"]["courage"]["value"]
-        assert new_courage != old_courage
+        # EVT_FIGHT → ENT_BOB causal edge exists; exogenous_noise on the
+        # affected trait must have shifted to absorb the unexplained variance.
+        new_noise = sandbox.nodes["ENT_BOB"]["traits"]["courage"].get("exogenous_noise", 0.0)
+        assert new_noise != old_noise
 
     def test_missing_evidence_node_no_crash(self):
         """Evidence node not in sandbox must be skipped without error."""

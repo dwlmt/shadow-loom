@@ -1126,6 +1126,15 @@ class CausalPhysicsEngine:
                 k = f"{t.world_trait_id}.value"
                 reportage_only[k] = float(t.value)
                 proposition_world_trait_keys.add(k)
+            elif isinstance(t, DoChannel):
+                # Round-4 audit fix: legacy-mirror typed channel
+                # activations so ``_collect_provenance_invalidations``
+                # (narrative_physics ~L442) can prune utterance
+                # provenance referencing the deactivated channel. The
+                # canonical write happens in ``_apply_do_channel``;
+                # this just exposes the surgery on the legacy envelope.
+                if t.active is not None:
+                    reportage_only[f"{t.channel_id}.active"] = bool(t.active)
             elif isinstance(t, DoNarrativeObject):
                 if t.new_location_id is not None:
                     reportage_only[f"{t.object_id}.location_id"] = t.new_location_id
@@ -2035,7 +2044,28 @@ class CausalPhysicsEngine:
         # the ``metrics`` dict or the legacy flat keys.
         sb = self.sandbox
         edge_key = None
-        if sb.has_node(target.source_entity_id) and sb.has_node(target.target_entity_id):
+        sandbox_ok = (
+            sb.has_node(target.source_entity_id)
+            and sb.has_node(target.target_entity_id)
+        )
+        if not sandbox_ok:
+            # Round-4 audit fix: fail-closed on sandbox endpoint
+            # absence. Previously we still mirrored to canonical and
+            # incremented ``_edge_do_targets_applied``, producing
+            # split-brain (canonical changed, sandbox didn't) and
+            # masking vacuity signals because the operation was
+            # counted as applied. If the sandbox doesn't carry the
+            # dyad, the surgery can't be reasoned about — skip the
+            # mirror entirely so downstream vacuity / provenance
+            # checks fire correctly.
+            logger.warning(
+                "[CausalPhysics·do_relationship] Endpoint(s) missing "
+                "from sandbox (%s -> %s); fail-closed: canonical "
+                "mirror skipped and surgery not counted as applied.",
+                target.source_entity_id, target.target_entity_id,
+            )
+            return
+        if sandbox_ok:
             for k, attrs in sb.get_edge_data(
                 target.source_entity_id, target.target_entity_id, default={}
             ).items() if sb.has_edge(target.source_entity_id, target.target_entity_id) else []:
@@ -2067,11 +2097,22 @@ class CausalPhysicsEngine:
             # the clamp without metric-dict expansion.
             attrs[target.metric] = float(target.value)
         else:
+            # Round-4 audit fix: fail-closed on sandbox endpoint
+            # absence. Previously the world-state mirror still ran
+            # and ``_edge_do_targets_applied`` was still incremented,
+            # producing split-brain (canonical changed, sandbox
+            # didn't) and masking vacuity signals because the
+            # operation was counted as applied. If the sandbox
+            # doesn't carry the dyad, the surgery can't be reasoned
+            # about -- skip the canonical mirror entirely so
+            # downstream vacuity / provenance checks fire correctly.
             logger.warning(
                 "[CausalPhysics\u00b7do_relationship] Endpoint missing from "
-                "sandbox (%s -> %s); world-state mirror still applied.",
+                "sandbox (%s -> %s); fail-closed: canonical mirror "
+                "skipped and surgery not counted as applied.",
                 target.source_entity_id, target.target_entity_id,
             )
+            return
         # World-state mirror.
         topology = list(self.world_state.social_topology or [])
         rel = next(
@@ -2123,6 +2164,14 @@ class CausalPhysicsEngine:
         # the clamped axis on the same step.
         self._intervened_nodes.add(target.source_entity_id)
         self._intervened_nodes.add(target.target_entity_id)
+        # Round-4 audit fix: also register the per-axis dyad in the
+        # relationship-intervention pin set the legacy path uses.
+        # Without this, ``propagate_social`` and other relationship-
+        # aware passes treated the typed clamp as ordinary edge data
+        # and could overwrite it on the same step.
+        self._intervened_relationships.add(
+            (target.source_entity_id, target.target_entity_id, target.metric)
+        )
         self._edge_do_targets_applied += 1
 
     def _apply_do_causal_edge(self, target: Any) -> None:
@@ -2204,8 +2253,16 @@ class CausalPhysicsEngine:
             )
             
             # P0-FIX (P0-6): Validate temporal ordering (CRITICAL-001 audit).
-            # Pearl's SCM requires cause to precede effect. Check that source
-            # event's fabula_time < target event's fabula_time (when both are events).
+            # Pearl's SCM requires cause to strictly precede effect. Check that
+            # source event's fabula_time < target event's fabula_time (when both
+            # are events).
+            # AUDIT (post-2026-05-26): the previous guard only rejected
+            # ``source_ft > target_ft`` which allowed same-tick (``==``) edges.
+            # Same-tick causal edges can form directed cycles silently. We now
+            # additionally reject ``source_ft == target_ft`` EXCEPT for
+            # ``chain_reaction`` causality, where simultaneity is the modelling
+            # intent (a stimulus and its immediate observable response sharing
+            # one tick).
             source_node = self.sandbox.nodes.get(target.source_id, {})
             target_node = self.sandbox.nodes.get(target.target_id, {})
             source_ft = source_node.get("fabula_time")
@@ -2216,6 +2273,19 @@ class CausalPhysicsEngine:
                         "[CausalPhysics·do_causal_edge] Temporal ordering violation: "
                         "cause %s (ft=%d) occurs AFTER effect %s (ft=%d). Refusing edge.",
                         target.source_id, source_ft, target.target_id, target_ft
+                    )
+                    return
+                if (
+                    source_ft == target_ft
+                    and target.causality_type != "chain_reaction"
+                ):
+                    logger.error(
+                        "[CausalPhysics·do_causal_edge] Same-tick causal edge "
+                        "refused (cause %s ft=%d == effect %s ft=%d, causality_type=%s). "
+                        "Only chain_reaction supports simultaneity; use a strictly "
+                        "later fabula_time on the effect otherwise.",
+                        target.source_id, source_ft, target.target_id, target_ft,
+                        target.causality_type,
                     )
                     return
                     
@@ -2265,6 +2335,17 @@ class CausalPhysicsEngine:
                 target.source_id, target.target_id,
             )
             return
+        # Round-4 audit fix: validate canonical endpoints BEFORE
+        # mutating the sandbox. Previously the sandbox add ran first;
+        # if the canonical check below early-returned, the sandbox
+        # edge persisted until reload and reasoning saw a phantom
+        # causal arrow that no merge would ever surface.
+        if not self._world_knows_node(target.source_id) or not self._world_knows_node(target.target_id):
+            logger.warning(
+                "[CausalPhysics·do_causal_edge] add skipped — endpoint(s) unknown to canonical world (%s→%s).",
+                target.source_id, target.target_id,
+            )
+            return
         # Sandbox side.
         if self.sandbox.has_node(target.source_id) and self.sandbox.has_node(target.target_id):
             self.sandbox.add_edge(
@@ -2272,17 +2353,6 @@ class CausalPhysicsEngine:
                 edge_type="causal",
                 **edge.model_dump(),
             )
-        # World-state side. Refuse to persist an edge whose endpoints
-        # are unknown to the canonical world — a typo / stale id would
-        # otherwise leave a dangling-endpoint edge in
-        # ``causal_topology`` that is invisible to the sandbox renderer
-        # but persists on every subsequent merge.
-        if not self._world_knows_node(target.source_id) or not self._world_knows_node(target.target_id):
-            logger.warning(
-                "[CausalPhysics·do_causal_edge] add skipped — endpoint(s) unknown to canonical world (%s→%s).",
-                target.source_id, target.target_id,
-            )
-            return
         topology = list(self.world_state.causal_topology or [])
         topology.append(edge)
         self.world_state.causal_topology = topology
@@ -2315,11 +2385,20 @@ class CausalPhysicsEngine:
             # on canonical topology edges to distinguish permanent vs temporary 
             # passage removal. This allows downstream reasoning about whether a
             # severed passage can be restored.
+            # Round-4 audit fix: count tombstones marked here so the
+            # rebuilds below can be removed entirely without losing
+            # the application-count signal. Filtering the topology
+            # discards ``destroyed_at_fabula`` along with the edge,
+            # which contradicts the tombstone semantics extract_graph
+            # and instantiator rely on.
+            _topo_removed = 0
             for e in (self.world_state.spatial_topology or []):
                 if (e.source_id == target.source_id and e.target_id == target.target_id) or \
                    (e.source_id == target.target_id and e.target_id == target.source_id and 
                     getattr(e, "bidirectional", False)):
-                    e.destroyed_at_fabula = ft
+                    if getattr(e, "destroyed_at_fabula", None) is None:
+                        e.destroyed_at_fabula = ft
+                        _topo_removed += 1
             
             # Bidirectional sever (round-7 audit fix). The ``add``
             # branch below registers the reverse arrow for
@@ -2353,22 +2432,6 @@ class CausalPhysicsEngine:
                     _rev_removed = len(rev_keys)
                     for k in rev_keys:
                         sb.remove_edge(target.target_id, target.source_id, key=k)
-                _topo_before = len(self.world_state.spatial_topology or [])
-                self.world_state.spatial_topology = [
-                    e for e in (self.world_state.spatial_topology or [])
-                    if not (
-                        (e.source_id == target.source_id and e.target_id == target.target_id)
-                        or (e.source_id == target.target_id and e.target_id == target.source_id)
-                    )
-                ]
-                _topo_removed = _topo_before - len(self.world_state.spatial_topology)
-            else:
-                _topo_before = len(self.world_state.spatial_topology or [])
-                self.world_state.spatial_topology = [
-                    e for e in (self.world_state.spatial_topology or [])
-                    if not (e.source_id == target.source_id and e.target_id == target.target_id)
-                ]
-                _topo_removed = _topo_before - len(self.world_state.spatial_topology)
             if matched or _rev_removed or _topo_removed:
                 self._edge_do_targets_applied += 1
             return
@@ -2556,17 +2619,32 @@ class CausalPhysicsEngine:
             triggered_by=getattr(target, "triggered_by", None),
         ))
         
-        # P1-FIX: Update object state_timeline for reconstruction
+        # P1-FIX: Update object state_timeline for reconstruction.
+        # AUDIT P0-4: ObjectStateSnapshot has no ``properties`` field; the
+        # snapshot is a DIFF (``properties_set`` / ``properties_unset``)
+        # plus location/owner changes from the incoming DoTarget. Tag the
+        # snapshot with the active sandbox branch so consumers walking the
+        # timeline can filter off-branch entries.
         if canonical is not None:
             from shadow_loom.models import ObjectStateSnapshot
+            branch_world_id = self.sandbox.graph.get("world_id", "factual")
+            if branch_world_id not in ("factual", "shadow"):
+                branch_world_id = "factual"
             snapshot = ObjectStateSnapshot(
+                world_id=branch_world_id,
                 fabula_time=ft,
                 triggered_by=getattr(target, "triggered_by", None) or "DO_OPERATOR",
-                location_id=canonical.location_id,
-                owner_id=canonical.owner_id,
-                properties=dict(canonical.properties or {}),
+                location_id=target.new_location_id,
+                owner_id=target.new_owner_id,
+                set_location_null=bool(target.set_location_null),
+                set_owner_null=bool(target.set_owner_null),
+                properties_set=dict(target.properties_set or {}),
+                properties_unset=list(target.properties_unset or []),
             )
             canonical.state_timeline.append(snapshot)
+            # Keep object timelines fabula-ordered so reconstruction is
+            # deterministic (matches entity relocation path).
+            canonical.state_timeline.sort(key=lambda s: s.fabula_time)
 
     def _default_fabula_time(self) -> int:
         """Best-effort fabula_time anchor when a DoTarget omits one.
@@ -2813,13 +2891,40 @@ class CausalPhysicsEngine:
                 )
         
         # Relationship interventions: remove incoming mutation_social edges
-        for (source_id, target_id, metric) in self._intervened_relationships:
-            # For relationships, the surgery is on the edge itself
-            # Remove any mutation_social edges that would modify this axis
-            # (These come from social propagation, not from the MultiDiGraph directly)
-            # The pinning in _intervened_relationships already prevents overwrites
-            # No additional edge removal needed here beyond what pinning provides
-            pass
+        # AUDIT (post-2026-05-26): pinning alone is insufficient. The
+        # sandbox MultiDiGraph carries ``mutation_social`` edges from
+        # event nodes into the perspective entity, with edge data
+        # ``rel_counterpart_id`` and ``trait_target`` identifying the
+        # specific (perspective, counterpart, metric) arrow being
+        # mutated (see ``propagate_social``). Per Pearl graph surgery
+        # on a relationship variable we drop every ``mutation_social``
+        # edge whose tuple matches the do-target so social propagation
+        # cannot re-fire onto the pinned axis and the AMWN sees the
+        # intervened metric as exogenous.
+        for (rel_source_id, rel_target_id, metric) in self._intervened_relationships:
+            if not self.sandbox.has_node(rel_source_id):
+                continue
+            incoming_edges_to_remove = []
+            for pred in list(self.sandbox.predecessors(rel_source_id)):
+                for key in list(self.sandbox[pred][rel_source_id].keys()):
+                    edge_data = self.sandbox[pred][rel_source_id][key]
+                    if edge_data.get("edge_type") != "causal":
+                        continue
+                    if edge_data.get("causality_type") != "mutation_social":
+                        continue
+                    if edge_data.get("rel_counterpart_id") != rel_target_id:
+                        continue
+                    if edge_data.get("trait_target") != metric:
+                        continue
+                    incoming_edges_to_remove.append((pred, rel_source_id, key))
+            for pred, tgt, key in incoming_edges_to_remove:
+                self.sandbox.remove_edge(pred, tgt, key=key)
+                edges_removed += 1
+                logger.debug(
+                    "[CausalPhysics\u00b7graph-surgery] Removed mutation_social "
+                    "%s\u2192%s (key=%s) for do(rel %s\u2192%s.%s)",
+                    pred, tgt, key, rel_source_id, rel_target_id, metric,
+                )
         
         if edges_removed > 0:
             logger.info(

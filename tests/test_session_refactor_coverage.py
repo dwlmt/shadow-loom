@@ -251,7 +251,12 @@ class TestPatchWorldState:
             project_id=pid,
         )
         assert "error" in result
-        assert "Invalid patch payload" in result["error"]
+        # Round-4 audit fix: patch_world_state now routes caught
+        # exceptions through ``_sanitised_error`` (which returns a
+        # generic ``{op} failed`` envelope plus ``error_type``) so
+        # provider/validator details no longer leak to the client.
+        assert result["error"] == "patch_world_state failed"
+        assert result.get("error_type") == "ValidationError"
 
     def test_empty_patch_succeeds_no_op(self):
         ws = deepcopy(macbeth_ws)

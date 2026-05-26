@@ -158,11 +158,19 @@ def _to_context(interventions: Mapping[str, Any]) -> InterventionContext:
     as a canonical value so floating-point drift in values cannot fragment
     the AMWN's node-shadowing behaviour. Value-sensitive reasoning lives
     in :func:`check_consistency`, which compares raw values directly.
+
+    AUDIT (post-2026-05-26): preserve dotted-path granularity. The SCM
+    treats ``ENT_alice.traits.anger`` and ``ENT_alice.traits.fear`` as
+    *different* variables (per-axis trait nodes); collapsing both onto
+    the entity id falsely identified non-overlapping do-surgeries as
+    the same intervention and over-shadowed AMWN nodes. We now strip
+    only the value-suffix (everything after the second dot for
+    ``traits.``/``properties.``/``beliefs.``-style scoped axes is kept
+    on the variable id). For non-scoped paths the full path is used.
     """
     items: Set[InterventionItem] = set()
     for path, _value in interventions.items():
-        node_id = path.split(".", 1)[0] if "." in path else path
-        items.add((node_id, ""))
+        items.add((path, ""))
     return frozenset(items)
 
 

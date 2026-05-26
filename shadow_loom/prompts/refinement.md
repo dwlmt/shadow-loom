@@ -98,3 +98,68 @@ If the auditor's `style_mismatch` feedback is the *only* major violation, your r
 - Add a subtle behavioural cue that supports the hidden background variable.
 - Do NOT explicitly state the hidden event.
 - A gesture, a weight in a pocket, an involuntary flinch — something the reader can decode later.
+
+### Narrative Tension Threshold Not Met
+- The composite triad (suspense + mystery + irony + Δsurprise + unpaid setup debt) read too relaxed for the brief's target.
+- Keep every `displacement` listed in the `NARRATIVE TENSION` payload *visible but unresolved* on the page — a loaded gun glanced at, a sealed letter left on the desk. Do NOT pay any of them off in this scene unless the brief explicitly says this is the payoff beat.
+- Render every `withheld_cause` only through its downstream effects; never name the cause itself.
+- Let the focal circle each `upcoming_revelation` proposition without committing to it — proximity, not arrival.
+- Tighten pacing in proportion to the composite score: longer breath-before sentences, blunter near-miss sentences. A markedly relaxed or markedly frantic cadence relative to the score is itself the violation.
+- Do NOT name the score, the proposition ids, or the concern ids in author voice (Rule 10).
+
+### Meta-Narration (universal)
+- Strip every reference to the simulation, the pipeline, the brief, the directive, the named effect, "the reader", "the audience", "the focal", timelines, divergences, alternatives, or any abstract aphorism about fate / possibility / causality.
+- Strip every author-voice subjunctive ("if he had…", "would have…", "could have…", "might have…") describing what happened. Render the events as plain past-tense narration of what actually occurred. Subjunctive in character voice (dialogue or interior monologue) is still allowed — the ban is on author voice only.
+- The single exception is the REGRET directive's "if only…" character interior monologue.
+
+### Undeclared Element
+- Either (a) replace the offending name with an existing referent from the SCENE CONTEXT, (b) remove the reference, or (c) add it to `introduced_elements` with a stable id (`ENT_*` / `LOC_*` / `OBJ_*` / `WORLD_*` / `CHN_*` / `PROP_*` / `CCN_*`), a `name`, and a one-sentence `justification`.
+- Free-floating proper nouns and asserted-as-existing roles ("the courier", "the witness", "the henchman") that resolve to neither SCENE CONTEXT nor `introduced_elements` are the failure mode — anonymous crowd presence is fine.
+
+### Unjustified Introduction (Reuse-First)
+- Scan SCENE CONTEXT for an existing element that fits the required role / place / object / capability / proposition. If one exists, reuse its id and drop the declaration.
+- If none fits, rewrite the `justification` to **name the existing candidates considered (by id or name) and explain why each was insufficient** — role mismatch, location mismatch, timeline impossibility, capability mismatch. Boilerplate ("needed for the scene", "to advance the plot") will fail again.
+
+### Event Co-presence Violation / Omission / Location Mismatch
+- Every event in SCENE CONTEXT carries an `at_location_id` and binds its actors + non-channel targets as physically present there at `fabula_time`.
+- `event_location_mismatch`: do NOT stage the event at a different named location — relocate the action to the event's anchor location, or split the relocation into a separate post-event beat.
+- `event_copresence_violation`: do NOT write a bound participant as absent — bring them on-page at the event's location, or, if they cannot be there, the brief itself is wrong (flag in `constraints_violated`, do not fix in prose).
+- `event_copresence_omission`: do NOT add a present character whose reconstructed location at `fabula_time` is elsewhere — remove the phantom witness or render their participation as channel-mediated (telephone, letter, signal).
+- Channel-mediated addressees are NOT bodily present — render reception through the channel, not at the speaker's location.
+
+### Inert Intervention Aftermath
+- The brief carries an `INERT INTERVENTION` block: the engine's verdict is that the do-surgery produced ZERO downstream effects.
+- Stage the *attempted* surgery and its *resistance* only. Do NOT depict any downstream trait shift, relationship update, belief change, concern flip, proposition flip, or world-state delta.
+- Do NOT write aftermath beats that imply the change "took hold" ("still steady", "as composed as ever", "unshaken", "the shift held") — those are precisely the phrases the auditor flagged.
+- The inertia / counterforce that absorbed the impulse IS the scene; resistance, not adjustment.
+
+### Spurious Abduction (Pearl Rung-3)
+- The auditor flags `spurious_abduction` when the prose asserts a NEW historical cause that the engine never abduced — a fresh confession, an unannounced accomplice, an off-page event the world state never recorded, a backstory revelation that retroactively rewrites the world's exogenous-noise (`U`) ledger.
+- Pearl Rung-3 abduction is monotone over the engine's `U` ledger. The renderer may surface antecedents the brief's `AbductionTruth` block already lists, but may NOT mint new ones in author voice.
+- Fix: pick exactly one of (a), (b), or (c) for the flagged passage:
+  - (a) **Delete** the asserted past event entirely. The scene must work without it.
+  - (b) **Replace** with a behaviourally-equivalent on-page beat that produces the same dramatic effect without claiming a new historical fact (e.g. instead of "as it turned out, he had bribed the guard years before", render the guard's present-tense deference as ambiguous behaviour the reader can read either way).
+  - (c) **Reframe** the assertion as a *character's belief or suspicion* — interior monologue, dialogue speculation — never as a narrator-asserted fact. ("She wondered if he had bribed the guard" is fine; "He had bribed the guard" is not.)
+- Telltale phrasings to scrub from author voice: "as it turned out…", "what no-one knew was that…", "years before, she had…", "unbeknownst to him…", "what they did not realise…". Each is a Rule-3 (Exclusion) breach unless it matches an abduction-truth entry verbatim.
+
+### Premature Payoff
+- The auditor flags `premature_payoff` when the prose resolves a proposition (commits its `truth_at_fabula`) or closes a concern (depicts its activation as complete) at a syuzhet position BEFORE the brief's declared window for that resolution.
+- The structural failure is collapse of downstream suspense: the next merge ingests a forced commit the engine never licensed, and any `SuspenseProfile` / `NARRATIVE TENSION` payload that depended on the unresolved overhang silently flattens.
+- Fix: render *circling*, *approach*, *near-miss* instead of arrival. Concretely:
+  - For an open proposition: let the focal character entertain it, partially evidence it, even speak about it — but do not let the narrator commit to its truth value on-page. Leave at least one alternative reading available to the reader.
+  - For an open concern: depict the conditions that *would* activate it tightening, not the activation itself. Pressure without release.
+- If the brief's `NARRATIVE TENSION` block lists the affected proposition under `upcoming_revelations`, this beat is explicitly NOT the payoff beat; the payoff lands at a later syuzhet anchor the brief will surface when it's time.
+- Do NOT "fix" a premature payoff by adding more flowery prose around the same commit — the commit itself is the violation. Strip the commit; the scene ends with the question still open.
+
+---
+
+## Reading the `=== ENGINE-THRESHOLD FAILURES ===` Block
+
+When the refinement prompt carries an `=== ENGINE-THRESHOLD FAILURES (deterministic scorecard) ===` block, the failures listed are measured directly from the physics engine — they are not LLM-judged. Treat them as hard constraints alongside the auditor violations. Each line has the form `metric=value op limit` and tells you exactly which threshold moved out of tolerance:
+
+- **`foreshadowing_payoff_score=X < min=Y`** — too many `withheld_cause` narrative tensions are still unpaid relative to the brief's target. Pay off (i.e. render the downstream effect on-page) at least one withheld_cause whose effect event is in the current scene's fabula window. Do NOT invent a new payoff; surface one the brief already declared.
+- **`cognitive_plausibility_score=X < min=Y`** — too many miracle-steps are stacking up. Inspect the `miracle_steps_detected` list, then for each `(node, trait, impact, inertia)` entry, render an explicit on-page mechanism (action, dialogue, perceived threat, chemical / kinetic / social force) strong enough to overcome the listed inertia. Asserting the trait change without staging the mechanism is the precise failure mode.
+- **`affective_loss_mse=X > max=Y`** — the target effect's trait or structural-effect score is too far from the brief's target. Re-read the per-effect rendering-mode rules above (mystery / suspense / regret / etc.) and tighten the prose so it actually realises the target effect rather than gesturing at it.
+- **`miracle_steps_detected=[…] (counted=N, allowed=M)`** — the same miracle-step list as the plausibility failure, but breached on count rather than ratio. Same fix: stage a mechanism per entry, or, when many entries share an entity, render that entity's resistance pattern as a single coherent sequence instead of separate beats.
+
+When the prompt also carries an `=== AUDITOR FEEDBACK ===` block (it always will when engine failures fire), address the engine failures as part of the same rewrite — do not produce a draft that fixes one but not the other.

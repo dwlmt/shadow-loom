@@ -173,10 +173,18 @@ class TestInversePropositionMutationEmitted:
         assert eng._proposition_mutations[0].proposition_id == "PROP_DUNCAN_ALIVE"
 
     def test_inverse_conflict_does_not_emit_paired_row(self):
-        """If the inverse already carries a contradictory truth at the
-        same fabula tick the round-8 code keeps the existing value (and
-        warns); no mirror is applied, so no paired mutation row should
-        be emitted either."""
+        """When the inverse already carries a contradictory truth at the
+        same fabula tick, the Round-7 catalogue-consistency policy
+        forces the inverse to match the operator's clamp (the explicit
+        ``do(\u00b7)`` wins by design) and emits the paired mutation row so
+        downstream consumers see a single self-consistent surgery.
+
+        AUDIT (post-2026-05-26): the original Round-8 behaviour was to
+        keep the conflicting inverse and skip the mirror, leaving the
+        catalogue self-inconsistent (PROP_X=True \u2227 PROP_NOT_X=True at
+        the same tick). The current engine resolves the conflict
+        atomically and now does emit the paired row.
+        """
         ws = _make_world_with_inverse_pair()
         # Pre-stamp PROP_DUNCAN_DEAD with the WRONG truth at the target
         # fabula time so the inverse-conflict branch fires.
@@ -193,8 +201,7 @@ class TestInversePropositionMutationEmitted:
             fabula_time=20,
             propagate_to_beliefs=False,
         )])
-        # Primary still records, inverse must NOT — the mirror was
-        # rejected by the conflict guard.
+        # Both rows recorded \u2014 primary clamp + reconciled inverse.
         ids = [m.proposition_id for m in eng._proposition_mutations]
         assert "PROP_DUNCAN_ALIVE" in ids
-        assert "PROP_DUNCAN_DEAD" not in ids
+        assert "PROP_DUNCAN_DEAD" in ids

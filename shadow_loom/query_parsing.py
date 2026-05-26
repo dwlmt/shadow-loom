@@ -5,9 +5,11 @@
 Natural-language → structured query parsing agent.
 
 Takes a free-form user request and an optional ``WorldStateV1``, then:
-  1. Classifies the query into one of the six query types.
-  2. For graph-intervention types (intervention, counterfactual, directive),
-     resolves entity / event / object IDs from the world model.
+  1. Classifies the query into one of the eight query types
+     (observation, intervention, counterfactual, directive, interrogate,
+     general, manual_edit, evaluate).
+  2. For graph-intervention types (intervention, counterfactual, directive,
+     manual_edit), resolves entity / event / object IDs from the world model.
   3. Validates that referenced IDs exist and the query is well-formed.
   4. Returns a fully populated ``UserRequest`` ready for ``run_pipeline``.
 """
@@ -592,7 +594,12 @@ def _format_valid_ids_section(world_state: WorldStateV1) -> str:
 # :class:`ParsedQuery` shape so all downstream validation, fallback,
 # and query-construction code keeps working unchanged.
 
-#: Query types that benefit from constrained structured output.
+#: Query types that benefit from constrained structured output. Only
+#: types with a registered ``_DYNAMIC_MODEL_BUILDERS`` entry belong
+#: here. Pure read-only / pass-through types (``observation``,
+#: ``general``, ``manual_edit``, ``evaluate``) intentionally remain in
+#: the unconstrained free-form classifier output and are post-processed
+#: by the dispatcher.
 _CONSTRAINED_QUERY_TYPES: set[str] = {
     "intervention", "counterfactual", "directive", "interrogate",
 }
@@ -2602,7 +2609,25 @@ def _try_fuzzy_repair(
     def _remap_dict_keys(d: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if d is None:
             return None
-        return {remappings.get(k, k): v for k, v in d.items()}
+
+        def _remap_key(k: str) -> str:
+            # Round-4 audit fix: observations / interventions /
+            # historical_interventions key by dotted paths like
+            # ``ENT_X.traits.guilt`` or ``OBJ_Y.location_id``. The
+            # prior implementation only matched the full key, so a
+            # remapping of the base entity ID (the most common case
+            # produced by the LLM-feedback step) silently failed for
+            # every dotted form and left the validation error
+            # unrepaired on the next round-trip.
+            if k in remappings:
+                return remappings[k]
+            if "." in k:
+                base, rest = k.split(".", 1)
+                if base in remappings:
+                    return f"{remappings[base]}.{rest}"
+            return k
+
+        return {_remap_key(k): v for k, v in d.items()}
 
     def _remap_list(lst: Optional[List[str]]) -> Optional[List[str]]:
         if lst is None:
@@ -2615,8 +2640,21 @@ def _try_fuzzy_repair(
     patched.focus_entity_ids = _remap_list(patched.focus_entity_ids)
     patched.evidence_node_ids = _remap_list(patched.evidence_node_ids)
     patched.target_entity_ids = _remap_list(patched.target_entity_ids)
-    if patched.target_vector_id and patched.target_vector_id in remappings:
-        patched.target_vector_id = remappings[patched.target_vector_id]
+    if patched.target_vector_id:
+        # Round-6 audit: target_vector_id often arrives as a dotted form
+        # like ``ENT_X.traits.fear``. The prior code only remapped the
+        # full string when present in ``remappings``, but the actual
+        # remapping is typically keyed on the base entity ID
+        # (``ENT_X -> ENT_Y``), so the dotted form was left stale and
+        # validation kept failing after fuzzy repair. Mirror the dotted-
+        # base-id handling from ``_remap_dict_keys``.
+        tvid = patched.target_vector_id
+        if tvid in remappings:
+            patched.target_vector_id = remappings[tvid]
+        elif "." in tvid:
+            base, rest = tvid.split(".", 1)
+            if base in remappings:
+                patched.target_vector_id = f"{remappings[base]}.{rest}"
     for rid in patched.resolved_ids:
         if rid.resolved_id in remappings:
             rid.resolved_id = remappings[rid.resolved_id]

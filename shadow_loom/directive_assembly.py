@@ -209,9 +209,10 @@ class RenderingDirective(BaseModel):
         description=(
             "The rendering strategy: mystery, dramatic_irony, surprise, "
             "suspense, fear, joy, regret, grief, rage, love, "
-            "observation, intervention, counterfactual, manual_edit, "
-            "fallback, default. (Interrogation queries return graph "
-            "analysis, not prose, and never reach this directive.)"
+            "narrative_tension, observation, intervention, "
+            "counterfactual, manual_edit, fallback, default. "
+            "(Interrogation queries return graph analysis, not prose, "
+            "and never reach this directive.)"
         ),
     )
     pov_lock: Optional[str] = Field(
@@ -2391,6 +2392,157 @@ def build_false_proposition_constraints(
     )]
 
 
+def build_true_proposition_constraints(
+    world_state: WorldStateV1,
+    syuzhet_anchor: Optional[int],
+    *,
+    world_label: str = "this",
+    max_lines: int = 20,
+) -> List[ConstraintBlock]:
+    """HARD constraints for propositions committed TRUE at the anchor.
+
+    Mirror of :func:`build_false_proposition_constraints`. Without a
+    positive counterpart the renderer is told what *not* to enact but
+    nothing about which world-truths it MUST honour. Surfacing the
+    true-at-anchor propositions makes the brief symmetric so a Rung-1
+    observation or Rung-3 counterfactual that lands on a TRUE-committed
+    fact cannot quietly omit / contradict it (AUDIT brief/auditor
+    consistency).
+
+    Characters may still *disbelieve* these (dramatic irony); the
+    constraint targets the narration layer only.
+    """
+    props = getattr(world_state, "propositions", None) or []
+    if not props:
+        return []
+    prop_iter = list(props.values()) if isinstance(props, dict) else list(props)
+    cap = syuzhet_anchor
+    committed_true: List[tuple] = []
+    for p in prop_iter:
+        pid = getattr(p, "id", None) or getattr(p, "proposition_id", None) or "?"
+        truth_map = getattr(p, "truth_at_fabula", {}) or {}
+        if not truth_map:
+            continue
+        applicable = [
+            (int(t), bool(v))
+            for t, v in truth_map.items()
+            if cap is None or int(t) <= cap
+        ]
+        if not applicable:
+            continue
+        applicable.sort(key=lambda kv: kv[0])
+        last_t, last_v = applicable[-1]
+        if last_v is True:
+            committed_true.append((pid, p, last_t))
+    if not committed_true:
+        return []
+    lines: List[str] = []
+    for pid, p, t in committed_true[:max_lines]:
+        desc = (getattr(p, "description", "") or "").strip()
+        if len(desc) > 120:
+            desc = desc[:117] + "..."
+        snippet = f" \u2014 {desc}" if desc else ""
+        lines.append(f"  - {pid} (true @ T={t}){snippet}")
+    if len(committed_true) > max_lines:
+        lines.append(f"  - ...and {len(committed_true) - max_lines} more.")
+    return [ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=(
+            f"=== TRUE PROPOSITIONS (HARD) === \u2014 the physics commits "
+            f"these propositions TRUE at or before this scene's anchor "
+            f"in the {world_label} world. The narration MUST honour them "
+            "(do not stage them as not-yet-the-case, undecided, or "
+            "contradicted). Characters may still *disbelieve* them \u2014 "
+            "that mismatch is allowed and often drives dramatic irony \u2014 "
+            "but the prose may not enact the opposite as fact.\n"
+            + "\n".join(lines)
+        ),
+        evidence={"true_proposition_ids": [pid for pid, _, _ in committed_true]},
+    )]
+
+
+def build_world_invariant_constraints(
+    world_state: WorldStateV1,
+    syuzhet_anchor: Optional[int],
+    *,
+    world_label: str = "this",
+    intensity_floor: float = 0.5,
+    max_lines: int = 12,
+) -> List[ConstraintBlock]:
+    """HARD constraint enumerating WORLD_ traits at or above ``intensity_floor``.
+
+    Walks ``world_state.world_traits`` and emits the reconstructed
+    magnitude *at* ``syuzhet_anchor`` (consulting ``state_timeline``).
+    Only traits whose reconstructed intensity meets the floor are
+    surfaced \u2014 these are the load-bearing world constraints the
+    renderer cannot quietly violate (e.g. surveillance state, magic
+    system rules, wartime economy). Without this block a Rung-3
+    counterfactual brief carries no positive evidence of the world
+    laws the new scene must continue to satisfy (AUDIT P0).
+    """
+    world_traits = getattr(world_state, "world_traits", None) or {}
+    if not world_traits:
+        return []
+    cap = syuzhet_anchor
+    invariants: List[tuple] = []
+    for wid, wt in world_traits.items():
+        base = getattr(wt, "magnitude", None)
+        base_value = float(getattr(base, "value", 0.0) or 0.0) if base else 0.0
+        effective_value = base_value
+        effective_t: Optional[int] = None
+        timeline = getattr(wt, "state_timeline", None) or []
+        if timeline and cap is not None:
+            applicable = [
+                snap for snap in timeline
+                if getattr(snap, "fabula_time", None) is not None
+                and int(snap.fabula_time) <= cap
+                and getattr(snap, "magnitude", None) is not None
+            ]
+            if applicable:
+                applicable.sort(key=lambda s: int(s.fabula_time))
+                latest = applicable[-1]
+                effective_value = float(getattr(latest.magnitude, "value", base_value) or base_value)
+                effective_t = int(latest.fabula_time)
+        elif timeline:
+            # No anchor: take the last snapshot in declaration order.
+            last_snap = timeline[-1]
+            if getattr(last_snap, "magnitude", None) is not None:
+                effective_value = float(getattr(last_snap.magnitude, "value", base_value) or base_value)
+                effective_t = int(getattr(last_snap, "fabula_time", 0) or 0)
+        if effective_value < intensity_floor:
+            continue
+        invariants.append((wid, wt, effective_value, effective_t))
+    if not invariants:
+        return []
+    invariants.sort(key=lambda row: -row[2])
+    lines: List[str] = []
+    for wid, wt, val, t in invariants[:max_lines]:
+        name = (getattr(wt, "name", "") or "").strip() or wid
+        category = (getattr(wt, "category", "") or "").strip()
+        cat_str = f" [{category}]" if category else ""
+        when = f" @ T={t}" if t is not None else ""
+        lines.append(f"  - {wid}: {name}{cat_str} (intensity={val:.2f}{when})")
+    if len(invariants) > max_lines:
+        lines.append(f"  - ...and {len(invariants) - max_lines} more.")
+    return [ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=(
+            f"=== WORLD INVARIANTS (HARD) === \u2014 the {world_label} world "
+            f"carries these load-bearing global traits at or above "
+            f"intensity {intensity_floor:.2f} at this scene's anchor. The "
+            "narration must remain consistent with them (do not quietly "
+            "soften, contradict, or write past them; character agency must "
+            "still bend to their constraints).\n"
+            + "\n".join(lines)
+        ),
+        evidence={
+            "world_invariant_ids": [wid for wid, _, _, _ in invariants],
+        },
+    )]
+
+
 def _latest_proposition_truth_map(
     world_state: WorldStateV1,
     syuzhet_anchor: Optional[int],
@@ -2689,9 +2841,23 @@ class DirectiveAssembler:
     # ------------------------------------------------------------------
     # Epistemic gap computation
     # ------------------------------------------------------------------
-    def compute_epistemic_gaps(self, entity_ids: List[str]) -> List[EpistemicGap]:
-        """Compare each entity's beliefs against the objective graph state."""
+    def compute_epistemic_gaps(
+        self,
+        entity_ids: List[str],
+        syuzhet_anchor: Optional[int] = None,
+    ) -> List[EpistemicGap]:
+        """Compare each entity's beliefs against the objective graph state.
+
+        AUDIT (post-2026-05-26): when ``syuzhet_anchor`` is supplied,
+        beliefs whose ``established_at_fabula`` is *strictly after* the
+        anchor's fabula cut-off are filtered out. Treating future
+        beliefs as already-held at the reader's current position
+        contaminated dramatic-irony and mystery directives — the brief
+        would compute gaps against knowledge the entity hasn't acquired
+        yet at this point in the syuzhet.
+        """
         gaps: List[EpistemicGap] = []
+        anchor_t = self._syuzhet_anchor_to_fabula_time(syuzhet_anchor)
 
         for eid in entity_ids:
             ent_data = self._find_entity(eid)
@@ -2699,6 +2865,10 @@ class DirectiveAssembler:
                 continue
 
             for belief in ent_data.get("beliefs", []):
+                if anchor_t is not None:
+                    est = belief.get("established_at_fabula")
+                    if est is not None and est > anchor_t:
+                        continue
                 target_id = belief.get("target_id", "")
                 believed = belief.get("perceived_state", "")
                 confidence = belief.get("confidence", 0.5)
@@ -5351,6 +5521,15 @@ class DirectiveAssembler:
             §3.3 require to behave well.
             """
             revealed_ids = self._revealed_event_ids(anchor)
+            # Build event-id → actor-id set lookup so the source-side
+            # branch below can correctly fire on entity participation
+            # (round-3 audit fix). Previously the source-side check
+            # was ``ce.source_id == eid``, which compared an event id
+            # to an entity id and could never be true — every
+            # source-side Bayesian update was silently dropped.
+            _evt_actors: Dict[str, set[str]] = {
+                evt.id: set(evt.actor_ids) for evt in self.world_state.events
+            }
             base = _trait_marginal(trait_name, eid)
             s = self._SURPRISE_PRIOR_PSEUDOCOUNT  # weak Beta pseudo-count anchor
             alpha = s * base
@@ -5363,12 +5542,16 @@ class DirectiveAssembler:
                     # Target-side: full Bernoulli update.
                     alpha += w * actual_val
                     beta += w * (1.0 - actual_val)
-                elif ce.source_id == eid:
+                elif eid in _evt_actors.get(ce.source_id, ()):
                     # Batch C.5 — source-side: reduced-weight
                     # update. "X did Y to Z" speaks more strongly
                     # about Z's traits than X's, but X's act
                     # itself is evidence about X's traits too
-                    # (ambition reinforced by acting on it).
+                    # (ambition reinforced by acting on it). The
+                    # source-edge participant test is membership in
+                    # the source event's actor_ids — NOT identity
+                    # with the source-event id, which the legacy
+                    # check used and which never matched.
                     sw = w * self._SURPRISE_SOURCE_EDGE_WEIGHT
                     alpha += sw * actual_val
                     beta += sw * (1.0 - actual_val)
@@ -6997,6 +7180,71 @@ class DirectiveAssembler:
                 ],
             )
 
+        # =============================================================
+        # NARRATIVE TENSION  (Brewer-Lichtenstein triad:
+        # suspense + mystery + surprise + irony + unpaid setup debt)
+        # =============================================================
+        # Composite mode. The per-component renderer guidance
+        # (mystery / suspense / surprise / dramatic_irony) is already
+        # carried by the universal ``=== NARRATIVE TENSION ===`` block
+        # that ``assemble_creative_brief`` (generation.py) writes from
+        # ``brief.narrative_tensions``. The job of this branch is to
+        # (a) emit a HARD composite envelope so the renderer treats
+        # the whole triad as the primary affect, and (b) attach the
+        # numeric tension reading so the auditor can score parity
+        # against the rendered scene.
+        elif effect == "narrative_tension":
+            tension_score = self.compute_tension_score(
+                entity_ids, syuzhet_anchor,
+            )
+            withheld = [
+                t for t in narrative_tensions
+                if t.tension_type == "withheld_cause"
+            ]
+            upcoming = [
+                t for t in narrative_tensions
+                if t.tension_type == "upcoming_revelation"
+            ]
+            constraints.append(ConstraintBlock(
+                constraint_type="mathematical",
+                priority="hard",
+                instruction=(
+                    f"[NARRATIVE TENSION CONSTRAINT]: Composite "
+                    f"Brewer-Lichtenstein triad reading is "
+                    f"{tension_score:.2f} (suspense + mystery + irony + "
+                    f"|Δsurprise| + unpaid setup debt). This scene must "
+                    f"SUSTAIN tension, not resolve it: keep open threats "
+                    f"unresolved, hidden causes hidden, and dramatic-irony "
+                    f"gaps unclosed. {len(withheld)} withheld cause(s) and "
+                    f"{len(upcoming)} upcoming revelation(s) are in flight "
+                    f"— render their pressure through aftermath, blocking, "
+                    f"and sensory beats. Do not collapse the triad by "
+                    f"explaining, naming, or paying off prematurely."
+                ),
+                evidence={
+                    "tension_score": tension_score,
+                    "withheld_count": len(withheld),
+                    "upcoming_count": len(upcoming),
+                    "withheld_event_ids": [t.event_id for t in withheld[:8]],
+                    "upcoming_event_ids": [t.event_id for t in upcoming[:8]],
+                },
+            ))
+            rendering = RenderingDirective(
+                rendering_mode="narrative_tension",
+                pov_lock=pov_entity,
+                pacing="dilated",
+                sensory_focus="normal",
+                tone_arc="sustained_pressure",
+                stylistic_instructions=[
+                    "Sustain the composite envelope: suspense + mystery + irony + surprise overhang all live simultaneously.",
+                    "Pace the beat so withheld causes pre-load consequence without being explained on-page.",
+                    "Foreshadow upcoming revelations through environmental and behavioural cues, never through narration.",
+                    "Keep dramatic-irony gaps open: characters act on their incomplete picture; the prose does not close it for the reader.",
+                    "Do NOT resolve, name, or meta-narrate the tension — render only effects, blocking, and sensory pressure.",
+                    "If a surprise pivot is queued, hold the comfortable register until the pivot lands; do not pre-shock.",
+                ],
+            )
+
         # Stamp the active syuzhet anchor into scene_context so
         # downstream consumers (auditor leak-check, renderers) can
         # locate the brief on the timeline without having to re-derive
@@ -7623,7 +7871,9 @@ class DirectiveAssembler:
 
         if which == "mystery":
             score = compute_mystery_unified(bs, ft_now)
-            open_qs = self._top_mystery_questions(bs, ft_now, k=5)
+            open_qs = self._top_mystery_questions(
+                bs, ft_now, k=5, syuzhet_anchor=syuzhet_anchor,
+            )
             mb = compute_mystery_breakdown(bs, ft_now)
             return MysteryProfile(
                 score=score,
@@ -7844,6 +8094,7 @@ class DirectiveAssembler:
 
     def _top_mystery_questions(
         self, bs, fabula_t: int, *, k: int = 5,
+        syuzhet_anchor: Optional[int] = None,
     ) -> List[str]:
         """Top-k 'effect known but causes hidden' propositions.
 
@@ -7853,10 +8104,18 @@ class DirectiveAssembler:
         ``world.causal_topology`` remain unrevealed at this anchor.
         Ordered by number of unrevealed ancestors descending so the
         most underdetermined effects surface first.
+
+        ``syuzhet_anchor`` is the reader's current narrative
+        position. When provided, the revealed-event set is restricted
+        to events whose ``syuzhet_index`` has actually happened on-
+        page at this anchor; without it the scorer would consider
+        every cause revealed anywhere in the story as 'known', which
+        collapses the open-question set to zero too early and
+        silently degrades the mystery directive (round-3 audit fix).
         """
         from shadow_loom.affect_unification import AUDIENCE_ID
         causal_g = self._build_causal_digraph()
-        revealed = self._revealed_event_ids(None)  # full reveal set so far
+        revealed = self._revealed_event_ids(syuzhet_anchor)
         # Re-derive against the syuzhet position the bs was built
         # for: the BeliefState reads at fabula_t but the renderer is
         # at syuzhet_anchor. Use the same revealed set the suspense

@@ -715,6 +715,43 @@ cross2024hyp,xu2025echoes}. I share the present design as a
 substrate for further research --- by myself and by others ---
 not as a finished product.
 
+\paragraph{Post-audit theory hardening (2026-05-26).} An internal
+audit (\texttt{AUDIT\_2026-05-26.md}) reviewed the implementation
+against \citet{pearl2009causality},
+\citet{bareinboim2022pearl}, and the AMWN \(+\)
+ctf-calculus of \citet{correa2025amwn}. The remediation closed
+four divergences that matter for the formal reading of the system:
+(1)~\emph{minimal surgery is now axis-scoped} ---
+\(\mathrm{do}(\texttt{ENT\_X.traits.fear}=v)\) only severs incoming
+causal edges whose \texttt{trait\_target} is \texttt{fear} (plus
+untyped legacy edges that could carry mutations into \texttt{fear}),
+so sibling-trait edges survive and Pearl's \(G_{\overline X}\)
+construction is honoured at the per-axis granularity the schema
+already supports; (2)~\emph{relationship surgery completes the do
+operator} --- per-axis interventions on a relationship metric now
+drop every incoming \texttt{mutation\_social} edge whose
+\((\texttt{rel\_counterpart\_id},\, \texttt{trait\_target})\) matches
+the do-target, eliminating phantom social re-propagation onto a
+pinned axis; (3)~\emph{AMWN context preserves variable-level
+granularity} --- \(_to\_context()\) keeps the full dotted
+intervention path so Rules 2 and 3 of ctf-calculus distinguish
+trait-level interventions on the same entity (the previous
+implementation collapsed them and over-shadowed AMWN nodes); and
+(4)~\emph{temporal acyclicity is strict} ---
+\texttt{do\_causal\_edge} rejects same-tick edges for every
+\texttt{causality\_type} except \texttt{chain\_reaction}, the one
+type where simultaneity is the modelling intent, so causal cycles
+cannot form silently at a single \texttt{fabula\_time}. Two new
+auditor violation types --- \texttt{spurious\_abduction} for
+Rung-2 prose that invents background premises and
+\texttt{premature\_payoff} for directive prose that stages a
+\texttt{withheld\_cause} event before its \texttt{syuzhet\_index}
+--- close the brief-versus-renderer gap. The remaining
+\(f_V(\mathrm{pa},\, U_V)\) gap (no explicit response functions,
+\(U\) not pinned across factual/shadow worlds) is documented
+honestly as a Pearl-approximation rather than a Pearl-rigorous
+implementation.
+
 As an internal sanity check, the four structural-affect scorers
 were audited against the bundled twenty-fixture corpus
 (\texttt{example\_worlds/}) at seven evenly-spaced syuzhet anchors

@@ -1434,7 +1434,7 @@ class TestSchemaCompleteness:
         """Location.ambient_state must accept AmbientVector values."""
         from shadow_loom.models import Location, AmbientVector
         loc = Location(
-            name="Test", description="Test",
+            id="LOC_TEST", name="Test", description="Test",
             ambient_state={"heat": AmbientVector(value=0.8, volatility=0.3)}
         )
         assert loc.ambient_state["heat"].value == 0.8
@@ -1444,7 +1444,7 @@ class TestSchemaCompleteness:
         """Location.ambient_state must coerce plain dicts to AmbientVector."""
         from shadow_loom.models import Location
         loc = Location(
-            name="Test", description="Test",
+            id="LOC_TEST", name="Test", description="Test",
             ambient_state={"heat": {"value": 0.8, "volatility": 0.3}}
         )
         assert loc.ambient_state["heat"].value == 0.8

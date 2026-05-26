@@ -73,7 +73,26 @@ def resolve_project(
         user_id = get_user_id(ctx)
         proj = find_project_by_name(project_name, owner_id=user_id)
         if proj is None:
+            # AUDIT (post-2026-05-26): the global fallback used to
+            # resolve to *any* project with this display name,
+            # which leaked the existence (and access-control verdict)
+            # of strangers' private projects through the
+            # ``check_project_access`` error path.
+            #
+            # Round-4 audit refinement: the previous fix pre-filtered
+            # to ``proj.is_public or proj.owner_id is None``, which
+            # also blocked legitimate collaborators (project members
+            # with editor/admin grants) and shared-admin users from
+            # resolving private projects by name. Delegate the
+            # authorisation decision to ``check_project_access`` (which
+            # already honours owner / public-at-viewer / member-by-role)
+            # and, if access is denied, return the same generic
+            # "not found" error so the original existence-leak is
+            # still closed.
             proj = find_project_by_name(project_name)
+            if proj is not None:
+                if check_project_access(proj.id, ctx, min_role=min_role) is not None:
+                    proj = None
         if proj is None:
             return None, f"Project '{project_name}' not found."
         err = check_project_access(proj.id, ctx, min_role=min_role)
@@ -193,21 +212,26 @@ def run_and_save(
     """Run pipeline, save new version, return response dict.
 
     ``skip_reextraction=None`` (the default) routes by ``query_type``:
-    prose-rendering query types (``intervention``, ``counterfactual``,
-    ``directive``, ``manual_edit``) get re-extraction enabled so the
-    saved world graph reflects the prose just generated; other types
-    keep the old fast-path. The previous unconditional default of
-    ``True`` meant every MCP-driven Continue / What-If / Intervene
-    persisted prose against an *unchanged* world graph, so chained
-    MCP calls built on stale topology and the saved version's
-    AMWN nodes never inherited the new entities/events the prose
-    introduced.
+    prose-rendering query types (``observation``, ``intervention``,
+    ``counterfactual``, ``directive``, ``manual_edit``) get
+    re-extraction enabled so the saved world graph reflects the prose
+    just generated; other types keep the old fast-path. The previous
+    unconditional default of ``True`` meant every MCP-driven Continue
+    / What-If / Intervene persisted prose against an *unchanged*
+    world graph, so chained MCP calls built on stale topology and the
+    saved version's AMWN nodes never inherited the new
+    entities/events the prose introduced. Round-6 audit: ``observation``
+    advances the clock and produces narration that can introduce new
+    facts about the world; omitting it from the prose-rendering set
+    left MCP ``narrate`` (observation mode) saving prose against a
+    stale topology too.
     """
     # Derive re-extraction policy from query type when caller didn't
     # explicitly set it. Keep the explicit override path so callers
     # that need the old fast behaviour can still opt in.
     if skip_reextraction is None:
         prose_rendering_types = {
+            "observation",
             "intervention",
             "counterfactual",
             "directive",

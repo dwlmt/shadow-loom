@@ -1551,7 +1551,29 @@ def _apply_forward_cascade(
     try:
         execution_order = list(nx.topological_sort(causal_graph))
     except nx.NetworkXUnfeasible:
-        logger.warning("[Forward Cascade] Cyclic causal graph — falling back to fabula_time order.")
+        # AUDIT P0-9: enumerate the strongly-connected components that
+        # broke acyclicity so operators can audit cyclic-SCM
+        # approximations. Pearl's standard SCM semantics assume a DAG;
+        # cycles require Halpern/Bareinboim solvability machinery the
+        # legacy cascade does not implement. We retain the fabula-time
+        # fallback (deterministic ordering preserved) but surface the
+        # cycle contents loudly so cyclic outcomes can be cross-checked
+        # against the engine path.
+        sccs = [
+            list(scc) for scc in nx.strongly_connected_components(causal_graph)
+            if len(scc) > 1
+        ]
+        scc_summary = "; ".join(
+            f"SCC[{i}]={sorted(members)[:6]}{'\u2026' if len(members) > 6 else ''}"
+            for i, members in enumerate(sccs)
+        )
+        logger.warning(
+            "[Forward Cascade] Cyclic causal graph: %d cycle SCC(s) of total "
+            "size %d \u2014 falling back to fabula_time order (Pearl-DAG "
+            "assumption violated; cyclic SCM semantics not implemented in "
+            "the legacy cascade). %s",
+            len(sccs), sum(len(s) for s in sccs), scc_summary,
+        )
         execution_order = sorted(
             causal_graph.nodes(),
             key=lambda nid: next(

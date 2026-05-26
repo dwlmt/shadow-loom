@@ -882,15 +882,60 @@ the world model as tools and resources. Highlights:
 
 ## 11. Tests
 
-`tests/` contains roughly 1,300 pytest tests across 26 files covering models, ingestion, AMWN,
+`tests/` contains roughly 1,933 pytest tests across the codebase covering models, ingestion, AMWN,
 causal physics, directive assembly, narrative physics, version mutations,
 reasoning helpers, viz helpers, the MCP server, and end-to-end pipeline
-integration. `test_live_e2e.py` is excluded by default — it requires a local
-Ollama instance.
+integration. `test_live_e2e.py` and `test_end_to_end.py` are excluded by
+default — they require a local Ollama instance.
 
 ```bash
-python -m pytest tests/ --ignore=tests/test_live_e2e.py -q
+python -m pytest tests/ --ignore=tests/test_live_e2e.py --ignore=tests/test_end_to_end.py -q
 ```
+
+---
+
+## 12. Post-audit hardening (2026-05-26)
+
+The May 2026 system audit (`AUDIT_2026-05-26.md`) drove a coordinated
+remediation across physics, ingestion, brief assembly, MCP, and DB.
+The functional changes that matter for the architecture surface:
+
+* **Pearl minimal surgery, per-axis** — `_intervene_state` no longer
+  severs every incoming causal edge to the entity for a trait-scoped
+  `do(·)`; only edges whose `trait_target` matches the axis (or
+  untyped legacy edges) are cut. Sibling-trait propagation survives.
+* **Relationship surgery completes the do-operator** — the per-axis
+  relationship variant now drops every incoming `mutation_social`
+  edge whose `(rel_counterpart_id, trait_target)` matches the
+  do-target, so social re-propagation cannot bypass the pinned metric.
+* **AMWN granularity** — `_to_context()` preserves the full dotted
+  intervention path; trait-level interventions on the same entity are
+  now distinguishable to Rules 2/3 of ctf-calculus.
+* **Belief lane** — `compute_epistemic_gaps` filters by
+  `established_at_fabula`; affect `belief_snapshots`,
+  consequence-pass `object_updates` / `world_trait_updates`, and the
+  `ObjectStateSnapshot` field names are restored end-to-end through
+  ingestion → topology → reconcile → physics.
+* **Auditor** — two new violation types, `spurious_abduction` (Rung-2)
+  and `premature_payoff` (directive), close the gap between brief
+  constraints and renderer freedom.
+* **Cycles** — `narrative_physics.py`'s legacy cascade now emits SCC
+  diagnostics on `NetworkXUnfeasible` rather than silently
+  approximating; the ingestion SCC-break iterates by edge identity to
+  guarantee progress on multi-edge cycles; `do_causal_edge` rejects
+  same-tick edges for every causality type except `chain_reaction`.
+* **MCP & DB** — every tool returns sanitised `{error, code}`
+  envelopes via `_sanitised_error`; API keys are HMAC-SHA-256 + per-key
+  salt + server pepper with an indexed `key_hash` column;
+  `list_projects(user_id=None)` filters to public/example projects;
+  `manage(fork)` matches the granular tool's defaulted name;
+  `narrate(mode=…)` validates strictly; `set_active_version` requires
+  editor scope; cascade delete walks the descendant parent-map
+  leaf-first to satisfy the self-FK after re-parenting.
+
+These are referenced in [design-decisions.md §D-AUDIT-2026-05-26](design-decisions.md#d-audit-2026-05-26-post-audit-theory--safety-hardening)
+and the academic implications are summarised in
+[academic-foundations.md §2.1 / §2.2](academic-foundations.md).
 
 ---
 

@@ -97,6 +97,22 @@ class DoBelief(BaseModel):
             "proposition references the (holder, target) pair."
         ),
     )
+    acquired_via_event_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional EVT_ id recording the causal event that established this "
+            "belief. Used by the provenance pruner to keep the do-belief "
+            "traceable; defaults to the engine's DO_OPERATOR marker when None."
+        ),
+    )
+    acquired_via_channel_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional CHN_ id recording the channel through which the holder "
+            "learned this. Validated against ``world_state.channels`` and "
+            "cleared with a warning when unknown."
+        ),
+    )
 
 
 class DoConcern(BaseModel):
@@ -309,6 +325,14 @@ class DoCausalEdge(BaseModel):
     causal_force: float = Field(
         default=5.0, ge=0.0, le=10.0,
         description="Impact magnitude for ``action='add'``.",
+    )
+    evidence_strength: Optional[Literal["weak", "moderate", "strong"]] = Field(
+        default="moderate",
+        description=(
+            "Confidence of the causal link for ``action='add'``. When the "
+            "source is an EventNode and this is left at the default, the "
+            "engine inherits the event's ``evidence_strength``."
+        ),
     )
     trait_target: Optional[str] = Field(
         default=None,
@@ -673,7 +697,10 @@ class DirectiveQuery(_QueryBase):
     a specific psychological or epistemic effect.
     """
     query_type: Literal["directive"] = "directive"
-    target_entity_ids: List[str] = Field(description="The Entities experiencing the emotion or the ignorance.")
+    target_entity_ids: List[str] = Field(
+        min_length=1,
+        description="The Entities experiencing the emotion or the ignorance.",
+    )
     target_effect: Literal["suspense", "surprise", "mystery", "dramatic_irony", "narrative_tension", "grief", "rage", "joy", "regret", "love", "fear"] = Field(
         description="The narrative effect to maximize."
     )
@@ -681,7 +708,12 @@ class DirectiveQuery(_QueryBase):
         default=None,
         description="If suspense: the Objective Node ID they are blind to. If emotion: the Trait/Edge ID to shatter."
     )
-    intensity: float = Field(default=1.0, description="0.0 to 1.0 multiplier for the Prompt injection.")
+    intensity: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="0.0 to 1.0 multiplier for the Prompt injection.",
+    )
     force_implausible: bool = Field(
         default=False,
         description="If True, generate prose even when none of the target entities "

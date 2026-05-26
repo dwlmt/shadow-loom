@@ -235,7 +235,7 @@ integrations can migrate one call at a time.
 
 | Tool | Scope | Notes |
 |---|---|---|
-| `narrate(instruction, mode=None, skip_audit, force_implausible, speaker_id=None, addressee_ids=None, via_channel_id=None)` | write | The main creation entry point. NL → `parse_query` → `run_pipeline` → version write → active pointer advance. `mode` can pin the query type to `observe` / `intervene` / `counterfactual`. The `speaker_id` / `addressee_ids` / `via_channel_id` hints constrain the parser to emit a properly-typed `utterance` event with channel provenance. The parser also extracts optional **story-point anchors** (`temporal_anchor` / `syuzhet_anchor` / `anchor_after_event_id`) from the user's NL request so phrases like "after EVT_BANQUO_DEATH" or "in act 3" pin the query to the right slice without the caller looking the time up. |
+| `narrate(instruction, mode=None, skip_audit, force_implausible, speaker_id=None, addressee_ids=None, via_channel_id=None)` | write | The main creation entry point. NL → `parse_query` → `run_pipeline` → version write → active pointer advance. `mode` can pin the query type to `observe` / `intervene` / `counterfactual` / `directive` (validated strictly against this set; unknown modes return `{error, code: "INVALID_MODE"}`). The `speaker_id` / `addressee_ids` / `via_channel_id` hints constrain the parser to emit a properly-typed `utterance` event with channel provenance. The parser also extracts optional **story-point anchors** (`temporal_anchor` / `syuzhet_anchor` / `anchor_after_event_id`) from the user's NL request so phrases like "after EVT_BANQUO_DEATH" or "in act 3" pin the query to the right slice without the caller looking the time up. |
 | `direct(target_effect, entity_ids=…, intensity=0.8, temporal_anchor=None, syuzhet_anchor=None, anchor_after_event_id=None, …)` | write | Builds a `DirectiveQuery` directly (no NL parse) and runs the affective optimisation pipeline. The optional anchor arguments override `PipelineConfig.temporal_anchor` / `syuzhet_anchor` for a single call. |
 | `write(prose, description="")` | write | Manual edit — supplies user prose, runs prose → topology re-extraction, merges into a new version (skips physics + LLM rendering). |
 | `ingest(text, project_name, label=None)` | write | Creates a brand new project and runs the 5-step ingestion to produce v0. If the v0 save fails the freshly-created project row is rolled back so failed ingests do not leave orphan projects with zero versions. |
@@ -392,14 +392,16 @@ list_projects
 ## 7. Error surface
 
 Every tool is wrapped in `_safe_tool`, which catches unhandled exceptions and
-returns `{"error": "<tool_name> failed: <message>"}` instead of bubbling a
-stack trace through the transport. Common error shapes:
+routes them through `_sanitised_error` so callers receive a typed envelope
+rather than raw exception text. Common error shapes:
 
 ```json
 { "error": "missing scope: write" }
 { "error": "Project 7 not accessible by user 3" }
 { "error": "Query parsing failed",
   "reasoning": "...", "validation_errors": [{"field":"interventions","message":"..."}] }
+{ "error": "unknown narrate mode 'consider'; expected one of ['counterfactual','directive','intervene','observe']",
+  "code": "INVALID_MODE" }
 { "implausible": true,
   "implausibility_reason": "Rung-2 intervention is impossible: ...",
   "implausibility_details": {"unresolved_targets": [...]} }
@@ -408,6 +410,24 @@ stack trace through the transport. Common error shapes:
 The `implausible` envelope is **not** an error — the request was understood but
 the engine refused to mutate the world. Callers should surface the reason and
 optionally retry with `force_implausible=true`.
+
+**Post-audit (2026-05-26) hardening:**
+
+* Provider stack traces, filesystem paths, and raw SDK payloads never
+  reach the wire — `_sanitised_error` reduces them to a generic
+  `internal_error` envelope; the full trace is captured in the server
+  log only.
+* `manage(action="fork")` accepts the same defaulted `new_name`
+  (`"<project> (fork)"`) as the granular `fork` tool.
+* `narrate(mode=…)` validates `mode` strictly; the previous silent
+  fallback to `directive` is gone.
+* `set_active_version` requires the `editor` role on both the
+  granular tool and `manage(action="set_active_version")`.
+* `list_projects(user_id=None)` returns only public / example
+  projects to unauthenticated callers.
+* API keys are stored as HMAC-SHA-256 over per-key salt + server
+  pepper (`SHADOW_LOOM_API_KEY_PEPPER`); the `key_hash` column is
+  indexed.
 
 ---
 

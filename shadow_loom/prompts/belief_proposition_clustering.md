@@ -19,7 +19,7 @@ Return a ``BeliefClusterRegister`` whose ``clusters`` field is a list of ``Belie
 
 - **proposition** — a complete ``Proposition`` record. Set:
   - ``proposition_id`` — fresh ``PROP_*`` id (e.g. ``PROP_CORDELIA_LOVES_LEAR``). Must be unique across this response.
-  - ``kind`` — one of ``"trait_holds"`` (a quality/state of the target), ``"relation_holds"`` (a relationship between target and another entity), ``"identity_is"`` (who/what the target IS), or ``"event_occurs"`` only if the belief is about a hypothetical future event. Do NOT use ``"outcome"`` here — that kind is reserved for choice-events.
+  - ``kind`` — one of ``"trait_holds"`` (a quality/state of the target), ``"relation_holds"`` (a relationship between target and another entity), ``"identity_is"`` (who/what the target IS), ``"event_occurs"`` (a hypothetical or contested event-happened proposition), or ``"outcome"`` (a Brewer–Lichtenstein resolution-of-an-open-question proposition that drives suspense — use this only when the belief is genuinely about how an open question will be answered, e.g. "will Macbeth become king").
   - ``referent_ids`` — list including the target_id and any other entity ids mentioned in the proposition.
   - ``description`` — short canonical statement of the proposition (e.g. "Cordelia loves Lear").
   - ``audience_default_prior`` — the audience's default confidence in this proposition before any narrative evidence. Use 0.5 unless the proposition is genuinely common-knowledge / common-trope.

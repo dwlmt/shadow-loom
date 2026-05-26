@@ -196,6 +196,21 @@ VIOLATION_EXPLANATIONS: Dict[str, str] = {
         "reconstructed location at fabula time is not the event's "
         "``at_location_id``. Remove them or move them on-page first."
     ),
+    "spurious_abduction": (
+        "The prose introduced a new historical cause (a confession, "
+        "a hidden accomplice, an off-page event) that the engine "
+        "never abduced. Pearl Rung-3 abduction only walks the "
+        "engine's posterior — the renderer cannot mint new exogenous "
+        "antecedents. Remove the fabricated backstory or move it "
+        "into the engine via an intervention/historical edit."
+    ),
+    "premature_payoff": (
+        "The prose resolved a concern or proposition that the brief "
+        "left explicitly open at this anchor (still pending activation "
+        "/ uncommitted truth). Authored payoffs ahead of schedule "
+        "collapse downstream suspense. Leave the payoff for the "
+        "future scene that the engine has scheduled."
+    ),
 }
 
 

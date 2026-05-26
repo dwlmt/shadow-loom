@@ -3,7 +3,7 @@
 
 import logging
 import networkx as nx
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from shadow_loom.settings import get_settings as _get_settings
 from shadow_loom.models import default_relationship_metrics_dict
@@ -764,15 +764,39 @@ class AMWNInstantiator:
             current_level = current_level[key]
         current_level[keys[-1]] = new_value
 
+        # AUDIT P0-5 — minimal surgery (Pearl G_{\bar X}). When the
+        # intervention targets a specific trait axis (path 'traits.X[.value]'),
+        # only sever incoming causal edges that *target that axis*
+        # (``edge.trait_target == X``). Edges that mutate unrelated traits on
+        # the same entity remain intact, preserving their response functions.
+        # For non-trait paths (status, ad-hoc properties without a typed
+        # ``trait_target``), fall back to whole-node severance because we
+        # cannot resolve which edges target the specific property.
+        scoped_trait_axis: Optional[str] = None
+        if keys[0] == "traits" and len(keys) >= 2:
+            scoped_trait_axis = keys[1]
+
         edges_to_remove = []
         for u, v, key, data in sandbox.in_edges(node_id, data=True, keys=True):
-            if data.get("edge_type") == "causal":
-                edges_to_remove.append((u, v, key))
+            if data.get("edge_type") != "causal":
+                continue
+            if scoped_trait_axis is not None:
+                edge_trait = data.get("trait_target")
+                # Sever edges that target the intervened axis. Also sever
+                # untyped (legacy / generic-mutation) edges that lack a
+                # ``trait_target`` because they may affect any trait
+                # including the intervened axis — preserving them would
+                # let phantom mutations re-fire onto the pinned axis.
+                # Preserve only edges that EXPLICITLY target a different axis.
+                if edge_trait is not None and edge_trait != scoped_trait_axis:
+                    continue
+            edges_to_remove.append((u, v, key))
         sandbox.remove_edges_from(edges_to_remove)
-        
+
         logger.log(_surgery_log_level(),
-                   "[Surgery] Forced State: do(%s.%s = %s)",
-                   node_id, path, new_value)
+                   "[Surgery] Forced State: do(%s.%s = %s) — severed %d incoming causal edge(s)%s",
+                   node_id, path, new_value, len(edges_to_remove),
+                   f" (axis={scoped_trait_axis})" if scoped_trait_axis else "")
 
     # ==========================================
     # SURGERY 5: GENESIS (Create from nothing)

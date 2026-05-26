@@ -18,7 +18,7 @@ Return a JSON object with this exact structure:
   "passed": true/false,
   "violations": [
     {
-      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | utterance_truth_contradiction | channel_intelligibility_violation | withheld_utterance_leak | belief_provenance_contradiction | pruned_utterance_leak | disabled_channel_leak | blocked_propagation_leak | inert_intervention_aftermath | style_mismatch | meta_narration | undeclared_element | unjustified_introduction | object_misuse | object_position_mismatch | entity_position_mismatch | event_location_mismatch | event_copresence_violation | event_copresence_omission",
+      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | utterance_truth_contradiction | channel_intelligibility_violation | withheld_utterance_leak | belief_provenance_contradiction | pruned_utterance_leak | disabled_channel_leak | blocked_propagation_leak | inert_intervention_aftermath | style_mismatch | meta_narration | undeclared_element | unjustified_introduction | object_misuse | object_position_mismatch | entity_position_mismatch | event_location_mismatch | event_copresence_violation | event_copresence_omission | spurious_abduction | premature_payoff",
       "severity": "critical | major | minor",
       "description": "What went wrong — specific, actionable.",
       "evidence_quote": "The exact passage from the prose that demonstrates the violation.",
@@ -121,8 +121,10 @@ Return a JSON object with this exact structure:
 - Use the abduction audit above for any implicit Rung-3 events the engine emitted.
 - Violation type: `reasoning_failure` (rationale prefix `counterfactual_canon_bleed:` when canon details leak into the shadow prose).
 
-### Category 4b: Meta-Narration (universal)**Meta-narration audit (every rendering mode):**
-- Run on **every** scene regardless of `rendering_mode` — observation (Rung 1), intervention (Rung 2), counterfactual (Rung 3), and every directive mode (mystery, dramatic_irony, surprise, suspense, fear, joy, regret, grief, rage, love, manual_edit, fallback, default). Meta-narration is the single most common failure across all modes and must be policed everywhere, not just in counterfactual scenes.
+### Category 4b: Meta-Narration (universal)
+
+**Meta-narration audit (every rendering mode):**
+- Run on **every** scene regardless of `rendering_mode` — observation (Rung 1), intervention (Rung 2), counterfactual (Rung 3), and every directive mode (mystery, dramatic_irony, surprise, suspense, fear, joy, regret, grief, rage, love, narrative_tension, manual_edit, fallback, default). Meta-narration is the single most common failure across all modes and must be policed everywhere, not just in counterfactual scenes.
 - Flag any prose that **comments on its own narrative structure, the simulation that produced it, or the named effect being rendered**, instead of rendering the world as a lived scene. Specifically:
   - **Pipeline / system commentary** — references to "the observation", "the intervention", "the counterfactual", "the simulation", "the model", "the system", "the engine", "the prompt", "the brief", "the directive", "the scenario", or any other shadow-loom-internal vocabulary leaking into author voice.
   - **Effect-name commentary** — author-voice phrases that name the effect being rendered: "the suspense built", "the irony was that…", "the mystery deepened", "the surprise came when…", "the reader would feel…", "one might expect…", "in this telling…".
@@ -157,6 +159,22 @@ Return a JSON object with this exact structure:
   - New entities introduced as "the messenger" / "the witness" / "the henchman" when a co-present existing entity could plausibly have performed that role.
 - Violation type: `unjustified_introduction`
 - Feedback template: "Unjustified Introduction. The renderer declared a new [kind] `[id]` (\"[name]\") with justification \"[quoted justification]\", but [existing candidate id / name] in SCENE CONTEXT could have served because [specific reason]. Either reuse `[existing id]` and remove the declaration, or rewrite the justification to name `[existing id]` explicitly and explain why it was insufficient (role mismatch, location mismatch, timeline impossibility, capability mismatch)."
+
+### Category 4e: Pearl Rung-3 Bookkeeping (universal)
+
+**Spurious-abduction audit (every rendering mode, but most often triggered by counterfactual / regret / mystery scenes):**
+- Pearl Rung-3 abduction is monotone over the *engine's* exogenous-noise ledger. The renderer may surface hidden antecedents the engine already abduced (see the brief's `AbductionTruth` block) and may render their subtextual consequences, but it MAY NOT mint **new** historical causes the engine never abduced — a fresh confession, a hidden accomplice the schema never named, a previously-unsuspected off-page event, a backstory revelation that retroactively rewrites the world's `U` ledger.
+- Concretely: scan the prose for sentences that assert as fact a past event, relationship, or motivation NOT present in (a) the world state, (b) the brief's constraints, or (c) the abduction truth payload. Author-voice phrases like "as it turned out, he had…", "what no-one knew was that…", "years before, she had…" are red flags unless the asserted event matches a brief-declared event.
+- This is critical-by-default because it breaks ctf-calculus Rule-3 (Exclusion) for the introduced cause and contaminates downstream queries with an unfalsifiable backstory.
+- Violation type: `spurious_abduction`
+- Feedback template: "Spurious Abduction. The prose introduces a new historical cause ([quoted phrase]) that the engine never abduced. Pearl Rung-3 forbids the renderer from minting exogenous antecedents. Either (a) remove the asserted past event entirely, (b) replace it with a behaviourally-equivalent on-page beat, or (c) reframe it as a character's *belief* about the past (not as a narrator-asserted fact)."
+
+**Premature-payoff audit (every directive mode that carries open propositions / concerns):**
+- The brief lists each open proposition (`truth_at_fabula` uncommitted at this anchor) and each open concern (`activation_fabula_window` still pending). Authored payoffs that fire ahead of the engine's schedule collapse downstream suspense and contaminate the next merge with a forced commit the engine never licensed.
+- Concretely: when the prose resolves an open proposition (commits its truth value) or closes an open concern (depicts its activation as complete) at a syuzhet position before its brief-declared window, fire `premature_payoff`. Render *circling*, *approach*, *near-miss* instead — proximity, not arrival.
+- **Severity:** `major` by default; `critical` when the affected proposition is part of an active `SuspenseProfile` or appears in a `NARRATIVE TENSION` payload's `upcoming_revelations`.
+- Violation type: `premature_payoff`
+- Feedback template: "Premature Payoff. The prose resolves [proposition id / concern id] at this anchor, but the brief leaves it open until [target fabula window]. Rewrite the beat so the character circles the proposition without committing to it — proximity, not arrival. Preserve the suspense / mystery overhang the brief is asking for."
 
 ### Category 5: Source-Style Fidelity
 
