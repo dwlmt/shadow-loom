@@ -38,7 +38,8 @@ def reconstruct_entity_at_causal(
     2. Replay every ``mutation`` / ``mutation_social`` :class:`CausalEdge`
        whose ``target_id`` is this entity, ``trait_target`` is set, and
        ``fabula_time <= fabula_time`` — accumulating signed
-       ``trait_delta`` per axis (clamped to ``[-1, 1]``).
+       ``trait_delta`` per axis (clamped to ``[0, 1]`` because
+       ``TraitVector.value`` is non-negative on the schema).
     3. Apply the snapshot replay on top — authored
        :class:`EntityStateSnapshot` values override the running causal
        values at their tick.
@@ -80,7 +81,11 @@ def reconstruct_entity_at_causal(
             ce.trait_target,
             {"value": 0.0, "inertia": 0.5, "evidence_strength": "moderate"},
         )
-        new_val = max(-1.0, min(1.0, cur["value"] + (ce.trait_delta or 0.0)))
+        # Entity-trait values are non-negative on the schema
+        # (``TraitVector.value`` is ``ge=0``); the prior ``[-1, 1]``
+        # clamp produced incoherent negative readings in the MCP
+        # ``inspect()`` payload (audit 2026-05-26).
+        new_val = max(0.0, min(1.0, cur["value"] + (ce.trait_delta or 0.0)))
         running[ce.trait_target] = {
             "value": new_val,
             "inertia": cur["inertia"],
@@ -88,12 +93,31 @@ def reconstruct_entity_at_causal(
         }
 
     snap = reconstruct_entity_at(ent, fabula_time)
+    # Authored ``EntityStateSnapshot`` entries override the running
+    # causal accumulation at their tick — but only for trait names a
+    # snapshot actually wrote. ``reconstruct_entity_at`` seeds its
+    # ``traits`` dict from ``ent.traits`` so unchanged baseline traits
+    # appear in ``snap['traits']`` too; the previous unconditional
+    # copy back into ``running`` silently discarded every causal
+    # mutation accumulated above for any pre-seeded trait (audit
+    # 2026-05-26). The world-trait variant below already had this
+    # discrimination — this brings the entity variant into line.
+    holder_world = getattr(ent, "world_id", "factual") or "factual"
+    snapshot_touched_traits: set[str] = set()
+    for s in ent.state_timeline:
+        if s.fabula_time > fabula_time:
+            continue
+        snap_world = getattr(s, "world_id", holder_world) or holder_world
+        if snap_world != holder_world:
+            continue
+        snapshot_touched_traits.update(s.traits.keys())
     for tn, tv in snap.get("traits", {}).items():
-        if tn in ent.traits or tn in running:
-            running[tn] = (
-                tv if isinstance(tv, dict)
-                else {"value": float(tv), "inertia": 0.5, "evidence_strength": "moderate"}
-            )
+        if tn not in snapshot_touched_traits:
+            continue
+        running[tn] = (
+            tv if isinstance(tv, dict)
+            else {"value": float(tv), "inertia": 0.5, "evidence_strength": "moderate"}
+        )
 
     return {
         "traits": running,

@@ -716,7 +716,21 @@ def _build_command_bar(state: AppState) -> None:
         # lockstep with WORLD_STATE_CHANGED. Mirror that here by
         # dropping our in-closure ``messages`` buffer so the chat
         # cards disappear at the same moment the world swaps.
-        def _clear_chat_on_branch(**_kwargs):
+        def _clear_chat_on_branch(**kwargs):
+            # Only clear when the user *navigated* to a different
+            # version (sidebar click, rollback, project load). Mutation
+            # queries (observation / intervention / counterfactual /
+            # directive / manual_edit) also fire VERSION_CHANGED — with
+            # ``source="query_save"`` — when ``_save_version_to_db``
+            # appends a new child version on the active branch. That
+            # emit lands between the user-message render and the
+            # assistant-message render, so clearing on it would wipe
+            # the user's just-submitted question and the prior chat
+            # history. ``source`` is absent for PROJECT_LOADED and any
+            # legacy emit, so the default-to-clear behaviour is
+            # preserved for those.
+            if kwargs.get("source") == "query_save":
+                return
             if not messages:
                 return
             messages.clear()

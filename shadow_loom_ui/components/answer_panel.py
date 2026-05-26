@@ -87,7 +87,16 @@ def build_answer_panel(state: AppState) -> None:
         last_result["value"] = result
         _render()
 
-    def _clear(**_kwargs) -> None:
+    def _clear(**kwargs) -> None:
+        # Only clear on navigation (sidebar click, rollback, project
+        # load). A ``source="query_save"`` VERSION_CHANGED is emitted
+        # when ``_save_version_to_db`` lands a new child version on
+        # the active branch — clearing on it would wipe a still-valid
+        # Q&A answer the moment the user runs any unrelated
+        # generative query. Default (no source kwarg) clears, so
+        # PROJECT_LOADED and legacy emits behave as before.
+        if kwargs.get("source") == "query_save":
+            return
         last_result["value"] = None
         _render()
 

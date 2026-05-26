@@ -1128,9 +1128,16 @@ class AppState:
                 # Only fire VERSION_CHANGED for non-quarantined patches
                 # \u2014 a quarantined version exists in history but is
                 # not the active version, so the UI should keep showing
-                # the parent.
+                # the parent. Tagged ``source="query_save"`` because
+                # structured patches land on the active branch like a
+                # normal query result rather than navigating away from
+                # it (see ``_save_version_to_db`` for the rationale).
                 if not quarantined:
-                    self.emit(StateEvent.VERSION_CHANGED, version=ver.version)
+                    self.emit(
+                        StateEvent.VERSION_CHANGED,
+                        version=ver.version,
+                        source="query_save",
+                    )
             except Exception:
                 logger.exception("[AppState] Failed to persist patched world")
                 # Persistence failed \u2014 return False so callers cannot
@@ -1246,9 +1253,21 @@ class AppState:
             except Exception:
                 pass  # Activity logging is best-effort
 
-            # Notify version change (only when still on the same project)
+            # Notify version change (only when still on the same project).
+            # ``source="query_save"`` lets subscribers distinguish a new
+            # version landing on the same branch (the user's current
+            # query just persisted) from a deliberate version-swap
+            # (sidebar click, rollback, project load). Without the
+            # discriminator, panels that clear per-branch ephemera on
+            # VERSION_CHANGED (chat history, answer panel) wipe the
+            # user's just-submitted question between the user-message
+            # render and the assistant-message render.
             if proj_id == self.project_id:
-                self.emit(StateEvent.VERSION_CHANGED, version=ver.version)
+                self.emit(
+                    StateEvent.VERSION_CHANGED,
+                    version=ver.version,
+                    source="query_save",
+                )
         except Exception as exc:
             logger.exception("[AppState] Failed to save version to DB")
             # Surface the failure so the UI can show a toast / banner
@@ -1438,7 +1457,11 @@ class AppState:
                 )
                 row = None
             if row is not None:
-                self.emit(StateEvent.VERSION_CHANGED, version=row.version)
+                self.emit(
+                    StateEvent.VERSION_CHANGED,
+                    version=row.version,
+                    source="navigation",
+                )
         self.emit(StateEvent.PROJECT_LOADED, project_id=project_id)
 
     def rollback_to(self, version: int) -> None:
@@ -1473,6 +1496,7 @@ class AppState:
         self.emit(
             StateEvent.VERSION_CHANGED,
             version=self.versioned_model.version,
+            source="navigation",
         )
 
     def load_db_version(
@@ -1553,7 +1577,11 @@ class AppState:
         self.emit(StateEvent.SYUZHET_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.NODE_SELECTED, node_id=None, node_type=None)
         if version_number is not None:
-            self.emit(StateEvent.VERSION_CHANGED, version=version_number)
+            self.emit(
+                StateEvent.VERSION_CHANGED,
+                version=version_number,
+                source="navigation",
+            )
 
     def to_json(self) -> str:
         """Serialize the current world state to JSON for persistence.

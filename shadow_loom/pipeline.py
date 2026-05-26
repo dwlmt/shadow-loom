@@ -1530,7 +1530,13 @@ def _augment_topology_with_sandbox_deltas(
             return
         existing_tv = ent.traits.get(trait)
         inertia = existing_tv.inertia if existing_tv else 0.3
-        tv = TraitVector(value=float(max(-1.0, min(1.0, new_value))), inertia=inertia)
+        # ``TraitVector.value`` is constrained to ``[0.0, 1.0]`` on the
+        # schema (``models.py`` L196). The previous ``[-1.0, 1.0]``
+        # clamp was a copy of the relationship-axis bound and let a
+        # negative ``base + delta_f`` slip through, which then crashed
+        # ``TraitVector(...)`` with a ``ge=0`` ValidationError during
+        # re-extraction merge (audit 2026-05-26).
+        tv = TraitVector(value=float(max(0.0, min(1.0, new_value))), inertia=inertia)
         for eu in topology.entity_updates:
             if eu.entity_id == entity_id and eu.fabula_time == ft:
                 if trait not in eu.trait_updates:
