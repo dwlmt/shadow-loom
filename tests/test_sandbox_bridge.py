@@ -238,8 +238,12 @@ class TestEventLocationReveal:
         from shadow_loom.models import EventNode, Location, WorldStateV1
         return WorldStateV1(
             locations={
-                "LOC_HALL": Location(name="Hall", description="d", ambient_state={}),
-                "LOC_GARDEN": Location(name="Garden", description="d", ambient_state={}),
+                "LOC_HALL": Location(
+                id="LOC_HALL",
+                name="Hall", description="d", ambient_state={}),
+                "LOC_GARDEN": Location(
+                id="LOC_GARDEN",
+                name="Garden", description="d", ambient_state={}),
             },
             objects={},
             entities={},

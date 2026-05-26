@@ -35,6 +35,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_SAIGON_HOTEL": Location(
+            id="LOC_SAIGON_HOTEL",
             name="Saigon Hotel Room",
             description="Willard's stifling between-tour hotel room: ceiling-fan blades become helicopter rotors; broken mirror, broken man.",
             ambient_state={
@@ -44,6 +45,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_NHA_TRANG_HQ": Location(
+            id="LOC_NHA_TRANG_HQ",
             name="Nha Trang Command Compound",
             description="Air-conditioned MACV-SOG bungalow where two officers and a CIA man hand Willard his sanctioned-murder orders over roast beef and shrimp.",
             ambient_state={
@@ -52,6 +54,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_PBR_RIVER": Location(
+            id="LOC_PBR_RIVER",
             name="The PBR on the Nung River",
             description="A Navy patrol boat — fibreglass hull, twin .50-cal — and the brown moving water that carries it inexorably upriver into Cambodia.",
             ambient_state={
@@ -62,6 +65,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_KILGORE_BEACH": Location(
+            id="LOC_KILGORE_BEACH",
             name="Vin Drin Dop / Kilgore's Beach",
             description="A Vietcong-held coastal village levelled by Kilgore's Air Cavalry to clear a surf-break; napalm at dawn, Wagner on loudspeakers.",
             ambient_state={
@@ -71,6 +75,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_HAU_PHAT_USO": Location(
+            id="LOC_HAU_PHAT_USO",
             name="Hau Phat Supply Depot & USO Stage",
             description="A floodlit amphitheatre erected by the river: Playboy Playmates, pyrotechnics, and a mob of sex-starved GIs that overruns the stage.",
             ambient_state={
@@ -79,6 +84,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_DO_LUNG_BRIDGE": Location(
+            id="LOC_DO_LUNG_BRIDGE",
             name="Do Lung Bridge",
             description="The last American outpost before the Cambodian border; a bridge nightly destroyed and nightly rebuilt under tracer fire — no commanding officer, only chaos.",
             ambient_state={
@@ -88,6 +94,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_KURTZ_COMPOUND": Location(
+            id="LOC_KURTZ_COMPOUND",
             name="Kurtz's Compound",
             description="A ruined Khmer temple complex on the upper Nung: severed heads on stakes, hanged bodies in the trees, Montagnard worshippers at every door.",
             ambient_state={
@@ -97,6 +104,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_TEMPLE_INTERIOR": Location(
+            id="LOC_TEMPLE_INTERIOR",
             name="The Temple Interior",
             description="Kurtz's lightless inner sanctum: shaved skull half-lit, Frazer's Golden Bough, T.S. Eliot, the muttered theology of unrestrained war.",
             ambient_state={

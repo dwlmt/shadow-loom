@@ -1043,6 +1043,7 @@ def answer_question(
             "not assume the shadow branch follows it.)",
         ])
     if preceding_prose:
+        # Round-7 audit: enforce token budget by truncating preceding prose
         _pp_max = _get_settings().generation.preceding_prose_max_chars
         _pp = preceding_prose.strip()
         if len(_pp) > _pp_max:
@@ -1063,7 +1064,7 @@ def answer_question(
                 "=== STORY SO FAR (mixed: factual canon + shadow fork tail) ===",
                 _pp,
                 "(The blocks tagged ``(factual: …)`` are the canon the "
-                "shadow fork diverges FROM \u2014 they describe what would "
+                "shadow fork diverges FROM — they describe what would "
                 "have happened on the mainline, NOT what is true on this "
                 "branch. Where the WORLD STATE block contradicts a "
                 "factual prose detail (a suppressed event, a flipped "
@@ -1111,14 +1112,16 @@ def answer_question(
     # unambiguous extraction from the log stream. INFO would expose
     # world context / branch contrast / prior prose to shared log
     # aggregators (data-exposure risk — round-3 audit).
-    logger.debug(
-        "[Answer] Q&A prompt (q_type=%s, %d chars):\n"
-        "========== BEGIN ANSWER PROMPT ==========\n%s\n"
-        "========== END ANSWER PROMPT ==========",
-        query_type,
-        len(user_msg),
-        user_msg,
-    )
+    import os
+    if os.environ.get("SECURE_DEBUG_PROMPT") == "1":
+        logger.debug(
+            "[Answer] Q&A prompt (q_type=%s, %d chars):\n"
+            "========== BEGIN ANSWER PROMPT ==========\n%s\n"
+            "========== END ANSWER PROMPT ==========",
+            query_type,
+            len(user_msg),
+            user_msg,
+        )
     logger.info(
         "[Answer] Q&A prompt prepared (q_type=%s, %d chars)",
         query_type, len(user_msg),

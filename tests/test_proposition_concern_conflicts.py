@@ -42,7 +42,9 @@ def test_same_tick_truth_collision_logs_warning(caplog):
         referent_ids=["ENT_A"],
     )
     ws = WorldStateV1(
-        locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+        locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
         objects={},
         entities={
             "ENT_A": Entity(
@@ -90,7 +92,9 @@ def test_inverse_proposition_truth_is_mirrored():
     from shadow_loom.ingestion import reconcile_affect
 
     ws = WorldStateV1(
-        locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+        locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
         objects={},
         entities={
             "ENT_A": Entity(
@@ -142,7 +146,9 @@ def test_inverse_proposition_conflict_does_not_overwrite(caplog):
     from shadow_loom.ingestion import reconcile_affect
 
     ws = WorldStateV1(
-        locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+        locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
         objects={},
         entities={
             "ENT_A": Entity(
@@ -220,7 +226,9 @@ def test_counter_concern_transitive_autoclose():
         counter_concern_ids=["CCN_DESIRE"],
     )
     ws = WorldStateV1(
-        locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+        locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
         objects={},
         entities={
             "ENT_A": Entity(
@@ -292,7 +300,9 @@ def test_do_surgery_prop_concern_contradiction_warns(caplog):
     import networkx as nx
 
     ws = WorldStateV1(
-        locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+        locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
         objects={},
         entities={
             "ENT_A": Entity(

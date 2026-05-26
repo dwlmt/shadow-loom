@@ -57,7 +57,9 @@ def _make_channel_world() -> WorldStateV1:
     """
     return WorldStateV1(
         locations={
-            "LOC_HOME": Location(name="Home", description="Home", ambient_state={}),
+            "LOC_HOME": Location(
+                id="LOC_HOME",
+                name="Home", description="Home", ambient_state={}),
         },
         objects={},
         entities={

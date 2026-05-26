@@ -32,6 +32,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_ASWAN": Location(
+            id="LOC_ASWAN",
             name="Cataract Hotel, Aswan",
             description="The terrace where Poirot is approached by Linnet and tries to dissuade Jacqueline.",
             ambient_state={
@@ -39,6 +40,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_KARNAK_LOUNGE": Location(
+            id="LOC_KARNAK_LOUNGE",
             name="S.S. Karnak — Observation Lounge",
             description="The brightly lit observation lounge where Jacqueline performs her drunken shooting of Simon.",
             ambient_state={
@@ -46,6 +48,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_KARNAK_LINNET_CABIN": Location(
+            id="LOC_KARNAK_LINNET_CABIN",
             name="S.S. Karnak — Linnet's Cabin",
             description="The owner's cabin where Linnet is shot in her sleep.",
             ambient_state={
@@ -53,6 +56,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_KARNAK_BESSNER_CABIN": Location(
+            id="LOC_KARNAK_BESSNER_CABIN",
             name="S.S. Karnak — Dr Bessner's Cabin",
             description="Where Simon is treated for his faked leg wound and remains under Bessner's supposed surveillance.",
             ambient_state={
@@ -60,6 +64,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_KARNAK_LOUISE_CABIN": Location(
+            id="LOC_KARNAK_LOUISE_CABIN",
             name="S.S. Karnak — Louise Bourget's Cabin",
             description="The maid's cabin where she is found stabbed.",
             ambient_state={
@@ -67,6 +72,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_ABU_SIMBEL": Location(
+            id="LOC_ABU_SIMBEL",
             name="Abu Simbel — Cliff Above the Temples",
             description="The cliff from which a boulder is dislodged at Linnet, the staged 'first attempt'.",
             ambient_state={
@@ -75,6 +81,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_WADI_HALFA": Location(
+            id="LOC_WADI_HALFA",
             name="Wadi Halfa Landing",
             description="The southern turning point where Colonel Race joins the Karnak.",
             ambient_state={
@@ -82,6 +89,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_SHELLAL": Location(
+            id="LOC_SHELLAL",
             name="Shellal Quay",
             description="Where the steamer returns and Jacqueline shoots herself and Simon to escape the gallows.",
             ambient_state={

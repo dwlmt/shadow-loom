@@ -47,7 +47,9 @@ def _make_world_with_traits() -> WorldStateV1:
     """Minimal world with one entity and one world trait."""
     return WorldStateV1(
         locations={
-            "LOC_A": Location(name="Room A", description="A room.",
+            "LOC_A": Location(
+                id="LOC_A",
+                name="Room A", description="A room.",
                               ambient_state={}),
         },
         objects={},
@@ -295,7 +297,9 @@ class TestEgoGraphWorldTraits:
 
     def test_world_traits_empty_when_none(self):
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={}, entities={
                 "ENT_X": Entity(id="ENT_X", name="X", location_id="LOC_A",
                                 status="healthy", traits={"t": TraitVector(value=0.5, inertia=0.5)}),
@@ -376,7 +380,9 @@ class TestSandboxWorldTraits:
 
     def test_no_ambient_edges_when_no_traits(self):
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={}, entities={
                 "ENT_X": Entity(id="ENT_X", name="X", location_id="LOC_A",
                                 status="healthy", traits={"t": TraitVector(value=0.5, inertia=0.5)}),
@@ -623,7 +629,9 @@ class TestExtractionValidIdSet:
         from shadow_loom.ingestion import GlobalRegister, _build_valid_id_set
 
         reg = GlobalRegister(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={},
             entities={},
             world_traits={
@@ -727,7 +735,9 @@ class TestWorldTraitTimelineAgent:
         from shadow_loom.ingestion import extract_world_trait_timelines, ExtractionConfig
 
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={},
             entities={},
             events=[
@@ -746,7 +756,9 @@ class TestWorldTraitTimelineAgent:
         from shadow_loom.ingestion import extract_world_trait_timelines_async, ExtractionConfig
 
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={},
             entities={},
             events=[

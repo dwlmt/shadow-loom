@@ -72,9 +72,13 @@ def _make_envelope_world() -> WorldStateV1:
     """
     return WorldStateV1(
         locations={
-            "LOC_A": Location(name="Room A", description="A",
+            "LOC_A": Location(
+                id="LOC_A",
+                name="Room A", description="A",
                               ambient_state={}),
-            "LOC_B": Location(name="Room B", description="B",
+            "LOC_B": Location(
+                id="LOC_B",
+                name="Room B", description="B",
                               ambient_state={}),
         },
         objects={
@@ -156,7 +160,9 @@ def _make_nonlinear_world() -> WorldStateV1:
     """
     return WorldStateV1(
         locations={
-            "LOC_HOUSE": Location(name="House", description="House",
+            "LOC_HOUSE": Location(
+                id="LOC_HOUSE",
+                name="House", description="House",
                                   ambient_state={}),
         },
         objects={},

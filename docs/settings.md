@@ -452,7 +452,7 @@ for the underlying model.
 
 * [`shadow_loom/settings.py`](../shadow_loom/settings.py) — the canonical source for every default value.
 * [`config.env`](../config.env) — copy-pasteable environment template.
-* [architecture.md](architecture.md) — how each setting flows into the 12-step pipeline.
+* [architecture.md](architecture.md) — how each setting flows into the 8-step pipeline.
 * [pipeline-walkthrough.md](pipeline-walkthrough.md) — code-level walkthrough showing where each `*Config` is consumed.
 * [academic-foundations.md](academic-foundations.md) — the literature behind the threshold defaults (Wilmot suspense, Halpern actual causality, Pearl ladder, AMWN).
 * [mcp-guide.md](mcp-guide.md) — MCP-specific overrides and scope rules.

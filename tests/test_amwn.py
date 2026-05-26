@@ -42,7 +42,9 @@ def _linear_world() -> WorldStateV1:
     """Three-event chain: EVT_A → EVT_B → ENT_TARGET. ENT_OTHER disconnected."""
     return WorldStateV1(
         locations={
-            "LOC_A": Location(name="A", description="A", ambient_state={}),
+            "LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={}),
         },
         objects={},
         entities={
@@ -333,7 +335,9 @@ class TestAffordanceGateEnforcement:
     def _gated_world(self) -> WorldStateV1:
         return WorldStateV1(
             locations={
-                "LOC_A": Location(name="A", description="A", ambient_state={}),
+                "LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={}),
             },
             objects={},
             entities={

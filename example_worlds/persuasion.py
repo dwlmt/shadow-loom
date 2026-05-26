@@ -31,6 +31,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_KELLYNCH_HALL": Location(
+            id="LOC_KELLYNCH_HALL",
             name="Kellynch Hall",
             description="The Elliots' Somersetshire baronial seat; let to Admiral Croft when Sir Walter cannot afford to keep it.",
             ambient_state={
@@ -41,6 +42,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_UPPERCROSS": Location(
+            id="LOC_UPPERCROSS",
             name="Uppercross Hall",
             description="The Musgroves' easy country house where Anne stays with her sister Mary.",
             ambient_state={
@@ -49,6 +51,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_LYME_REGIS": Location(
+            id="LOC_LYME_REGIS",
             name="Lyme Regis (the Cobb)",
             description="Coastal town and seawall where the Musgrove party visit Wentworth's naval friends — and where Louisa falls.",
             ambient_state={
@@ -57,6 +60,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_BATH": Location(
+            id="LOC_BATH",
             name="Bath",
             description="Fashionable spa city where Sir Walter and Elizabeth retrench, and where the courtship plots converge.",
             ambient_state={
@@ -69,6 +73,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_HARVILLE_LODGINGS": Location(
+            id="LOC_HARVILLE_LODGINGS",
             name="The Harvilles' Lodgings",
             description="Modest seafront rooms in Lyme where Captain Harville's family receive the Musgrove party and where Louisa convalesces.",
             ambient_state={
@@ -76,6 +81,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MRS_SMITH_LODGINGS": Location(
+            id="LOC_MRS_SMITH_LODGINGS",
             name="Mrs Smith's Lodgings, Westgate Buildings",
             description="The shabby Bath rooms where Anne's impoverished old school friend lives.",
             ambient_state={
@@ -83,6 +89,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_WHITE_HART": Location(
+            id="LOC_WHITE_HART",
             name="The White Hart Inn",
             description="Bath inn where the Musgroves stay and where Anne and Harville's overheard conversation reaches Wentworth.",
             ambient_state={

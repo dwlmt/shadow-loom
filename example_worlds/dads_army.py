@@ -37,6 +37,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_CHURCH_HALL": Location(
+            id="LOC_CHURCH_HALL",
             name="Church Hall",
             description="HQ of the Walmington-on-Sea Home Guard platoon, requisitioned from the long-suffering Vicar.",
             ambient_state={
@@ -46,6 +47,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_HIGH_STREET": Location(
+            id="LOC_HIGH_STREET",
             name="High Street",
             description="Walmington-on-Sea's main parade of shops, a stage for ARP-versus-Home-Guard skirmishes.",
             ambient_state={
@@ -54,6 +56,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_JONES_SHOP": Location(
+            id="LOC_JONES_SHOP",
             name="Jones's Butcher Shop",
             description="Corporal Jones's butcher shop, doubling as informal armoury, mess hall, and rationing back-channel.",
             ambient_state={
@@ -62,6 +65,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_BEACH": Location(
+            id="LOC_BEACH",
             name="Walmington Beach",
             description="The pebbled south-coast beach where invasion drills double as a comedy of misidentified buoys and sea-mines.",
             ambient_state={
@@ -71,6 +75,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_VICARAGE": Location(
+            id="LOC_VICARAGE",
             name="Vicarage",
             description="Residence of the Vicar, adjacent to the church hall and perpetually under sonic siege from drilling boots.",
             ambient_state={
@@ -79,6 +84,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_EXERCISE_GROUND": Location(
+            id="LOC_EXERCISE_GROUND",
             name="War-Games Exercise Ground",
             description="The field with pontoon bridge and tent encampment used for the regular-army training weekend; also where Major-General Fullard delivers his dressing-downs.",
             ambient_state={
@@ -88,6 +94,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_TOWN_SQUARE": Location(
+            id="LOC_TOWN_SQUARE",
             name="Town Square",
             description="Central square for parades, public addresses, and the platoon's eventual triumphant march.",
             ambient_state={

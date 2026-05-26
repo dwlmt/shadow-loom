@@ -176,8 +176,12 @@ def _build_copresence_ws():
     )
     return WorldStateV1(
         locations={
-            "LOC_BED": Location(name="Bedchamber", description="d", ambient_state={}),
-            "LOC_HALL": Location(name="Hall", description="d", ambient_state={}),
+            "LOC_BED": Location(
+                id="LOC_BED",
+                name="Bedchamber", description="d", ambient_state={}),
+            "LOC_HALL": Location(
+                id="LOC_HALL",
+                name="Hall", description="d", ambient_state={}),
         },
         objects={},
         entities={

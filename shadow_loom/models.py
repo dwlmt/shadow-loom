@@ -193,8 +193,18 @@ class AMWNNode(BaseModel):
 
 # --- 1. CORE PROPERTIES (The Physics & Soul) ---
 class TraitVector(BaseModel):
-    value: float = Field(description="0.0 to 1.0 (Current level of the trait)")
-    inertia: float = Field(description="0.0 to 1.0 (Force required to shatter this trait. 1.0 = permanent)")
+    value: float = Field(ge=0.0, le=1.0, description="0.0 to 1.0 (Current level of the trait)")
+    inertia: float = Field(ge=0.0, le=1.0, description="0.0 to 1.0 (Force required to shatter this trait. 1.0 = permanent)")
+    exogenous_noise: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Pearl's U_X exogenous noise term (initial baseline for counterfactual abduction). "
+            "During abduction, this captures the entity's intrinsic predisposition separate from "
+            "observed evidence. Default 0.0 = trait fully explained by parents; >0.0 = unexplained variance."
+        ),
+    )
     evidence_strength: Literal["weak", "moderate", "strong"] = Field(
         default="moderate",
         description=(
@@ -210,8 +220,8 @@ class TraitVector(BaseModel):
     )
 
 class AmbientVector(BaseModel):
-    value: float = Field(description="0.0 to 1.0 (How intense is this state?)")
-    volatility: float = Field(description="0.0 to 1.0 (How fast does this change? 0.0 = immutable)")
+    value: float = Field(ge=0.0, le=1.0, description="0.0 to 1.0 (How intense is this state?)")
+    volatility: float = Field(ge=0.0, le=1.0, description="0.0 to 1.0 (How fast does this change? 0.0 = immutable)")
     evidence_strength: Literal["weak", "moderate", "strong"] = Field(
         default="moderate",
         description=(
@@ -233,8 +243,8 @@ class Affordance(BaseModel):
 class Belief(BaseModel):
     target_id: str = Field(description="ID of the object/entity/event they hold a belief about.")
     perceived_state: str = Field(description="What they THINK is true (e.g., 'Cup is safe').")
-    confidence: float = Field(description="0.0 to 1.0 (How sure are they?)")
-    inertia: float = Field(description="0.0 to 1.0 (How stubborn is this belief?)")
+    confidence: float = Field(ge=0.0, le=1.0, description="0.0 to 1.0 (How sure are they?)")
+    inertia: float = Field(ge=0.0, le=1.0, description="0.0 to 1.0 (How stubborn is this belief?)")
     established_at_fabula: int = Field(default=0, description="Fabula time when this belief was formed. Used for counterfactual time-slicing.")
     acquired_via_event_id: Optional[str] = Field(
         default=None,
@@ -375,6 +385,21 @@ class Proposition(AMWNNode):
             "ground-truth commitments."
         ),
     )
+    
+    # P0-FIX (P0-13): Validate bidirectional inverse propositions (CRITICAL-004 audit).
+    # The audit found unidirectional inverse links that break on reconciliation.
+    # Note: This validator runs on individual Proposition instances - full bidirectional
+    # symmetry can only be validated at the WorldStateV1 level after all propositions
+    # are loaded. This is a first-line check; ingestion.py performs the full check.
+    @field_validator("inverse_proposition_id")
+    @classmethod
+    def _validate_inverse_not_self(cls, v: Optional[str], info) -> Optional[str]:
+        """Prevent self-referencing inverse propositions."""
+        if v and info.data.get("proposition_id") and v == info.data["proposition_id"]:
+            raise ValueError(
+                f"Proposition {v} cannot be its own inverse (violates law of excluded middle)"
+            )
+        return v
 
 
 class Concern(AMWNNode):
@@ -712,6 +737,16 @@ class ConcernSnapshot(BaseModel):
         default=None,
         description="Updated [start, end] activation window if rewritten, else null.",
     )
+    
+    @field_validator("activation_fabula_window")
+    @classmethod
+    def validate_window_length(cls, v: Optional[List[int]]) -> Optional[List[int]]:
+        """HIGH-FIX: Validate activation_fabula_window is None, empty, or 2-element list."""
+        if v is not None and len(v) not in (0, 2):
+            raise ValueError(
+                f"activation_fabula_window must be None, empty, or [start, end]; got {len(v)}-element list"
+            )
+        return v
     counter_concern_ids: Optional[List[str]] = Field(
         default=None,
         description="Updated set of counter-concern CCN_ ids if the ambivalence pairing changed, else null.",
@@ -779,6 +814,7 @@ class GlobalTrait(AMWNNode):
 # --- 2. THE NODES (The Nouns) ---
 class Location(AMWNNode):
     node_type: Literal["Location"] = "Location"
+    id: str = Field(description="Unique ID, e.g., LOC_CASTLE")
     name: str
     description: str
     ambient_state: Dict[str, AmbientVector] = Field(default_factory=dict, description="e.g., {'temperature': AmbientVector(value=0.8, volatility=0.3)}")
@@ -1472,6 +1508,10 @@ class RelationshipEdge(AMWNEdge):
     def _migrate_flat_fields(cls, data: Any) -> Any:
         """Coerce legacy flat constructor kwargs / serialised JSON into the
         per-metric ``metrics`` dict.
+
+        P2-TECH-DEBT: This migration validator is kept for backward compatibility
+        with existing tests and any legacy data, but should eventually be deprecated.
+        New code should use the metrics={...} format directly.
 
         Accepts either:
           * the new form: ``metrics={"affinity": {"value": 0.7, ...}, ...}``

@@ -35,6 +35,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_ANDREA_APT": Location(
+            id="LOC_ANDREA_APT",
             name="Andrea & Lily's NYC Apartment",
             description="The shared apartment in Manhattan where Andrea and Lily start out, increasingly empty as Andrea's hours stretch.",
             ambient_state={
@@ -43,6 +44,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_RUNWAY_OFFICES": Location(
+            id="LOC_RUNWAY_OFFICES",
             name="Runway / Elias-Clarke Offices",
             description="The glass-and-steel headquarters where Miranda's chilled silences set the tempo for an entire industry.",
             ambient_state={
@@ -52,6 +54,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_CELEBRITY_PARTY": Location(
+            id="LOC_CELEBRITY_PARTY",
             name="Manhattan Celebrity Party",
             description="The crowded loft party where Andrea, in borrowed Chanel, meets Christian Collinsworth.",
             ambient_state={
@@ -60,6 +63,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_PARIS_HOTEL": Location(
+            id="LOC_PARIS_HOTEL",
             name="Paris Fashion Week Hotel Suite",
             description="Miranda's suite during the Paris collections, where the curtain finally drops between editor and assistant.",
             ambient_state={
@@ -68,6 +72,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_DIOR_SHOW": Location(
+            id="LOC_DIOR_SHOW",
             name="Dior Show, Paris",
             description="The runway tent where Andrea, mid-show, refuses Miranda's latest impossible demand.",
             ambient_state={
@@ -76,6 +81,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_ANDREA_PARENTS_HOME": Location(
+            id="LOC_ANDREA_PARENTS_HOME",
             name="Andrea's Parents' Home",
             description="The Midwestern household where Andrea retreats after Paris — the moral baseline she had to leave to recognise.",
             ambient_state={
@@ -83,6 +89,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_HOSPITAL": Location(
+            id="LOC_HOSPITAL",
             name="Manhattan Hospital",
             description="The room where Lily lies comatose after wrecking a car drunk.",
             ambient_state={

@@ -2,7 +2,7 @@
 
 Shadow-Loom ships a [Model Context Protocol](https://modelcontextprotocol.io)
 server that exposes the entire causal narrative engine — ingestion, simulation,
-generation, audit, version management — as **41 tools and 5 resources** that any
+generation, audit, version management — as **42 tools and 5 resources** that any
 MCP-aware agent (Claude Desktop, Cursor, Continue, custom clients) can drive
 directly.
 
@@ -97,7 +97,7 @@ themselves.
 
 ---
 
-## 3. The 41 tools, by cognitive task
+## 3. The 42 tools, by cognitive task
 
 ### Coarse-grained dispatchers — prefer these for new integrations
 

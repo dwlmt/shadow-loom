@@ -27,6 +27,13 @@ links into all three rather than re-explaining them.
 > `ingest(...)` against the corresponding `sample_plots/*.txt` synopsis
 > or use the UI's seeder.)
 
+> **Note on model field examples (May 2026 update):** All model examples in this
+> document have been validated against the current Pydantic schemas in
+> [`shadow_loom/models.py`](../shadow_loom/models.py). Required fields like
+> `Location.id`, `Entity.id`, `EventNode.fabula_time`, and `EventNode.syuzhet_index`
+> are included in all examples. See the actual fixture files for complete,
+> validated model instances.
+
 ---
 
 ## Index
@@ -1317,7 +1324,7 @@ graph-read tools listed in [mcp-guide.md](mcp-guide.md).
 
 ## See also
 
-* [architecture.md](architecture.md) — the conceptual map of the data model and the 12-step pipeline.
+* [architecture.md](architecture.md) — the conceptual map of the data model and the 8-step pipeline.
 * [pipeline-walkthrough.md](pipeline-walkthrough.md) — code-level tour of one pipeline run.
 * [query-and-cycles.md](query-and-cycles.md) — per-query-type mechanics.
 * [academic-foundations.md](academic-foundations.md) — Pearl, Genette, Greimas, Sternberg, Halpern, Wilmot — the literature behind every named concept here.

@@ -45,6 +45,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_PROFESSOR_HOUSE": Location(
+            id="LOC_PROFESSOR_HOUSE",
             name="Professor Kirke's Country House",
             description="Sprawling English manor where the Pevensie children are evacuated during WWII.",
             ambient_state={
@@ -53,6 +54,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_WARDROBE": Location(
+            id="LOC_WARDROBE",
             name="The Wardrobe",
             description="Threshold between worlds; fur-coat lined passage to Narnia.",
             ambient_state={
@@ -61,6 +63,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_LANTERN_WASTE": Location(
+            id="LOC_LANTERN_WASTE",
             name="Lantern Waste (Narnia Woods)",
             description="Snowy forest at Narnia's border with the lamppost; Lucy's first entry point.",
             ambient_state={
@@ -69,6 +72,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_TUMNUS_CAVE": Location(
+            id="LOC_TUMNUS_CAVE",
             name="Tumnus's Cave",
             description="Faun's cozy underground home with warm fire and bookshelf.",
             ambient_state={
@@ -77,6 +81,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_BEAVERS_DAM": Location(
+            id="LOC_BEAVERS_DAM",
             name="Beavers' Dam",
             description="Mr. and Mrs. Beaver's home; refuge and staging point for the journey to Aslan.",
             ambient_state={
@@ -85,6 +90,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_STONE_TABLE": Location(
+            id="LOC_STONE_TABLE",
             name="The Stone Table",
             description="Ancient sacrificial altar on Aslan's hill; site of the Deep Magic ritual.",
             ambient_state={
@@ -93,6 +99,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_WITCH_CASTLE": Location(
+            id="LOC_WITCH_CASTLE",
             name="White Witch's Castle",
             description="Frozen fortress where the Witch holds court and turns creatures to stone.",
             ambient_state={
@@ -101,6 +108,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_ASLAN_CAMP": Location(
+            id="LOC_ASLAN_CAMP",
             name="Aslan's Camp",
             description="Pavilion encampment near the Stone Table; Aslan's temporary headquarters.",
             ambient_state={
@@ -109,6 +117,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_CAIR_PARAVEL": Location(
+            id="LOC_CAIR_PARAVEL",
             name="Cair Paravel",
             description="Royal castle by the Eastern Sea; seat of the four thrones.",
             ambient_state={
@@ -117,6 +126,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_BATTLEFIELD": Location(
+            id="LOC_BATTLEFIELD",
             name="Battlefield near the Stone Table",
             description="Open field where Aslan's forces clash with the Witch's army.",
             ambient_state={

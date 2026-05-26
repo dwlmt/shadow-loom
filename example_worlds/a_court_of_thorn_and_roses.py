@@ -42,6 +42,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_MORTAL_LANDS": Location(
+            id="LOC_MORTAL_LANDS",
             name="Mortal Lands",
             description="Impoverished human village near the Wall where Feyre's family lives in their rundown cottage.",
             ambient_state={
@@ -50,6 +51,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_SPRING_COURT": Location(
+            id="LOC_SPRING_COURT",
             name="Spring Court",
             description="Tamlin's faerie estate of eternal spring; beautiful surface masking Amarantha's curse.",
             ambient_state={
@@ -58,6 +60,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_UNDER_THE_MOUNTAIN": Location(
+            id="LOC_UNDER_THE_MOUNTAIN",
             name="Under the Mountain",
             description="Amarantha's subterranean court where the High Lords are enslaved beneath the prophesied weight of her curse.",
             ambient_state={
@@ -66,6 +69,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_WALL": Location(
+            id="LOC_WALL",
             name="The Wall",
             description="Ancient magical barrier separating mortal and faerie lands; few may pass and fewer may return unchanged.",
             ambient_state={
@@ -73,6 +77,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_CALANMAI_CLEARING": Location(
+            id="LOC_CALANMAI_CLEARING",
             name="Calanmai Clearing",
             description="Ritual ground of the Spring Court where the Great Rite is performed each fire-night.",
             ambient_state={
@@ -80,6 +85,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_PRISON_CELL": Location(
+            id="LOC_PRISON_CELL",
             name="Prison Cell",
             description="Feyre's cell Under the Mountain during her trials; cold stone witnesses her resolve.",
             ambient_state={
@@ -87,6 +93,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_FOREST": Location(
+            id="LOC_FOREST",
             name="Mortal Forest",
             description="The bleak woods near Feyre's cottage where she hunts to feed her family.",
             ambient_state={
@@ -95,6 +102,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_NIGHT_COURT": Location(
+            id="LOC_NIGHT_COURT",
             name="Night Court",
             description="Rhysand's hidden domain beyond Under the Mountain; site of Feyre's bargained week per month.",
             ambient_state={

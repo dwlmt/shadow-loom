@@ -2477,7 +2477,9 @@ def build_unrealised_concern_constraints(
             latest = truth_map[pid]
             if latest is not False:
                 continue  # only emit when proposition is committed FALSE
-            # Window-gate: skip concerns that haven't activated yet
+            # P0-FIX (P0-14): Window-gate concerns by activation_fabula_window (CRITICAL-006 audit).
+            # Filter concerns outside their activation window to prevent temporal leakage
+            # (e.g., Lear's irrelevance concern active before abdication event).
             window = getattr(c, "activation_fabula_window", None)
             if window and cap is not None:
                 try:

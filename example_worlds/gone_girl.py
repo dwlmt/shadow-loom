@@ -35,6 +35,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_DUNNE_HOUSE": Location(
+            id="LOC_DUNNE_HOUSE",
             name="Dunne House",
             description="Nick and Amy's rented McMansion in foreclosed-out North Carthage, Missouri — the staged scene of the disappearance.",
             ambient_state={
@@ -47,6 +48,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_BAR": Location(
+            id="LOC_BAR",
             name="The Bar",
             description="Nick and Margo's bar, purchased with the last of Amy's trust fund — Nick's only refuge from the press.",
             ambient_state={
@@ -55,6 +57,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_HIDEOUT_OZARKS": Location(
+            id="LOC_HIDEOUT_OZARKS",
             name="Ozarks Hideout",
             description="The cash-only motel in the Ozarks where Amy hides for weeks watching Nick on cable news.",
             ambient_state={
@@ -65,6 +68,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_DESI_LAKE_HOUSE": Location(
+            id="LOC_DESI_LAKE_HOUSE",
             name="Desi's Lake House",
             description="Desi Collings's gated, camera-rigged lake house — luxury that becomes a prison.",
             ambient_state={
@@ -76,6 +80,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_POLICE_STATION": Location(
+            id="LOC_POLICE_STATION",
             name="North Carthage Police Station",
             description="Where Detectives Boney and Gilpin run the missing-persons-turned-homicide investigation.",
             ambient_state={
@@ -84,6 +89,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MEDIA_CIRCUS": Location(
+            id="LOC_MEDIA_CIRCUS",
             name="Media Spotlight",
             description="The cable-news lawn camped outside the Dunne house; Ellen Abbott's pundit court of public opinion.",
             ambient_state={
@@ -92,6 +98,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_NEW_YORK": Location(
+            id="LOC_NEW_YORK",
             name="New York City",
             description="The vanished Brooklyn-magazine life Nick and Amy left behind after the Recession layoffs.",
             ambient_state={
@@ -100,6 +107,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_WOODLAWN": Location(
+            id="LOC_WOODLAWN",
             name="Woodlawn",
             description="The crumbling Missouri suburb where Amy's anniversary clues lead Nick to Margo's woodshed.",
             ambient_state={

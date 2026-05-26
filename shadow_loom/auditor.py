@@ -920,6 +920,23 @@ def compute_affective_feedback(
             trajectory_scores[effect] = round(method(eids), 4)
         except Exception:
             logger.debug("[AffectiveFeedback] %s failed", method_name)
+    
+    # P1-FIX: Add 6 emotion scorers (fear, joy, regret, grief, rage, love)
+    emotion_map = {
+        "fear": "compute_fear_score",
+        "joy": "compute_joy_score",
+        "regret": "compute_regret_score",
+        "grief": "compute_grief_score",
+        "rage": "compute_rage_score",
+        "love": "compute_love_score",
+    }
+    for emotion, method_name in emotion_map.items():
+        try:
+            method = getattr(assembler, method_name, None)
+            if method:
+                trajectory_scores[emotion] = round(method(eids), 4)
+        except Exception:
+            logger.debug("[AffectiveFeedback] %s failed", method_name)
 
     # KL divergence is only meaningful when the brief actually targets
     # surprise — the field's docstring says "divergence between the
@@ -2296,6 +2313,17 @@ def _build_refinement_prompt(
         "constraints AND the auditor corrections above. The auditor will "
         "check again."
     )
+    
+    # P1-FIX: Token budget protection - truncate if feedback exceeds limit
+    MAX_FEEDBACK_CHARS = 8000
+    feedback_text = "\n".join(feedback_lines)
+    if len(feedback_text) > MAX_FEEDBACK_CHARS:
+        logger.warning(
+            "[Refinement] Feedback exceeds %d chars (%d), truncating",
+            MAX_FEEDBACK_CHARS, len(feedback_text)
+        )
+        feedback_text = feedback_text[:MAX_FEEDBACK_CHARS] + "\n... (feedback truncated due to length)"
+        return original_rendering_prompt + feedback_text
 
     # Style re-anchor: when a style violation is active (or has been
     # active in a prior iteration), the original STYLE FIDELITY block

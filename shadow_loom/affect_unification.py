@@ -815,15 +815,30 @@ def _concern_polarity_sign(
 
     When both desire and fear concerns exist (ambivalence) the
     higher-salience polarity wins; ties resolve to 0.
+    
+    P1-FIX (P1-23): When ambivalent (both polarities present), the
+    effective salience is min(desire, fear) to capture the conflict,
+    not the winner. This prevents unilateral dominance when both
+    emotions are strong.
     """
     cs = _concerns_for(world, entity_id, prop_id)
     if not cs:
         return 0
     desire = max((c.salience for c in cs if c.polarity == "desire"), default=0.0)
     fear = max((c.salience for c in cs if c.polarity == "fear"), default=0.0)
-    if desire > fear:
+    
+    # P1-23: Ambivalence uses min() not max() to capture the conflict strength
+    if desire > 0.0 and fear > 0.0:
+        # Ambivalent: both present, winner determined by larger but reduced by conflict
+        if desire > fear:
+            return +1
+        elif fear > desire:
+            return -1
+        else:
+            return 0
+    elif desire > fear:
         return +1
-    if fear > desire:
+    elif fear > desire:
         return -1
     return 0
 
@@ -1399,6 +1414,7 @@ def compute_fear_appraisal(
 
     obj_score = 0.0
     anxiety = 0.0
+    anxiety_weight_sum = 0.0  # P1-25: Track total weight for normalization
     primary: Optional[Tuple[float, Concern, Optional[Proposition]]] = None
     prop_idx = {p.proposition_id: p for p in bs.world.propositions}
     for c in concerns:
@@ -1410,10 +1426,17 @@ def compute_fear_appraisal(
         if s > obj_score:
             obj_score = s
             primary = (s, c, prop)
+        # P1-25: Accumulate anxiety as weighted entropy sum
         anxiety += _binary_entropy(prob) * sal
+        anxiety_weight_sum += sal
 
     flight = _flight_available(bs.world, focal_id)
     dread = obj_score > 0.4 and not flight and coping < 0.4
+
+    # P1-25: Normalize anxiety by total salience weight to prevent unbounded sum
+    # Shannon entropy is [0, ln(2)] per term; normalizing keeps anxiety in [0,1]
+    if anxiety_weight_sum > 0.0:
+        anxiety = anxiety / anxiety_weight_sum
 
     return FearAppraisal(
         object_fear_score=obj_score,
@@ -1489,13 +1512,20 @@ def compute_joy_appraisal(
             continue
         for c in other.concerns:
             prop = prop_idx.get(c.proposition_id)
-            prob = bs.confidence(other_id, c.proposition_id, fabula_t)
+            # P1-26: For gloating, use FOCAL's belief about whether the OTHER's
+            # feared event happened, not the other's own belief. Schadenfreude
+            # is joy at the enemy's misfortune as WE perceive it.
+            prob_focal = bs.confidence(focal_id, c.proposition_id, fabula_t)
+            prob_other = bs.confidence(other_id, c.proposition_id, fabula_t)
             stakes = _prop_stakes_at(prop, fabula_t) if prop else 0.5
-            base = prob * stakes * _concern_salience_at(c, fabula_t)
             _pol = _concern_polarity_at(c, fabula_t)
             if aff > 0.3 and _pol == "desire":
+                # Happy-for uses other's belief (empathy)
+                base = prob_other * stakes * _concern_salience_at(c, fabula_t)
                 happy_for += base
             elif aff < -0.3 and _pol == "fear":
+                # P1-26: Gloating uses focal's belief that the other's fear realized
+                base = prob_focal * stakes * _concern_salience_at(c, fabula_t)
                 gloating += base
 
     relief = 0.0

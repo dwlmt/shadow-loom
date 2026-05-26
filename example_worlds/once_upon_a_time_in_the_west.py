@@ -35,6 +35,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_FLAGSTONE_STATION": Location(
+            id="LOC_FLAGSTONE_STATION",
             name="Flagstone Railway Station",
             description="The dust-blown Western station where Harmonica steps off the first train; three of Frank's men wait to ambush him.",
             ambient_state={
@@ -43,6 +44,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_SWEETWATER": Location(
+            id="LOC_SWEETWATER",
             name="Sweetwater Ranch",
             description="Brett McBain's homestead, sitting on the only water for miles — and on the path the railroad must take.",
             ambient_state={
@@ -51,6 +53,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MORTONS_TRAIN": Location(
+            id="LOC_MORTONS_TRAIN",
             name="Morton's Private Railway Carriage",
             description="The luxurious carriage where the dying tycoon Morton issues commissions and counts the miles of track between him and the Pacific.",
             ambient_state={
@@ -59,6 +62,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_AUCTION_SQUARE": Location(
+            id="LOC_AUCTION_SQUARE",
             name="Flagstone Auction Square",
             description="The dirt square where Sweetwater is auctioned and intimidated bidders fall silent under Frank's gaze.",
             ambient_state={
@@ -66,6 +70,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_DESERT_HANGING_ARCH": Location(
+            id="LOC_DESERT_HANGING_ARCH",
             name="Desert Hanging Arch (Flashback)",
             description="The arch in the desert where, years before, Frank made a young boy support his older brother on his shoulders, harmonica in mouth, until the boy collapsed.",
             ambient_state={

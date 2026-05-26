@@ -103,7 +103,9 @@ class TestSnapshotSortKey:
 
 def _ws_with_channels_and_traits(n_chan: int, n_trait: int) -> WorldStateV1:
     return WorldStateV1(
-        locations={"LOC_A": Location(name="A", description="d", ambient_state={})},
+        locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="d", ambient_state={})},
         objects={},
         entities={
             "ENT_X": Entity(id="ENT_X", name="X", location_id="LOC_A",
@@ -171,7 +173,9 @@ class TestRegressionGuard:
 class TestChannelRenamesPatch:
     def _ws_with_utterance(self) -> WorldStateV1:
         return WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="d", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="d", ambient_state={})},
             objects={},
             entities={
                 "ENT_X": Entity(id="ENT_X", name="X", location_id="LOC_A",

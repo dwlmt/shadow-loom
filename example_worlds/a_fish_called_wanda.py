@@ -34,52 +34,62 @@ world_state = WorldStateV1(
         source_word_count=528,
     ),
     locations={
-        "LOC_HEATHROW": Location(name="Heathrow Safe-Deposit", description="Where the stolen diamonds are initially stored.",
+        "LOC_HEATHROW": Location(
+            id="LOC_HEATHROW",name="Heathrow Safe-Deposit", description="Where the stolen diamonds are initially stored.",
             ambient_state={
                 "tension": AmbientVector(value=0.7, volatility=0.4, evidence_strength="strong"),
                 "institutional_security": AmbientVector(value=0.8, volatility=0.1, evidence_strength="moderate"),
             }),
-        "LOC_ARCHIE_FLAT": Location(name="Archie Leach's Chambers", description="Archie's barrister chambers and flat — wood-panelled English propriety made architectural.",
+        "LOC_ARCHIE_FLAT": Location(
+            id="LOC_ARCHIE_FLAT",name="Archie Leach's Chambers", description="Archie's barrister chambers and flat — wood-panelled English propriety made architectural.",
             ambient_state={
                 "respectability": AmbientVector(value=0.7, volatility=0.3, evidence_strength="strong"),
                 "marital_chill": AmbientVector(value=0.75, volatility=0.2, evidence_strength="moderate"),
             }),
-        "LOC_GEORGE_FLAT": Location(name="George's Flat", description="George Thomason's flat where the gang meets to plan the heist.",
+        "LOC_GEORGE_FLAT": Location(
+            id="LOC_GEORGE_FLAT",name="George's Flat", description="George Thomason's flat where the gang meets to plan the heist.",
             ambient_state={
                 "tension": AmbientVector(value=0.6, volatility=0.4, evidence_strength="strong"),
                 "criminal_intimacy": AmbientVector(value=0.7, volatility=0.3, evidence_strength="moderate"),
             }),
-        "LOC_WANDA_FLAT": Location(name="Wanda's Flat", description="Wanda's London flat where she keeps the locket and stages her seductions.",
+        "LOC_WANDA_FLAT": Location(
+            id="LOC_WANDA_FLAT",name="Wanda's Flat", description="Wanda's London flat where she keeps the locket and stages her seductions.",
             ambient_state={
                 "deception": AmbientVector(value=0.7, volatility=0.4, evidence_strength="strong"),
                 "erotic_charge": AmbientVector(value=0.8, volatility=0.5, evidence_strength="strong"),
             }),
-        "LOC_OLD_BAILEY": Location(name="Old Bailey", description="Criminal court where George is tried — the cathedral of English legal decorum.",
+        "LOC_OLD_BAILEY": Location(
+            id="LOC_OLD_BAILEY",name="Old Bailey", description="Criminal court where George is tried — the cathedral of English legal decorum.",
             ambient_state={
                 "formality": AmbientVector(value=0.85, volatility=0.15, evidence_strength="strong"),
                 "public_scrutiny": AmbientVector(value=0.85, volatility=0.2, evidence_strength="strong"),
             }),
-        "LOC_HIDEOUT_GARAGE": Location(name="Hideout Garage", description="Garage where Ken keeps his fish tanks and the stash before the move.",
+        "LOC_HIDEOUT_GARAGE": Location(
+            id="LOC_HIDEOUT_GARAGE",name="Hideout Garage", description="Garage where Ken keeps his fish tanks and the stash before the move.",
             ambient_state={
                 "tension": AmbientVector(value=0.5, volatility=0.4, evidence_strength="moderate"),
                 "animal_warmth": AmbientVector(value=0.7, volatility=0.2, evidence_strength="strong"),
             }),
-        "LOC_OLD_WORKSHOP": Location(name="Old Workshop", description="Disused workshop where the gang stash the diamonds in a safe immediately after the heist.",
+        "LOC_OLD_WORKSHOP": Location(
+            id="LOC_OLD_WORKSHOP",name="Old Workshop", description="Disused workshop where the gang stash the diamonds in a safe immediately after the heist.",
             ambient_state={
                 "secrecy": AmbientVector(value=0.85, volatility=0.3, evidence_strength="strong"),
                 "abandonment": AmbientVector(value=0.8, volatility=0.1, evidence_strength="moderate"),
             }),
-        "LOC_HEATHROW_HOTEL": Location(name="Hotel near Heathrow", description="Hotel near Heathrow Airport where George later stashes the diamonds in a safe-deposit box.",
+        "LOC_HEATHROW_HOTEL": Location(
+            id="LOC_HEATHROW_HOTEL",name="Hotel near Heathrow", description="Hotel near Heathrow Airport where George later stashes the diamonds in a safe-deposit box.",
             ambient_state={
                 "tension": AmbientVector(value=0.75, volatility=0.4, evidence_strength="strong"),
                 "transient_anonymity": AmbientVector(value=0.85, volatility=0.2, evidence_strength="moderate"),
             }),
-        "LOC_AIRPORT_RUNWAY": Location(name="Heathrow Runway", description="Tarmac where the Rio-bound jet boards in the closing slapstick.",
+        "LOC_AIRPORT_RUNWAY": Location(
+            id="LOC_AIRPORT_RUNWAY",name="Heathrow Runway", description="Tarmac where the Rio-bound jet boards in the closing slapstick.",
             ambient_state={
                 "chaos": AmbientVector(value=0.85, volatility=0.6, evidence_strength="strong"),
                 "escape_velocity": AmbientVector(value=0.9, volatility=0.5, evidence_strength="strong"),
             }),
-        "LOC_COADY_FLAT": Location(name="Mrs Coady's Flat", description="The elderly Crown eyewitness's home, where she keeps her three small dogs.",
+        "LOC_COADY_FLAT": Location(
+            id="LOC_COADY_FLAT",name="Mrs Coady's Flat", description="The elderly Crown eyewitness's home, where she keeps her three small dogs.",
             ambient_state={
                 "domestic_calm": AmbientVector(value=0.8, volatility=0.2, evidence_strength="moderate"),
                 "animal_warmth": AmbientVector(value=0.85, volatility=0.15, evidence_strength="strong"),

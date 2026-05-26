@@ -33,6 +33,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_GENEVA": Location(
+            id="LOC_GENEVA",
             name="Geneva",
             description="The Frankenstein family estate on Lake Geneva — Victor's birthplace and site of William's and Elizabeth's deaths.",
             ambient_state={
@@ -42,6 +43,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_INGOLSTADT": Location(
+            id="LOC_INGOLSTADT",
             name="University of Ingolstadt",
             description="German university where Victor studies natural philosophy and chemistry under Waldman and Krempe.",
             ambient_state={
@@ -50,6 +52,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_LABORATORY": Location(
+            id="LOC_LABORATORY",
             name="Victor's Attic Laboratory",
             description="Squalid attic in Ingolstadt where the Creature is assembled from charnel-house parts and animated.",
             ambient_state={
@@ -60,6 +63,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_DELACEY_COTTAGE": Location(
+            id="LOC_DELACEY_COTTAGE",
             name="De Lacey Cottage",
             description="Rural French-exiled cottage where the Creature secretly observes the De Lacey family and learns language and morality.",
             ambient_state={
@@ -69,6 +73,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MER_DE_GLACE": Location(
+            id="LOC_MER_DE_GLACE",
             name="Mer de Glace",
             description="Alpine glacier above Chamonix where the Creature confronts Victor and tells his story.",
             ambient_state={
@@ -77,6 +82,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_ORKNEY": Location(
+            id="LOC_ORKNEY",
             name="Orkney Hut",
             description="Remote Scottish island shed where Victor begins, then destroys, the female creature.",
             ambient_state={
@@ -87,6 +93,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_IRISH_COAST": Location(
+            id="LOC_IRISH_COAST",
             name="Irish Coast",
             description="Shore where Victor lands after dumping the destroyed female creature and is arrested for Clerval's murder.",
             ambient_state={
@@ -94,6 +101,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_ARCTIC": Location(
+            id="LOC_ARCTIC",
             name="Arctic Ice",
             description="Frozen sea where Victor pursues the Creature and is rescued by Walton's expedition.",
             ambient_state={
@@ -104,6 +112,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_WALTONS_SHIP": Location(
+            id="LOC_WALTONS_SHIP",
             name="Walton's Ship",
             description="Vessel of the North Pole expedition where Victor recounts his story and dies.",
             ambient_state={

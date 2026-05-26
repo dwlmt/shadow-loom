@@ -403,10 +403,22 @@ def run_and_save(
                     "(expected ancestor %s, found %s); flagging response.",
                     ancestor_row_id, prior_active_id,
                 )
-            try:
-                set_active_version(project_id, user_row_id, ver.id)
-            except Exception:
-                logger.exception("Failed to update active-version pointer")
+            # Round-7 audit: only advance the active pointer when the
+            # caller's view of the head still matches — otherwise the
+            # mutation silently overrides whatever the concurrent
+            # writer just committed, even though we just told the
+            # client there was a conflict. Surface a refusal instead.
+            if (
+                "active_version_conflict" in response
+            ):
+                response["active_version_pointer_updated"] = False
+            else:
+                try:
+                    set_active_version(project_id, user_row_id, ver.id)
+                    response["active_version_pointer_updated"] = True
+                except Exception:
+                    logger.exception("Failed to update active-version pointer")
+                    response["active_version_pointer_updated"] = False
         if world_model_unchanged and result.prose:
             response["world_model_unchanged"] = True
     elif skip_for_reextraction:

@@ -13394,6 +13394,59 @@ def _promote_sentient_objects(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]
     return ws, repairs
 
 
+def _orphan_audit_causal_topology(
+    causal_edges: List[CausalEdge],
+    valid_node_ids: set,
+    entity_ids: set,
+    repairs: List[str],
+) -> None:
+    """P0-10: Audit CausalEdge references for orphaned IDs (CRITICAL-006 audit).
+    
+    Validates:
+    - source_id and target_id exist in valid_node_ids
+    - rel_counterpart_id (if set) exists in entity_ids
+    
+    This is a comprehensive post-merge integrity check that catches orphaned
+    edges individual validators might miss. Implements Correa & Bareinboim
+    AMWN requirement for referential integrity in the causal diagram.
+    """
+    for ce in causal_edges:
+        if ce.source_id not in valid_node_ids:
+            repairs.append(
+                f"ORPHAN-AUDIT: CausalEdge has invalid source_id: {ce.source_id} → {ce.target_id}"
+            )
+        if ce.target_id not in valid_node_ids:
+            repairs.append(
+                f"ORPHAN-AUDIT: CausalEdge has invalid target_id: {ce.source_id} → {ce.target_id}"
+            )
+        if ce.rel_counterpart_id and ce.rel_counterpart_id not in entity_ids:
+            repairs.append(
+                f"ORPHAN-AUDIT: CausalEdge {ce.source_id}→{ce.target_id} has "
+                f"invalid rel_counterpart_id: {ce.rel_counterpart_id}"
+            )
+
+
+def _orphan_audit_relationship_edges(
+    social_edges: List[RelationshipEdge],
+    entity_ids: set,
+    repairs: List[str],
+) -> None:
+    """P0-10: Audit RelationshipEdge references for orphaned IDs (CRITICAL-006 audit).
+    
+    Validates that both endpoints exist in entity registry.
+    Prevents phantom social topology that breaks d-separation reasoning.
+    """
+    for re in social_edges:
+        if re.source_entity_id not in entity_ids:
+            repairs.append(
+                f"ORPHAN-AUDIT: RelationshipEdge has invalid source: {re.source_entity_id} → {re.target_entity_id}"
+            )
+        if re.target_entity_id not in entity_ids:
+            repairs.append(
+                f"ORPHAN-AUDIT: RelationshipEdge has invalid target: {re.source_entity_id} → {re.target_entity_id}"
+            )
+
+
 def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
     """
     Programmatically repair a WorldStateV1 by removing broken edges
@@ -14182,6 +14235,13 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
                 "[Auto-Repair]   \u2022 \u2026 + %d more.",
                 len(repairs) - 25,
             )
+        
+        # P0-FIX (P0-10): Global orphaned edge audit (CRITICAL-006 audit).
+        # Comprehensive post-merge check for all edge reference integrity.
+        # Catches orphaned edges that individual validators might miss.
+        _orphan_audit_causal_topology(clean_causal, valid_ids, entity_ids, repairs)
+        _orphan_audit_relationship_edges(clean_social, entity_ids, repairs)
+        
         ws = WorldStateV1(
             locations=ws.locations,
             objects=ws.objects,

@@ -35,7 +35,9 @@ from shadow_loom.query_models import DoProposition
 def _make_world_with_inverse_pair() -> WorldStateV1:
     return WorldStateV1(
         locations={
-            "LOC_A": Location(name="A", description="A", ambient_state={}),
+            "LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={}),
         },
         objects={},
         entities={

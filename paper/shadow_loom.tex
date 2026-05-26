@@ -212,7 +212,7 @@ fixtures.
 \section{Pipeline overview}
 \label{sec:pipeline}
 
-The pipeline is a five-phase loop over a versioned world model.
+The pipeline is an 8-step loop (Steps 0--7) over a versioned world model.
 Every version is ancestor-linked, so a counterfactual fork is
 literally a sibling row in a directed acyclic version tree, not a
 mutation of canon. Figure~\ref{fig:pipeline} sketches the loop.
@@ -242,24 +242,24 @@ for definitions of each stage.}
 \label{fig:pipeline}
 \end{figure}
 
-The five phases correspond to the five appendix subsections
-(\ref{app:ingestion}--\ref{app:audit}):
-\textbf{(1) Ingestion} runs five LLM agents to extract a typed
-\texttt{GlobalRegister}, then three concurrent specialist agents
+The 8 steps correspond to the pipeline implementation in \texttt{pipeline.py}:
+\textbf{Steps 0--4 (Ingestion)} run LLM agents to extract a typed
+\texttt{GlobalRegister}, then concurrent specialist agents
 (physics, social, consequences) per chunk to extract events,
 relationships, channels, and entity-state deltas, with a
 programmatic validation and auto-repair loop.
-\textbf{(2) Causal physics} forks an Ancestral Multi-World Network
+\textbf{Step 5 (Causal physics)} forks an Ancestral Multi-World Network
 sandbox, applies a do-operator for interventions, runs abduction for
 counterfactuals, and propagates effects through a topological sort
 of the causal sub-graph subject to inertia and affordance gating.
-\textbf{(3) Narrative physics / affective calculus} scores each
-candidate sandbox against four structural information-state
-functionals and six trait-trajectory emotional functionals.
-\textbf{(4) Generation} packages the highest-scoring candidate as a
+\textbf{Step 6 (Narrative physics / affective calculus)} scores each
+candidate sandbox against five structural information-state
+functionals (mystery, dramatic irony, suspense, surprise, tension)
+and six trait-trajectory emotional functionals (fear, joy, grief, rage, regret, love).
+\textbf{Step 7 (Generation)} packages the highest-scoring candidate as a
 \texttt{CreativeBrief} of typed \texttt{ConstraintBlock}s and hands
 \emph{only} the brief to a creative LLM.
-\textbf{(5) Audit and feedback} runs an LLM-as-judge over the prose,
+\textbf{Step 8 (Audit and feedback)} runs an LLM-as-judge over the prose,
 detects ``miracle steps'' (state changes with no licensing edge in
 the brief), and either accepts the version or re-runs generation
 with the auditor's feedback appended, up to a configurable retry

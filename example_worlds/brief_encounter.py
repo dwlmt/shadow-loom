@@ -32,6 +32,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_REFRESHMENT_ROOM": Location(
+            id="LOC_REFRESHMENT_ROOM",
             name="Milford Junction Refreshment Room",
             description="The bright tea-room on the up platform where Laura and Alec snatch their weekly meetings — and where their farewell is wrecked by Dolly Messiter.",
             ambient_state={
@@ -44,6 +45,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_PLATFORM": Location(
+            id="LOC_PLATFORM",
             name="Milford Junction Platform",
             description="The platform itself, with its express trains and timetabled separations.",
             ambient_state={
@@ -52,6 +54,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_BOTANICAL_GARDENS": Location(
+            id="LOC_BOTANICAL_GARDENS",
             name="Milford Botanical Gardens",
             description="Their first walk together; safely public, deniably innocent.",
             ambient_state={
@@ -59,6 +62,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_KARDOMAH": Location(
+            id="LOC_KARDOMAH",
             name="Kardomah Café and Cinema",
             description="Where the relationship deepens over chops and matinées.",
             ambient_state={
@@ -66,6 +70,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_STEPHENS_FLAT": Location(
+            id="LOC_STEPHENS_FLAT",
             name="Stephen Lynn's Flat",
             description="The borrowed flat of Alec's friend Stephen where Laura and Alec almost cross the line — and where Stephen's early return makes their meeting impossible.",
             ambient_state={
@@ -76,6 +81,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MILFORD_STREETS": Location(
+            id="LOC_MILFORD_STREETS",
             name="Milford Streets in Rain",
             description="The streets along which Laura wanders in shame after the flat episode until a constable urges her home.",
             ambient_state={
@@ -84,6 +90,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_LAURAS_HOME": Location(
+            id="LOC_LAURAS_HOME",
             name="Laura's Suburban Home",
             description="The Jessons' Ketchworth sitting-room with its wireless and Fred's crossword.",
             ambient_state={

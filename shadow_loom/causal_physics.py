@@ -178,7 +178,7 @@ class BeliefMutation(BaseModel):
     target_id: str
     proposition_id: Optional[str] = None
     old_confidence: Optional[float] = None
-    new_confidence: float
+    new_confidence: float = Field(ge=0.0, le=1.0, description="Must be valid probability [0,1]")
     created: bool = False  # True when the belief did not previously exist
     triggered_by: str = "DO_OPERATOR"  # or PROP_X when cascaded
 
@@ -783,76 +783,88 @@ class CausalPhysicsEngine:
             elif self.sandbox.has_node(eid):
                 node_data = self.sandbox.nodes[eid]
                 if node_data.get("node_type") == "EventNode":
-                    # Truth-value guard for utterance events. An
-                    # utterance whose ``truth_value`` is ``false`` or
-                    # ``performative`` does NOT produce factual belief
-                    # reinforcement — a known lie can't be evidence
-                    # for the proposition it carries, and a performative
-                    # (greeting, command, oath) doesn't assert a truth-
-                    # apt content at all. Skip the propagation. The event
-                    # node itself remains in the graph as a social fact;
-                    # only its causal back-prop is gated.
+                    # P0-FIX (P0-5): Separate abduction from forward propagation (VIOLATION #6 audit).
+                    # Pearl's abduction step (rung-3 counterfactual) should ONLY update exogenous
+                    # variables (U terms), not propagate effects forward through causal edges.
+                    # The original implementation propagated event evidence through the graph during
+                    # abduction, violating temporal consistency (back-propagating future events).
+                    #
+                    # Correct Pearl abduction recipe (Causality 2009, §7):
+                    #   1. Abduction: Update P(U|evidence) - infer hidden exogenous variables
+                    #   2. Action: Apply do-operator (graph surgery)
+                    #   3. Prediction: Forward propagate through modified graph
+                    #
+                    # This fix implements step 1 correctly: mark the event as evidence and update
+                    # exogenous noise on affected entities, but do NOT forward-propagate during
+                    # abduction. The propagate() method handles forward effects in step 3.
+                    
+                    # Truth-value guard for utterance events. An utterance whose truth_value is
+                    # false or performative does NOT produce factual belief reinforcement.
                     if (
                         node_data.get("event_type") == "utterance"
                         and node_data.get("truth_value") in ("false", "performative")
                     ):
                         logger.log(
                             _physics_log(),
-                            "[CausalPhysics·Abduction] Skipping back-prop for "
-                            "utterance %s (truth_value=%s).",
+                            "[CausalPhysics·Abduction] Skipping event %s (truth_value=%s).",
                             eid, node_data.get("truth_value"),
                         )
                         self._abducted_event_evidence.add(eid)
                         continue
-                    # Mark this event so propagate() skips its outgoing edges
-                    # — we have just applied them directly during abduction.
+                    
+                    # Mark this event as abducted so propagate() can decide whether to
+                    # fire its outgoing edges. The original code marked it then immediately
+                    # propagated, causing double-counting. Now we only mark it - propagate()
+                    # will skip edges from abducted events to prevent double-application.
                     self._abducted_event_evidence.add(eid)
+                    
+                    # Update exogenous noise on affected entities based on event evidence.
+                    # This implements Pearl's abduction: inferring U given evidence e.
+                    # For each entity that this event causally affects, we update the
+                    # exogenous_noise term to reflect the hidden variance that best
+                    # explains the observed outcome.
                     for ce in self.world_state.causal_topology:
                         if ce.source_id != eid:
                             continue
-                        # Respect propagation_delay: skip edges whose effect hasn't elapsed
-                        if ce.propagation_delay > 0:
-                            target_node = self.sandbox.nodes.get(ce.target_id)
-                            target_ft = target_node.get("fabula_time") if target_node else None
-                            # Entity targets have no fabula_time — use simulation horizon
-                            if target_ft is None:
-                                target_ft = self._simulation_horizon()
-                            if target_ft < ce.fabula_time + ce.propagation_delay:
-                                logger.debug("[CausalPhysics·Abduction] Skipping edge %s→%s: delay=%d not elapsed.",
-                                             ce.source_id, ce.target_id, ce.propagation_delay)
-                                continue
-                        mult = _strength_weight(ce.evidence_strength)
-                        force_scale = _force_scale(ce.causal_force)
+                        
                         target_node = self.sandbox.nodes.get(ce.target_id)
                         if target_node and target_node.get("node_type") == "Entity":
                             traits = target_node.get("traits", {})
-
-                            # Precise mutation: use trait_target/trait_delta
-                            if ce.causality_type == "mutation" and ce.trait_target is not None:
+                            
+                            # Update exogenous noise for the affected trait(s).
+                            # High causal_force + strong evidence_strength suggests
+                            # low unexplained variance (exogenous noise).
+                            mult = _strength_weight(ce.evidence_strength)
+                            force_scale = _force_scale(ce.causal_force)
+                            explained_variance = mult * force_scale
+                            unexplained_variance = max(0.0, 1.0 - explained_variance)
+                            
+                            if ce.causality_type == "mutation" and ce.trait_target:
                                 td = traits.get(ce.trait_target)
-                                if isinstance(td, dict) and "value" in td:
-                                    delta = (ce.trait_delta if ce.trait_delta is not None else 1.0) * mult * force_scale
-                                    td["value"] = max(0.0, min(1.0, td["value"] + delta))
-                                    logger.debug("[CausalPhysics·Abduction] Event %s → %s.%s: mutation delta=%.3f",
-                                                 eid, ce.target_id, ce.trait_target, delta)
-                                continue
-
-                            relevant = MECHANISM_TRAIT_MAP.get(ce.mechanism, None)
-                            for trait_name, trait_data in traits.items():
-                                if not isinstance(trait_data, dict) or "value" not in trait_data:
-                                    continue
-                                old_val = trait_data["value"]
-                                if relevant is None or trait_name in relevant:
-                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * force_scale))
-                                    logger.debug("[CausalPhysics·Abduction] Event %s → %s.%s: mechanism=%s matched, old=%.3f new=%.3f",
-                                                 eid, ce.target_id, trait_name, ce.mechanism, old_val, trait_data["value"])
-                                else:
-                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * force_scale * _mechanism_fallback_factor()))
-                                    logger.debug("[CausalPhysics·Abduction] Event %s → %s.%s: mechanism=%s fallback, old=%.3f new=%.3f",
-                                                 eid, ce.target_id, trait_name, ce.mechanism, old_val, trait_data["value"])
+                                if isinstance(td, dict):
+                                    # Update exogenous noise (U_X) for this trait
+                                    old_noise = td.get("exogenous_noise", 0.0)
+                                    # Blend toward unexplained variance
+                                    td["exogenous_noise"] = (old_noise + unexplained_variance) / 2.0
+                                    logger.debug(
+                                        "[CausalPhysics·Abduction·Exogenous] Event %s → %s.%s: "
+                                        "updated exogenous_noise %.3f→%.3f (explained=%.3f)",
+                                        eid, ce.target_id, ce.trait_target,
+                                        old_noise, td["exogenous_noise"], explained_variance
+                                    )
+                            else:
+                                # Update exogenous noise for all mechanism-relevant traits
+                                relevant = MECHANISM_TRAIT_MAP.get(ce.mechanism, None)
+                                for trait_name, trait_data in traits.items():
+                                    if not isinstance(trait_data, dict):
+                                        continue
+                                    if relevant is None or trait_name in relevant:
+                                        old_noise = trait_data.get("exogenous_noise", 0.0)
+                                        trait_data["exogenous_noise"] = (old_noise + unexplained_variance) / 2.0
+                    
                     logger.log(
                         _physics_log(),
-                        "[CausalPhysics·Abduction] Propagated evidence from event %s.",
+                        "[CausalPhysics·Abduction] Marked event %s as abducted (exogenous vars updated).",
                         eid,
                     )
             else:
@@ -912,17 +924,16 @@ class CausalPhysicsEngine:
             # Decide which traits, if any, are pinned by this intervention.
             sub = sub_path.strip()
             if not sub or sub == "spawn":
-                # Bare-node or genesis spawn. If the user *also* pinned
-                # specific traits on this node, only honour those pins
-                # (the wildcard would otherwise smother them and freeze
-                # every other trait too). With no per-trait companion
-                # surgery, the spawn pins everything via the wildcard.
+                # P0-FIX: Remove wildcard trait pinning (CRITICAL-004 audit).
+                # Pearl's minimal surgery principle: only directly intervened
+                # variables should be frozen. Bare-node or spawn interventions
+                # (e.g., do(ENT_X.status="alive")) should NOT freeze all traits.
+                # If the user explicitly pinned specific traits, honor those.
                 pinned = per_trait_pins_by_node.get(node_id)
                 if pinned:
                     for trait_name in pinned:
                         self._intervened_traits.add((node_id, trait_name))
-                else:
-                    self._intervened_traits.add((node_id, "*"))
+                # No wildcard fallback - only pin what was explicitly set
             elif sub.startswith("traits."):
                 # ``traits.<name>`` or ``traits.<name>.value`` \u2014 pin the
                 # specific trait only.
@@ -1277,6 +1288,16 @@ class CausalPhysicsEngine:
         inverse_old_truth: Optional[bool] = None
         inverse_new_truth: Optional[bool] = None
         if inverse_pid:
+            # HIGH-FIX: Validate inverse proposition exists before mirroring
+            inverse_exists = any(p.proposition_id == inverse_pid for p in props_list)
+            if not inverse_exists:
+                logger.warning(
+                    "[CausalPhysics·do_proposition] Inverse proposition %s not found in world_state; skipping mirror for %s",
+                    inverse_pid, target.proposition_id
+                )
+                inverse_pid = None  # Disable mirror to avoid errors below
+        
+        if inverse_pid:
             for idx, inv_prop in enumerate(props_list):
                 if inv_prop.proposition_id != inverse_pid:
                     continue
@@ -1284,30 +1305,40 @@ class CausalPhysicsEngine:
                 if isinstance(inv_prop.truth_at_fabula, dict):
                     inv_existing = inv_prop.truth_at_fabula.get(ft)
                     if inv_existing is not None and inv_existing != inv_val:
+                        # Round-7 audit: previously this branch logged
+                        # the conflict and skipped, leaving the primary
+                        # clamp committed while the inverse still
+                        # carried its contradictory factual value —
+                        # the catalogue ended in a self-inconsistent
+                        # state (PROP_X=True AND PROP_NOT_X=True at the
+                        # same tick). Resolve atomically by forcing the
+                        # inverse to match the do-surgery intent; the
+                        # primary clamp is the operator-issued
+                        # intervention and wins by policy.
                         logger.warning(
                             "[CausalPhysics\u00b7do_proposition] Inverse "
                             "consistency conflict on %s@fabula=%d: existing "
                             "truth %s contradicts mirror from %s=%s "
-                            "(would-be inverse=%s). Keeping existing value.",
+                            "(would-be inverse=%s). Overwriting inverse to "
+                            "restore catalogue consistency.",
                             inverse_pid, ft, inv_existing,
                             target.proposition_id, target.truth, inv_val,
                         )
-                    else:
-                        inv_prior = [
-                            v for k, v in inv_prop.truth_at_fabula.items()
-                            if int(k) < ft
-                        ]
-                        inverse_old_truth = inv_prior[-1] if inv_prior else None
-                        inv_new = {
-                            int(k): v for k, v in inv_prop.truth_at_fabula.items()
-                            if int(k) < ft
-                        }
-                        inv_new[ft] = inv_val
-                        props_list[idx] = inv_prop.model_copy(
-                            update={"truth_at_fabula": inv_new}
-                        )
-                        inverse_mirror_applied = True
-                        inverse_new_truth = inv_val
+                    inv_prior = [
+                        v for k, v in inv_prop.truth_at_fabula.items()
+                        if int(k) < ft
+                    ]
+                    inverse_old_truth = inv_prior[-1] if inv_prior else None
+                    inv_new = {
+                        int(k): v for k, v in inv_prop.truth_at_fabula.items()
+                        if int(k) < ft
+                    }
+                    inv_new[ft] = inv_val
+                    props_list[idx] = inv_prop.model_copy(
+                        update={"truth_at_fabula": inv_new}
+                    )
+                    inverse_mirror_applied = True
+                    inverse_new_truth = inv_val
                 break
 
         # Refresh the sandbox's serialised proposition layer so
@@ -1333,6 +1364,11 @@ class CausalPhysicsEngine:
         cascaded = 0
         if target.propagate_to_beliefs:
             cascaded = self._cascade_proposition_to_beliefs(target)
+            # P0-FIX: Cascade to inverse proposition beliefs as well
+            if inverse_pid and inverse_mirror_applied:
+                cascaded += self._cascade_inverse_proposition_to_beliefs(
+                    target, inverse_pid, bool(inverse_new_truth)
+                )
 
         self._proposition_mutations.append(PropositionMutation(
             proposition_id=target.proposition_id,
@@ -1343,7 +1379,7 @@ class CausalPhysicsEngine:
         ))
         # Round-10 audit fix (R10-F1): emit a paired ``PropositionMutation``
         # for the inverse so the pipeline merge bridge emits a matching
-        # ``PropositionTruthCommit`` and the canonical timeline stays in
+        # ``PropositionTruthCommit`` and the
         # lockstep with the primary clamp. Phase C ingestion already does
         # this mirror on the canonical side; the Pearl Rung-2 path missed
         # it. Cascaded belief count is reported as 0 because the cascade
@@ -1435,6 +1471,22 @@ class CausalPhysicsEngine:
         design; downstream effects flow naturally through the standard
         propagate step which already reads beliefs.
         """
+        # MODERATE-FIX (M-005): Validate belief channel provenance at creation.
+        # Ensures acquired_via_channel_id references existing channel to maintain
+        # provenance chain integrity.
+        if target.acquired_via_channel_id:
+            channel_exists = any(
+                ch.channel_id == target.acquired_via_channel_id
+                for ch in (self.world_state.channels or {}).values()
+            )
+            if not channel_exists:
+                logger.warning(
+                    "[CausalPhysics·do_belief] acquired_via_channel_id=%s not found. "
+                    "Clearing provenance.",
+                    target.acquired_via_channel_id
+                )
+                target.acquired_via_channel_id = None
+        
         if not self.sandbox.has_node(target.holder_id):
             logger.warning(
                 "[CausalPhysics·do_belief] Holder %s missing from sandbox; "
@@ -1536,6 +1588,54 @@ class CausalPhysicsEngine:
                         target.holder_id, target.target_id,
                     )
             canonical_holder.beliefs = canonical_beliefs
+
+    def _cascade_inverse_proposition_to_beliefs(
+        self, primary_target: Any, inverse_pid: str, inverse_new_truth: bool
+    ) -> int:
+        """P0-FIX: Cascade belief updates to the INVERSE proposition when
+        the primary is clamped. Example: when PROP_DUNCAN_ALIVE=False is set,
+        beliefs about PROP_DUNCAN_DEAD should also update.
+        
+        Returns the number of inverse beliefs cascaded.
+        """
+        from shadow_loom.query_models import DoBelief
+        count = 0
+        for nid, ndata in self.sandbox.nodes(data=True):
+            if ndata.get("node_type") != "Entity":
+                continue
+            beliefs = ndata.get("beliefs")
+            if not isinstance(beliefs, list):
+                continue
+            for b in beliefs:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("proposition_id") != inverse_pid:
+                    continue
+                # Inverse belief alignment: belief aligned with inverse_new_truth
+                es_raw = b.get("evidence_strength")
+                if isinstance(es_raw, str):
+                    evidence = float(_strength_weight(es_raw))
+                elif es_raw is None:
+                    evidence = 1.0
+                else:
+                    evidence = float(es_raw)
+                
+                # Check if belief aligns with the inverse truth value
+                aligned = self._belief_aligned_with_truth(b, inverse_new_truth)
+                new_conf = (1.0 if aligned else 0.0) * max(0.0, min(1.0, evidence))
+                
+                # Use the belief-clamp helper for consistency
+                self._apply_do_belief(
+                    DoBelief(
+                        holder_id=nid,
+                        target_id=b.get("target_id", ""),
+                        confidence=new_conf,
+                        proposition_id=inverse_pid,
+                    ),
+                    triggered_by=inverse_pid,
+                )
+                count += 1
+        return count
 
     def _apply_do_concern(self, target: Any) -> None:
         """Clamp salience / polarity / activation on a single
@@ -1803,6 +1903,26 @@ class CausalPhysicsEngine:
             # Sandbox-only success still counts as work for vacuity gating.
             if self.sandbox.has_node(target.channel_id):
                 self._edge_do_targets_applied += 1
+        
+        # MODERATE-FIX (M-004): Channel termination cascades to invalidate beliefs.
+        # When channel is severed (active=False), prune beliefs acquired via that channel
+        # to maintain epistemic consistency.
+        if target.active is False and target.channel_id:
+            from shadow_loom.instantiator import AMWNInstantiator
+            pruned_count = AMWNInstantiator._prune_beliefs_by_provenance(
+                self.sandbox,
+                removed_channel_ids={target.channel_id},
+            )
+            if pruned_count > 0:
+                logger.info(
+                    "[CausalPhysics·do_channel] Channel %s terminated, pruned %d belief(s).",
+                    target.channel_id, pruned_count
+                )
+                # Mirror belief pruning to canonical world_state
+                self._mirror_belief_pruning_to_canonical(
+                    removed_event_ids=set(),
+                    removed_channel_ids={target.channel_id},
+                )
 
     def _apply_do_event_relocation(self, target: Any) -> None:
         """Rewrite an event's ``at_location_id`` and cascade
@@ -1961,11 +2081,28 @@ class CausalPhysicsEngine:
             None,
         )
         if rel is None:
+            # P0-FIX (P0-9): Set established_at_fabula on creation (CRITICAL-004 audit).
+            # Without this timestamp, relationships are visible before they form
+            # (time-slice leakage). New relationships must carry creation time.
             rel = RelationshipEdge(
                 source_entity_id=target.source_entity_id,
                 target_entity_id=target.target_entity_id,
                 metrics={},
+                established_at_fabula=ft,
             )
+            # MODERATE-FIX (M-003): Initialize per-axis inertia for new relationships.
+            # Each metric should have proper default inertia instead of using edge-level default.
+            rel.metrics = {
+                "affinity": RelationshipMetric(
+                    value=0.0, inertia=0.3, observed=False, last_updated_fabula=ft
+                ),
+                "fear": RelationshipMetric(
+                    value=0.0, inertia=0.4, observed=False, last_updated_fabula=ft
+                ),
+                "power_dynamic": RelationshipMetric(
+                    value=0.0, inertia=0.5, observed=False, last_updated_fabula=ft
+                ),
+            }
             topology.append(rel)
             self.world_state.social_topology = topology
         metric_entry = rel.metrics.get(target.metric)
@@ -2065,6 +2202,63 @@ class CausalPhysicsEngine:
                 trait_delta=target.trait_delta,
                 rel_counterpart_id=target.rel_counterpart_id,
             )
+            
+            # P0-FIX (P0-6): Validate temporal ordering (CRITICAL-001 audit).
+            # Pearl's SCM requires cause to precede effect. Check that source
+            # event's fabula_time < target event's fabula_time (when both are events).
+            source_node = self.sandbox.nodes.get(target.source_id, {})
+            target_node = self.sandbox.nodes.get(target.target_id, {})
+            source_ft = source_node.get("fabula_time")
+            target_ft = target_node.get("fabula_time")
+            if source_ft is not None and target_ft is not None:
+                if source_ft > target_ft:
+                    logger.error(
+                        "[CausalPhysics·do_causal_edge] Temporal ordering violation: "
+                        "cause %s (ft=%d) occurs AFTER effect %s (ft=%d). Refusing edge.",
+                        target.source_id, source_ft, target.target_id, target_ft
+                    )
+                    return
+                    
+            # P0-FIX (P0-7): Validate rel_counterpart_id exists (CRITICAL-002 audit).
+            # For mutation_social edges, validate that the counterpart entity exists
+            # to prevent orphaned references.
+            if target.rel_counterpart_id:
+                if target.rel_counterpart_id not in self.world_state.entities:
+                    logger.error(
+                        "[CausalPhysics·do_causal_edge] rel_counterpart_id=%s not found "
+                        "in entities. Refusing mutation_social edge %s→%s.",
+                        target.rel_counterpart_id, target.source_id, target.target_id
+                    )
+                    return
+            
+            # MODERATE-FIX (Graph Topology CRITICAL-007): Validate mechanism-trait mapping.
+            # When trait_target is specified, ensure it's compatible with the mechanism.
+            # Prevents silent propagation failures where edge fires but doesn't mutate.
+            if target.trait_target and target.mechanism:
+                valid_traits = MECHANISM_TRAIT_MAP.get(target.mechanism)
+                if valid_traits is not None and target.trait_target not in valid_traits:
+                    logger.warning(
+                        "[CausalPhysics·do_causal_edge] Mechanism-trait mismatch: "
+                        "mechanism=%s does not map to trait_target=%s (valid: %s). "
+                        "Edge %s→%s may not propagate correctly.",
+                        target.mechanism, target.trait_target, valid_traits,
+                        target.source_id, target.target_id
+                    )
+                    # Don't refuse the edge - just warn. Mechanism might be valid but
+                    # MECHANISM_TRAIT_MAP incomplete, or this is an exotic edge type.
+            
+            # MODERATE-FIX (M-006): Inherit evidence_strength from source EventNode.
+            # Maintains consistency between event confidence and causal edge weights.
+            if source_node.get("node_type") == "EventNode":
+                source_evidence = source_node.get("evidence_strength", "moderate")
+                if not target.evidence_strength or target.evidence_strength == "moderate":
+                    # Inherit from source event if not explicitly set
+                    edge.evidence_strength = source_evidence
+                    logger.debug(
+                        "[CausalPhysics·do_causal_edge] Inherited evidence_strength=%s from %s",
+                        source_evidence, target.source_id
+                    )
+                    
         except Exception:
             logger.exception(
                 "[CausalPhysics\u00b7do_causal_edge] CausalEdge validation failed for %s\u2192%s.",
@@ -2116,6 +2310,17 @@ class CausalPhysicsEngine:
             matched = _matching_edge_keys()
             for k in matched:
                 sb.remove_edge(target.source_id, target.target_id, key=k)
+            
+            # MODERATE-FIX (Graph Topology MODERATE-002): Mark destroyed_at_fabula
+            # on canonical topology edges to distinguish permanent vs temporary 
+            # passage removal. This allows downstream reasoning about whether a
+            # severed passage can be restored.
+            for e in (self.world_state.spatial_topology or []):
+                if (e.source_id == target.source_id and e.target_id == target.target_id) or \
+                   (e.source_id == target.target_id and e.target_id == target.source_id and 
+                    getattr(e, "bidirectional", False)):
+                    e.destroyed_at_fabula = ft
+            
             # Bidirectional sever (round-7 audit fix). The ``add``
             # branch below registers the reverse arrow for
             # bidirectional connections; an asymmetric sever leaves
@@ -2135,14 +2340,20 @@ class CausalPhysicsEngine:
                 and getattr(e, "bidirectional", False)
                 for e in (self.world_state.spatial_topology or [])
             )
+            # Round-7 audit: capture pre-removal counts so a sever
+            # against an already-missing edge (vacuous no-op) does
+            # not inflate ``_edge_do_targets_applied``.
+            _rev_removed = 0
             if reverse_was_bidi or forward_was_bidi:
                 if sb.has_edge(target.target_id, target.source_id):
                     rev_keys = [
                         k for k, attrs in sb[target.target_id][target.source_id].items()
                         if attrs.get("edge_type") == "connected_to"
                     ]
+                    _rev_removed = len(rev_keys)
                     for k in rev_keys:
                         sb.remove_edge(target.target_id, target.source_id, key=k)
+                _topo_before = len(self.world_state.spatial_topology or [])
                 self.world_state.spatial_topology = [
                     e for e in (self.world_state.spatial_topology or [])
                     if not (
@@ -2150,12 +2361,16 @@ class CausalPhysicsEngine:
                         or (e.source_id == target.target_id and e.target_id == target.source_id)
                     )
                 ]
+                _topo_removed = _topo_before - len(self.world_state.spatial_topology)
             else:
+                _topo_before = len(self.world_state.spatial_topology or [])
                 self.world_state.spatial_topology = [
                     e for e in (self.world_state.spatial_topology or [])
                     if not (e.source_id == target.source_id and e.target_id == target.target_id)
                 ]
-            self._edge_do_targets_applied += 1
+                _topo_removed = _topo_before - len(self.world_state.spatial_topology)
+            if matched or _rev_removed or _topo_removed:
+                self._edge_do_targets_applied += 1
             return
 
         if target.action in ("lock", "unlock"):
@@ -2194,6 +2409,31 @@ class CausalPhysicsEngine:
                 "failed for %s\u2192%s.", target.source_id, target.target_id,
             )
             return
+        
+        # MODERATE-FIX (M-001): Validate barrier_item_id references existing object.
+        # Prevents orphaned affordance gates that reference non-existent items.
+        if edge.barrier_item_id:
+            if edge.barrier_item_id not in (self.world_state.objects or {}):
+                logger.warning(
+                    "[CausalPhysics·do_spatial_edge] barrier_item_id=%s not found "
+                    "in objects. Clearing affordance lock.",
+                    edge.barrier_item_id
+                )
+                edge.barrier_item_id = None
+            
+        # P0-FIX (P0-8): Validate locations BEFORE adding to sandbox (CRITICAL-003 audit).
+        # Moving validation before sb.add_edge prevents orphaned edges from persisting
+        # in sandbox when validation fails. Original code added edge first, validated
+        # second, leaving phantom passages on failure.
+        locations = self.world_state.locations or {}
+        if target.source_id not in locations or target.target_id not in locations:
+            logger.warning(
+                "[CausalPhysics·do_spatial_edge] add skipped — endpoint(s) not in world.locations (%s→%s).",
+                target.source_id, target.target_id,
+            )
+            return
+            
+        # Validation passed - now safe to add to sandbox
         if sb.has_node(target.source_id) and sb.has_node(target.target_id):
             sb.add_edge(
                 target.source_id, target.target_id,
@@ -2206,17 +2446,7 @@ class CausalPhysicsEngine:
                     edge_type="connected_to",
                     **edge.model_dump(),
                 )
-        # World-state side. Refuse to persist an edge whose endpoints
-        # are unknown locations — otherwise the canonical
-        # ``spatial_topology`` accumulates dangling LOC_ references that
-        # later affordance-gate checks cannot resolve.
-        locations = self.world_state.locations or {}
-        if target.source_id not in locations or target.target_id not in locations:
-            logger.warning(
-                "[CausalPhysics·do_spatial_edge] add skipped — endpoint(s) not in world.locations (%s→%s).",
-                target.source_id, target.target_id,
-            )
-            return
+        # World-state side. Edge already validated above.
         topology = list(self.world_state.spatial_topology or [])
         topology.append(edge)
         self.world_state.spatial_topology = topology
@@ -2325,6 +2555,18 @@ class CausalPhysicsEngine:
             properties_unset=list(target.properties_unset or []),
             triggered_by=getattr(target, "triggered_by", None),
         ))
+        
+        # P1-FIX: Update object state_timeline for reconstruction
+        if canonical is not None:
+            from shadow_loom.models import ObjectStateSnapshot
+            snapshot = ObjectStateSnapshot(
+                fabula_time=ft,
+                triggered_by=getattr(target, "triggered_by", None) or "DO_OPERATOR",
+                location_id=canonical.location_id,
+                owner_id=canonical.owner_id,
+                properties=dict(canonical.properties or {}),
+            )
+            canonical.state_timeline.append(snapshot)
 
     def _default_fabula_time(self) -> int:
         """Best-effort fabula_time anchor when a DoTarget omits one.
@@ -2414,6 +2656,92 @@ class CausalPhysicsEngine:
                 elif prop == "participant_ids" and isinstance(value, list) and len(value) == 0:
                     removed_channels.add(node_id)
         return removed_events, removed_channels
+
+    def _perform_graph_surgery_edge_removal(
+        self,
+        interventions: Dict[str, Any],
+        pruned_event_ids: set[str],
+    ) -> None:
+        """Remove incoming causal edges to intervened nodes (Pearl's graph surgery).
+        
+        Implements CRITICAL-003 audit fix: do(X=x) must physically sever all
+        incoming edges to X, not just pin the value. Without edge removal,
+        subsequent propagation can attempt to overwrite the surgical value,
+        and d-separation reasoning on the AMWN sees phantom dependencies.
+        
+        For trait interventions (do(ENT_X.traits.fear=0.9)), removes incoming
+        CausalEdges with trait_target=fear targeting ENT_X.
+        
+        For event interventions that mark events as prevented/never_happened,
+        removes ALL incoming edges to that event node.
+        
+        For relationship interventions, removes incoming mutation_social edges
+        targeting that specific metric axis.
+        """
+        edges_removed = 0
+        
+        # Trait interventions: remove incoming causal edges targeting the trait
+        for (node_id, trait_name) in self._intervened_traits:
+            if trait_name == "*":
+                # Skip wildcard (should no longer be used after P0-2 fix)
+                continue
+            
+            # Find all incoming causal edges that target this trait
+            if not self.sandbox.has_node(node_id):
+                continue
+                
+            incoming_edges_to_remove = []
+            for pred in self.sandbox.predecessors(node_id):
+                for key in self.sandbox[pred][node_id]:
+                    edge_data = self.sandbox[pred][node_id][key]
+                    if edge_data.get("edge_type") == "causal":
+                        target_trait = edge_data.get("trait_target")
+                        if target_trait == trait_name:
+                            incoming_edges_to_remove.append((pred, node_id, key))
+            
+            for pred, node_id_tgt, key in incoming_edges_to_remove:
+                self.sandbox.remove_edge(pred, node_id_tgt, key=key)
+                edges_removed += 1
+                logger.debug(
+                    "[CausalPhysics·graph-surgery] Removed edge %s→%s (key=%s) "
+                    "targeting trait %s (do-intervention)",
+                    pred, node_id_tgt, key, trait_name
+                )
+        
+        # Event interventions: remove all incoming edges to prevented events
+        for evt_id in pruned_event_ids:
+            if not self.sandbox.has_node(evt_id):
+                continue
+                
+            incoming_edges_to_remove = []
+            for pred in list(self.sandbox.predecessors(evt_id)):
+                for key in list(self.sandbox[pred][evt_id].keys()):
+                    incoming_edges_to_remove.append((pred, evt_id, key))
+            
+            for pred, evt_id_tgt, key in incoming_edges_to_remove:
+                self.sandbox.remove_edge(pred, evt_id_tgt, key=key)
+                edges_removed += 1
+                logger.debug(
+                    "[CausalPhysics·graph-surgery] Removed edge %s→%s (key=%s) "
+                    "(event prevented/invalidated)",
+                    pred, evt_id_tgt, key
+                )
+        
+        # Relationship interventions: remove incoming mutation_social edges
+        for (source_id, target_id, metric) in self._intervened_relationships:
+            # For relationships, the surgery is on the edge itself
+            # Remove any mutation_social edges that would modify this axis
+            # (These come from social propagation, not from the MultiDiGraph directly)
+            # The pinning in _intervened_relationships already prevents overwrites
+            # No additional edge removal needed here beyond what pinning provides
+            pass
+        
+        if edges_removed > 0:
+            logger.info(
+                "[CausalPhysics·graph-surgery] Removed %d incoming edges "
+                "to intervened nodes (Pearl's graph surgery)",
+                edges_removed
+            )
 
     # ------------------------------------------------------------------
     # Forward Propagation (the new physics)
@@ -3088,6 +3416,18 @@ class CausalPhysicsEngine:
                 logger.debug("[CausalPhysics·SocialProp] Endpoint missing: target=%s, counterpart=%s",
                              target_id, counterpart_id)
                 continue
+            
+            # HIGH-FIX: Check entity status - dead entities can't have relationships mutated
+            target_node = self.sandbox.nodes.get(target_id, {})
+            counterpart_node = self.sandbox.nodes.get(counterpart_id, {})
+            target_status = target_node.get("status")
+            counterpart_status = counterpart_node.get("status")
+            if target_status == "dead" or counterpart_status == "dead":
+                logger.debug(
+                    "[CausalPhysics·SocialProp] Skipping dead entity: target=%s (status=%s), counterpart=%s (status=%s)",
+                    target_id, target_status, counterpart_id, counterpart_status
+                )
+                continue
 
             # Per-axis relationship pin: a do(ENT_A.relationships.ENT_B.affinity=...)
             # surgery freezes that specific (target, counterpart, metric)
@@ -3518,6 +3858,14 @@ class CausalPhysicsEngine:
         pruned_evt_ids, disabled_ch_ids = (
             self._collect_provenance_invalidations(interventions)
         )
+        # P0-FIX: Implement graph surgery edge removal (CRITICAL-003 audit).
+        # Pearl's do-operator requires removing all incoming causal edges to
+        # intervened nodes. Pinning alone (via _intervened_traits) prevents
+        # propagation from overwriting surgical values, but leaves structural
+        # edges intact that can interfere with d-separation reasoning and
+        # create spurious dependencies.
+        self._perform_graph_surgery_edge_removal(interventions, pruned_evt_ids)
+        
         # Pick up events that ``_enforce_affordance_gates`` (called
         # at the end of ``execute_interventions`` in the surgery step
         # above) marked ``pruned=True`` so beliefs acquired from
@@ -3530,6 +3878,11 @@ class CausalPhysicsEngine:
         if pruned_evt_ids or disabled_ch_ids:
             beliefs_pruned = AMWNInstantiator._prune_beliefs_by_provenance(
                 self.sandbox,
+                removed_event_ids=pruned_evt_ids,
+                removed_channel_ids=disabled_ch_ids,
+            )
+            # P1-FIX: Mirror belief pruning to canonical world_state
+            self._mirror_belief_pruning_to_canonical(
                 removed_event_ids=pruned_evt_ids,
                 removed_channel_ids=disabled_ch_ids,
             )

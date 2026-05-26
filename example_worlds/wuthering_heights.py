@@ -32,6 +32,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_WUTHERING_HEIGHTS": Location(
+            id="LOC_WUTHERING_HEIGHTS",
             name="Wuthering Heights",
             description="The Earnshaws' wind-battered hilltop farmhouse on the Yorkshire moors; site of every act of cruelty and most acts of love in the saga.",
             ambient_state={
@@ -44,6 +45,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_THRUSHCROSS_GRANGE": Location(
+            id="LOC_THRUSHCROSS_GRANGE",
             name="Thrushcross Grange",
             description="The Lintons' refined valley estate; symbol of civilised gentility against the Heights' wildness.",
             ambient_state={
@@ -52,6 +54,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MOORS": Location(
+            id="LOC_MOORS",
             name="The Yorkshire Moors",
             description="The wild heath between the two houses where Catherine and Heathcliff run free as children and where their ghosts are later reported.",
             ambient_state={
@@ -62,6 +65,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_LIVERPOOL": Location(
+            id="LOC_LIVERPOOL",
             name="Liverpool Streets",
             description="Dock city where Mr Earnshaw finds the orphan Heathcliff and brings him home.",
             ambient_state={
@@ -69,6 +73,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_GIMMERTON_KIRK": Location(
+            id="LOC_GIMMERTON_KIRK",
             name="Gimmerton Kirkyard",
             description="Hillside graveyard where Catherine, Edgar, and finally Heathcliff are buried side by side.",
             ambient_state={

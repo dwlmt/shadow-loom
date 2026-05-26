@@ -50,8 +50,12 @@ from shadow_loom.query_models import (
 def _make_world() -> WorldStateV1:
     return WorldStateV1(
         locations={
-            "LOC_A": Location(name="A", description="A", ambient_state={}),
-            "LOC_B": Location(name="B", description="B", ambient_state={}),
+            "LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={}),
+            "LOC_B": Location(
+                id="LOC_B",
+                name="B", description="B", ambient_state={}),
         },
         objects={
             "OBJ_KEY": NarrativeObject(

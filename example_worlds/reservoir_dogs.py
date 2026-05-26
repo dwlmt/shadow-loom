@@ -34,6 +34,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_DINER": Location(
+            id="LOC_DINER",
             name="Coffee Shop",
             description="Coffee-shop where the crew has breakfast before the heist; tipping debate exposes their personalities.",
             ambient_state={
@@ -42,6 +43,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_WAREHOUSE": Location(
+            id="LOC_WAREHOUSE",
             name="Rendezvous Warehouse",
             description="Abandoned warehouse where the surviving crew regroups after the botched heist; the slaughterhouse of the third act.",
             ambient_state={
@@ -51,6 +53,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_DIAMOND_STORE": Location(
+            id="LOC_DIAMOND_STORE",
             name="Jewelry Store",
             description="The jewelry store targeted for the heist; a silent alarm trips and turns the job into a slaughter.",
             ambient_state={
@@ -59,6 +62,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_JOE_OFFICE": Location(
+            id="LOC_JOE_OFFICE",
             name="Joe Cabot's Planning Room",
             description="Crime boss Joe Cabot's planning room where the heist is laid out and the crew is hand-picked from old contacts and prison parolees.",
             ambient_state={
@@ -67,6 +71,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_ORANGE_CAR": Location(
+            id="LOC_ORANGE_CAR",
             name="Getaway Car",
             description="The hijacked sedan in which White drives Orange from the diamond store, Orange bleeding out across the back seat.",
             ambient_state={

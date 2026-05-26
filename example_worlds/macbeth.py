@@ -45,6 +45,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_BATTLEFIELD": Location(
+            id="LOC_BATTLEFIELD",
             name="Battlefield near Forres",
             description="Blood-soaked field where Macbeth and Banquo crush the Cawdor rebellion.",
             ambient_state={
@@ -53,6 +54,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_HEATH": Location(
+            id="LOC_HEATH",
             name="The Heath",
             description="Desolate fog-shrouded moor where Macbeth and Banquo first meet the witches.",
             ambient_state={
@@ -61,6 +63,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_FORRES_COURT": Location(
+            id="LOC_FORRES_COURT",
             name="Duncan's Court at Forres",
             description="Royal hall where Duncan praises his generals and names Malcolm his heir.",
             ambient_state={
@@ -69,6 +72,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_INVERNESS_CASTLE": Location(
+            id="LOC_INVERNESS_CASTLE",
             name="Inverness Castle",
             description="Macbeth's ancestral keep; Duncan is murdered here in his sleep.",
             ambient_state={
@@ -79,6 +83,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_DUNSINANE_CASTLE": Location(
+            id="LOC_DUNSINANE_CASTLE",
             name="Dunsinane Castle",
             description="Royal seat of the crowned Macbeth; site of his banquet, raving, and final stand.",
             ambient_state={
@@ -91,6 +96,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_WITCHES_CAVERN": Location(
+            id="LOC_WITCHES_CAVERN",
             name="Witches' Cavern",
             description="Subterranean lair where Macbeth returns for the apparitions and second prophecies.",
             ambient_state={
@@ -98,6 +104,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MACDUFF_CASTLE": Location(
+            id="LOC_MACDUFF_CASTLE",
             name="Macduff's Castle at Fife",
             description="Macduff's family seat; site of the slaughter of his wife and children.",
             ambient_state={
@@ -109,6 +116,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_ENGLAND": Location(
+            id="LOC_ENGLAND",
             name="English Court",
             description="Refuge of Malcolm and Macduff at King Edward's court; staging ground for the counter-invasion.",
             ambient_state={
@@ -116,6 +124,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_BIRNAM_WOOD": Location(
+            id="LOC_BIRNAM_WOOD",
             name="Birnam Wood",
             description="Forest west of Dunsinane; Malcolm's army camouflages itself with cut boughs from here.",
             ambient_state={

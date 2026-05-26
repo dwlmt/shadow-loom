@@ -4,20 +4,32 @@
 """
 Complete end-to-end pipeline orchestrator for Shadow-Loom.
 
-Connects all pipeline stages into a single ``run_pipeline()`` entry point:
+Connects all pipeline stages into a single ``run_pipeline()`` entry point.
+The pipeline has **12 distinct execution paths** depending on query type:
 
   1. **Ingestion** (optional) — raw text → ``WorldStateV1``
-  2. **Narrative Physics** — query routing, ego-graph, sandbox, causal engine
+  2. **Narrative Physics** — query routing, ego-graph, sandbox, causal engine (Rungs 1-3)
   3. **Brief Assembly** — ``CreativeBrief`` from physics result
-  4. **Generation** — prose rendering (Step 10)
-  5. **Audit + Refinement** — recursive feedback loop (Steps 11–12)
-  6. **Prose Re-extraction** — extract topology from generated prose
-  7. **Merge** — merge topology into a versioned deep-copy of the world model
+  4. **Generation** — prose rendering with scene context
+  5. **Audit** — narrative quality validation
+  6. **Refinement** — recursive feedback loop (up to N iterations)
+  7. **Re-extraction** — extract topology from generated prose
+  8. **Merge** — merge topology into versioned deep-copy
+  9. **Answer Step** (interrogate/general queries) — Q&A over physics state
+  10. **Evaluate Step** — Monte Carlo affective trajectory analysis
+  11. **Shadow Prune** — retrospective event pruning for counterfactuals
+  12. **Async Worker** — thread-pool ingestion for concurrent execution
+
+Execution paths:
+  • **Standard prose** (observation/intervention/counterfactual): Steps 1-8
+  • **Interrogate/General**: Steps 1-2, 9
+  • **Evaluate**: Steps 1-2, 10
+  • **With refinement**: Steps 1-6 repeated up to max_refinement_iterations
 
 The pipeline is flexible:
   • An existing ``WorldStateV1`` can be passed in (skips ingestion).
   • A ``VersionedWorldModel`` can be passed in to continue an existing history.
-  • Non-prose query types (interrogate, general) skip steps 3–7.
+  • Non-prose query types skip prose generation/audit/merge.
   • Every intermediate result is recorded in ``PipelineHistory``.
 """
 
@@ -117,6 +129,7 @@ def _isolate_ws_for_surgery(
     """
     if query.query_type not in ("intervention", "counterfactual"):
         return ws
+    # P1-FIX: Full state isolation - deep clone ALL shared topology
     return ws.model_copy(deep=True)
 
 
@@ -944,6 +957,26 @@ def _gather_preceding_prose(
             if v.prose and getattr(v, "world_id", "factual") == "factual":
                 picked.append((v.version, v.prose, "factual", v.branch_label))
     else:
+        # Round-7 audit: anchor the shadow context to the fork point so
+        # factual prose written AFTER the shadow forked can't leak into
+        # the shadow prompt. The fork point is approximated as the
+        # earliest version of the matching shadow branch_label (or the
+        # earliest shadow version overall when no label is given).
+        # Without this, any factual prose later in history would be
+        # treated as "ancestor canon" and cross-pollinate the branch.
+        shadow_versions = [
+            v.version for v in vwm.history
+            if getattr(v, "world_id", "factual") == "shadow"
+            and (branch_label is None or v.branch_label == branch_label)
+        ]
+        fork_point = min(shadow_versions) if shadow_versions else None
+        if fork_point is None:
+            logger.warning(
+                "[_gather_preceding_prose] No shadow versions found for branch_label=%s; "
+                "including all factual prose (appropriate when creating first shadow version).",
+                branch_label,
+            )
+
         # Shadow: take the contiguous tail of shadow versions newest
         # \u2192 oldest, stop on the first non-shadow we encounter, then
         # include all factual prose that came before that point so the
@@ -961,9 +994,13 @@ def _gather_preceding_prose(
                 if branch_label is None or v.branch_label == branch_label:
                     picked.append((v.version, v.prose, "shadow", v.branch_label))
             idx += 1
-        # Now collect factual ancestors from the rest of history
+        # Now collect factual ancestors from the rest of history,
+        # gated by the fork-point so post-fork factual advancement is
+        # excluded.
         for v in history_rev[idx:]:
             if v.prose and getattr(v, "world_id", "factual") == "factual":
+                if fork_point is not None and v.version >= fork_point:
+                    continue
                 picked.append((v.version, v.prose, "factual", v.branch_label))
 
     if not picked:
@@ -1041,22 +1078,33 @@ def _compute_factual_contrast(
     vwm: Optional[VersionedWorldModel],
     *,
     branch_world_id: Literal["factual", "shadow"],
+    branch_label: Optional[str] = None,
     max_chars: int = _FACTUAL_CONTRAST_BUDGET_CHARS,
 ) -> Optional[str]:
     """Return a brief excerpt of the most recent factual prose for shadow briefs.
 
     Returns ``None`` for factual queries (no contrast needed) and when
     no factual prose exists in ``vwm.history``. The latest factual
-    version's prose is preferred so the contrast tracks the most
-    recent canon at the moment the shadow forked. Truncated from the
-    front so the most recent canon survives the budget cap.
+    version's prose at-or-before the shadow's fork point is preferred so
+    the contrast reflects the canon the shadow forked from, not
+    factual prose that was authored AFTER the fork (which would leak
+    future canon into the shadow prompt — Round-7 audit).
     """
     if branch_world_id != "shadow":
         return None
     if vwm is None or not getattr(vwm, "history", None):
         return None
+    # Round-7 audit: cap factual selection at the fork point.
+    shadow_versions = [
+        v.version for v in vwm.history
+        if getattr(v, "world_id", "factual") == "shadow"
+        and (branch_label is None or v.branch_label == branch_label)
+    ]
+    fork_point = min(shadow_versions) if shadow_versions else None
     for v in reversed(vwm.history):
         if v.prose and getattr(v, "world_id", "factual") == "factual":
+            if fork_point is not None and v.version >= fork_point:
+                continue
             text = v.prose.strip()
             if len(text) > max_chars:
                 text = "\u2026" + text[-(max_chars - 1):]
@@ -1656,16 +1704,17 @@ def _augment_topology_with_sandbox_deltas(
                     rel_counterpart_id=tgt,
                     world_id=world_id,
                 ))
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
                 # Causal-edge construction is best-effort: a malformed
                 # triggered_by id (e.g. not an EVT_) would fail the
                 # mutation_social validator. Don't lose the
                 # relationship snapshot just because we can't stamp
                 # the provenance edge.
-                logger.debug(
+                # HIGH-FIX: Upgrade to warning so bridge failures are visible
+                logger.warning(
                     "[Bridge] Could not emit mutation_social CausalEdge "
-                    "for %s->%s.%s (triggered_by=%s)",
-                    src, tgt, metric, triggered_by,
+                    "for %s->%s.%s (triggered_by=%s): %s",
+                    src, tgt, metric, triggered_by, str(e),
                 )
 
     # --- Channel severance (do-surgery on standing capabilities) -------
@@ -2442,13 +2491,44 @@ def run_pipeline(
         ing_cfg = cfg.ingestion_config or ExtractionConfig()
         # Tier 4 #14: capture validator/auto-fix warnings for this project.
         with capture_ingestion_warnings(str(project_id) if project_id is not None else "_anon"):
-            ws, validation_report = asyncio.run(run_extraction_async(
-                raw_text,
-                config=ing_cfg,
-                user_id=user_id,
-                project_id=project_id,
-                version_id=version_id,
-            ))
+            # Round-7 audit: ``asyncio.run`` raises ``RuntimeError`` when
+            # invoked from a thread that already has a running event loop
+            # (e.g. a Jupyter cell, a FastAPI route, the NiceGUI server
+            # thread). Detect that and offload to a worker thread so the
+            # sync pipeline stays usable from inside an async caller.
+            def _run_ingest():
+                return asyncio.run(run_extraction_async(
+                    raw_text,
+                    config=ing_cfg,
+                    user_id=user_id,
+                    project_id=project_id,
+                    version_id=version_id,
+                ))
+            try:
+                asyncio.get_running_loop()
+                _loop_active = True
+            except RuntimeError:
+                _loop_active = False
+            if _loop_active:
+                import threading as _t
+                _box: dict = {}
+                def _worker():
+                    try:
+                        _box["r"] = _run_ingest()
+                    except BaseException as _e:  # noqa: BLE001
+                        _box["e"] = _e
+                _th = _t.Thread(target=_worker, daemon=True)
+                _th.start()
+                _th.join()
+                if "e" in _box:
+                    raise _box["e"]
+                if "r" not in _box:
+                    raise RuntimeError(
+                        "Worker thread completed without returning result or exception"
+                    )
+                ws, validation_report = _box["r"]
+            else:
+                ws, validation_report = _run_ingest()
         vwm = VersionedWorldModel.from_world_state(ws, max_snapshots=cfg.max_snapshots)
         history.record("ingestion", IngestionStepRecord(
             is_valid=validation_report.is_valid,
@@ -2540,9 +2620,7 @@ def run_pipeline(
         extra=extras,
     ))
 
-    # =================================================================
     # Implausibility short-circuit — explain, don't mutate.
-    # =================================================================
     if physics_result.get("status") == "implausible":
         _apply_implausibility_short_circuit(
             query=query, physics_result=physics_result,
@@ -2739,7 +2817,9 @@ def run_pipeline(
     # renderer (and the auditor) can see what *did* happen on canon
     # at the same horizon. None for factual queries.
     _factual_contrast = _compute_factual_contrast(
-        vwm, branch_world_id=_branch_world_id,
+        vwm,
+        branch_world_id=_branch_world_id,
+        branch_label=_branch_label,
     )
 
     # For directive queries with causal engine, the brief is already built
@@ -3283,7 +3363,9 @@ async def run_pipeline_async(
         branch_label=_branch_label,
     )
     _factual_contrast = _compute_factual_contrast(
-        vwm, branch_world_id=_branch_world_id,
+        vwm,
+        branch_world_id=_branch_world_id,
+        branch_label=_branch_label,
     )
     brief: CreativeBrief | None = None
     if query.query_type == "directive" and "creative_brief" in physics_result:
@@ -3536,7 +3618,9 @@ def _run_answer_step(
         branch_label=_branch_label,
     )
     _factual_contrast = _compute_factual_contrast(
-        vwm, branch_world_id=_branch_world_id,
+        vwm,
+        branch_world_id=_branch_world_id,
+        branch_label=_branch_label,
     )
 
     card = answer_question(

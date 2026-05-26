@@ -54,7 +54,9 @@ from shadow_loom.ingestion import (
 def _minimal_ws(**overrides) -> WorldStateV1:
     """Build a minimal valid WorldStateV1, merging *overrides*."""
     defaults = dict(
-        locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+        locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
         objects={},
         entities={
             "ENT_X": Entity(
@@ -198,7 +200,9 @@ class TestDeduplication:
 class TestAssembleWorldState:
     def _register(self):
         return GlobalRegister(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={},
             entities={
                 "ENT_X": Entity(
@@ -1138,7 +1142,9 @@ class TestBuildValidIdSet:
 
     def test_basic_id_set(self):
         reg = GlobalRegister(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={"OBJ_X": NarrativeObject(
                 id="OBJ_X", name="X", location_id="LOC_A", owner_id=None,
                 properties={}, affordances=[],
@@ -1156,7 +1162,9 @@ class TestBuildValidIdSet:
 
     def test_id_set_with_events(self):
         reg = GlobalRegister(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={},
             entities={},
         )
@@ -1175,7 +1183,9 @@ class TestResultValidators:
         from shadow_loom.ingestion import _PhysicsDeps, _build_valid_id_set
 
         reg = GlobalRegister(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={},
             entities={"ENT_X": Entity(
                 id="ENT_X", name="X", location_id="LOC_A", status="healthy",
@@ -1209,7 +1219,9 @@ class TestResultValidators:
     def test_social_validator_catches_bad_channel_participant(self):
         """A hallucinated participant_id in a Channel should be caught."""
         reg = GlobalRegister(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={},
             entities={"ENT_X": Entity(
                 id="ENT_X", name="X", location_id="LOC_A", status="healthy",
@@ -1236,7 +1248,9 @@ class TestResultValidators:
     def test_physics_validator_accepts_valid_ids(self):
         """All valid IDs should pass without issues."""
         reg = GlobalRegister(
-            locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={})},
             objects={},
             entities={"ENT_X": Entity(
                 id="ENT_X", name="X", location_id="LOC_A", status="healthy",
@@ -1740,12 +1754,14 @@ class TestSanitizeRegisterCrossKindCollision:
         reg = GlobalRegister(
             locations={
                 "LOC_REBEL_BASE": Location(
-                    name="Rebel Base on Yavin 4",
+                id="LOC_REBEL_BASE",
+                name="Rebel Base on Yavin 4",
                     description="Hidden HQ.",
                     ambient_state={},
                 ),
                 "LOC_TATOOINE": Location(
-                    name="Tatooine", description="Desert planet.",
+                id="LOC_TATOOINE",
+                name="Tatooine", description="Desert planet.",
                     ambient_state={},
                 ),
             },
@@ -1776,7 +1792,8 @@ class TestSanitizeRegisterCrossKindCollision:
         reg = GlobalRegister(
             locations={
                 "LOC_REBEL_BASE": Location(
-                    name="Rebel Base on Yavin 4", description="HQ.",
+                id="LOC_REBEL_BASE",
+                name="Rebel Base on Yavin 4", description="HQ.",
                     ambient_state={},
                 ),
             },
@@ -1806,7 +1823,8 @@ class TestSanitizeRegisterCrossKindCollision:
         reg = GlobalRegister(
             locations={
                 "LOC_TATOOINE": Location(
-                    name="Tatooine", description="Desert planet.",
+                id="LOC_TATOOINE",
+                name="Tatooine", description="Desert planet.",
                     ambient_state={},
                 ),
             },
@@ -1926,6 +1944,7 @@ class TestMirrorAsymmetricRelationships:
 
         return WorldStateV1(
             locations={"LOC_A": Location(
+                id="LOC_A",
                 name="A", description="a", ambient_state={},
             )},
             objects={},
@@ -2039,8 +2058,12 @@ def _audit_register() -> GlobalRegister:
     """Minimal GlobalRegister with two entities, one location, one object."""
     return GlobalRegister(
         locations={
-            "LOC_A": Location(name="A", description="a", ambient_state={}),
-            "LOC_B": Location(name="B", description="b", ambient_state={}),
+            "LOC_A": Location(
+                id="LOC_A",
+                name="A", description="a", ambient_state={}),
+            "LOC_B": Location(
+                id="LOC_B",
+                name="B", description="b", ambient_state={}),
         },
         objects={
             "OBJ_KEY": NarrativeObject(

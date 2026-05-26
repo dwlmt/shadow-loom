@@ -39,7 +39,8 @@ class TestBranchSafeDeletions:
         return WorldStateV1(
             locations={
                 "LOC_A": Location(
-                    name="A", description="A", ambient_state={},
+                id="LOC_A",
+                name="A", description="A", ambient_state={},
                     world_id="factual",
                 ),
             },
@@ -226,7 +227,8 @@ class TestParaphraseLeakDetection:
         ws = WorldStateV1(
             locations={
                 "LOC_A": Location(
-                    name="A", description="A", ambient_state={},
+                id="LOC_A",
+                name="A", description="A", ambient_state={},
                 ),
             },
             objects={},
@@ -287,7 +289,8 @@ class TestBranchSafeAffectMerges:
         return WorldStateV1(
             locations={
                 "LOC_A": Location(
-                    name="A", description="A", ambient_state={},
+                id="LOC_A",
+                name="A", description="A", ambient_state={},
                     world_id="factual",
                 ),
             },
@@ -544,7 +547,8 @@ class TestBranchSafeGenesisAndUpdates:
         ws = WorldStateV1(
             locations={
                 "LOC_CASTLE": Location(
-                    name="Castle", description="Inverness", ambient_state={},
+                id="LOC_CASTLE",
+                name="Castle", description="Inverness", ambient_state={},
                     world_id="factual",
                 ),
             },

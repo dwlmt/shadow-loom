@@ -3,7 +3,7 @@
 
 """Shadow-Loom MCP server — agent-first narrative intelligence.
 
-41 tools grouped by cognitive task. Four coarse-grained dispatchers wrap the
+42 tools grouped by cognitive task. Four coarse-grained dispatchers wrap the
 granular surface so new integrations can reach most functionality through
 one well-known entry point; the granular tools remain registered for
 backward compatibility.
@@ -3107,7 +3107,11 @@ def set_active_version(
     Pass nothing besides ``project_id`` to *clear* the pointer (so
     subsequent reads fall back to the latest version).
     """
-    err = require_scope(ctx, "read")
+    # Round-7 audit: this endpoint mutates per-user state
+    # (``active_versions``) and is therefore a write operation, not a
+    # read. Requiring the ``write`` scope keeps read-only tokens from
+    # silently redirecting another caller's default version.
+    err = require_scope(ctx, "write")
     if err:
         return {"error": err}
 

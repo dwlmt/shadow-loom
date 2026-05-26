@@ -31,6 +31,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_VICTORY_MANSIONS": Location(
+            id="LOC_VICTORY_MANSIONS",
             name="Victory Mansions, Flat 7",
             description="Winston's grimy Outer-Party flat with its inescapable telescreen.",
             ambient_state={
@@ -43,6 +44,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MINITRUE": Location(
+            id="LOC_MINITRUE",
             name="Ministry of Truth",
             description="The pyramid where Winston rewrites yesterday's newspapers and feeds originals to memory holes.",
             ambient_state={
@@ -51,6 +53,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_CHARRINGTON_ROOM": Location(
+            id="LOC_CHARRINGTON_ROOM",
             name="Room above Mr Charrington's Shop",
             description="The seemingly telescreen-free room Winston rents for the affair — its concealed pickup is the trap that springs.",
             ambient_state={
@@ -62,6 +65,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_PROLE_DISTRICT": Location(
+            id="LOC_PROLE_DISTRICT",
             name="Prole District",
             description="The unsupervised, political-consciousness-free quarter beyond the Party's daily attention.",
             ambient_state={
@@ -70,6 +74,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_GOLDEN_COUNTRY": Location(
+            id="LOC_GOLDEN_COUNTRY",
             name="Open Country / 'The Golden Country'",
             description="Hawthorn-studded clearing outside London where Winston and Julia first sleep together.",
             ambient_state={
@@ -78,6 +83,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_OBRIEN_FLAT": Location(
+            id="LOC_OBRIEN_FLAT",
             name="O'Brien's Inner-Party Flat",
             description="Spacious, telescreen-mutable apartment where O'Brien stages his recruitment of Winston into the fictitious Brotherhood.",
             ambient_state={
@@ -86,6 +92,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MINILOVE": Location(
+            id="LOC_MINILOVE",
             name="Ministry of Love",
             description="The windowless, white-tile interrogation complex where Party heretics are broken.",
             ambient_state={
@@ -96,6 +103,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_ROOM_101": Location(
+            id="LOC_ROOM_101",
             name="Room 101",
             description="The final cell in the Ministry of Love that contains 'the worst thing in the world' — for each prisoner, a different one.",
             ambient_state={
@@ -106,6 +114,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_CHESTNUT_TREE": Location(
+            id="LOC_CHESTNUT_TREE",
             name="Chestnut Tree Café",
             description="The unperson's café where re-educated thought-criminals drink Victory Gin while the telescreen plays.",
             ambient_state={

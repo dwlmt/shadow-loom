@@ -32,6 +32,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_WEST_EGG": Location(
+            id="LOC_WEST_EGG",
             name="West Egg",
             description="The vulgar new-money side of the Long Island bay where Gatsby's mansion looms beside Nick's bungalow.",
             ambient_state={
@@ -40,6 +41,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_EAST_EGG": Location(
+            id="LOC_EAST_EGG",
             name="East Egg",
             description="The old-money village across the bay; the Buchanans' ancestral-feeling Georgian mansion.",
             ambient_state={
@@ -48,6 +50,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_GATSBYS_MANSION": Location(
+            id="LOC_GATSBYS_MANSION",
             name="Gatsby's Mansion",
             description="A French-château imitation in West Egg used as the stage for Gatsby's bootleg-funded Saturday parties.",
             ambient_state={
@@ -61,6 +64,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_VALLEY_OF_ASHES": Location(
+            id="LOC_VALLEY_OF_ASHES",
             name="Valley of Ashes",
             description="The sprawling refuse dump between West Egg and Manhattan, presided over by the eyes of Doctor T. J. Eckleburg.",
             ambient_state={
@@ -71,6 +75,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_WILSON_GARAGE": Location(
+            id="LOC_WILSON_GARAGE",
             name="Wilson's Garage",
             description="George Wilson's failing auto-repair shop in the Valley of Ashes; Myrtle's marital prison.",
             ambient_state={
@@ -82,6 +87,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_NEW_YORK_APT": Location(
+            id="LOC_NEW_YORK_APT",
             name="Tom's Manhattan Apartment",
             description="The small flat Tom keeps for trysts with Myrtle; site of the broken-nose party.",
             ambient_state={
@@ -90,6 +96,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_PLAZA_SUITE": Location(
+            id="LOC_PLAZA_SUITE",
             name="Plaza Hotel Suite",
             description="Sweltering hotel suite where Gatsby and Tom finally confront each other over Daisy.",
             ambient_state={
@@ -98,6 +105,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MIDWEST": Location(
+            id="LOC_MIDWEST",
             name="The Midwest",
             description="Nick's home country; the moral standard against which the East is finally judged.",
             ambient_state={

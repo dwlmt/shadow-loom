@@ -62,7 +62,7 @@ Every doc has a **See also** footer cross-linking its closest neighbours.
 
 | Document | Purpose |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | Deep technical walkthrough of the 12-step pipeline, data model, modules, and runtime flow. |
+| [docs/architecture.md](docs/architecture.md) | Deep technical walkthrough of the 8-step pipeline, data model, modules, and runtime flow. |
 | [docs/pipeline-walkthrough.md](docs/pipeline-walkthrough.md) | End-to-end code-level tour of one pipeline run — ingestion, physics, generation, audit, re-extraction, merge. |
 | [docs/pipeline-by-example.md](docs/pipeline-by-example.md) | Data-anchored walkthrough — every stage of the pipeline (world model, AMWN, Pearl rungs 1–3, propagation, suspense / surprise / mystery / dramatic-irony / emotion scoring, directive assembly, generation, audit, merge) illustrated with verbatim values from the bundled fixtures. |
 | [docs/model-examples.md](docs/model-examples.md) | Worked examples on real bundled plots (Macbeth, Death on the Nile, Reservoir Dogs, …) showing each pipeline stage and feature in action. |

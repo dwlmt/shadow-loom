@@ -28,7 +28,9 @@ from shadow_loom.query_models import (
 
 def _make_world() -> WorldStateV1:
     return WorldStateV1(
-        locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+        locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
         objects={},
         entities={
             "ENT_ALICE": Entity(
@@ -338,7 +340,9 @@ def _make_world_for_mutability() -> WorldStateV1:
     first; the mutability prior should re-rank EVT_LATE first.
     """
     return WorldStateV1(
-        locations={"LOC_X": Location(name="X", description="X", ambient_state={})},
+        locations={"LOC_X": Location(
+                id="LOC_X",
+                name="X", description="X", ambient_state={})},
         objects={},
         entities={
             "ENT_HERO": Entity(

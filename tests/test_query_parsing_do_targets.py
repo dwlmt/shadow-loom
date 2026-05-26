@@ -38,7 +38,9 @@ from shadow_loom.query_parsing import (
 
 def _make_world() -> WorldStateV1:
     return WorldStateV1(
-        locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+        locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
         objects={},
         entities={
             "ENT_MACBETH": Entity(

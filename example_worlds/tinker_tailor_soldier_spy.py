@@ -44,6 +44,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_THE_CIRCUS": Location(
+            id="LOC_THE_CIRCUS",
             name="The Circus (MI6 HQ, London)",
             description="British Intelligence headquarters in Cambridge Circus, London. Atmosphere of institutional paranoia and bureaucratic secrecy.",
             ambient_state={
@@ -57,6 +58,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_HUNGARY": Location(
+            id="LOC_HUNGARY",
             name="Hungary (Budapest meeting site)",
             description="Communist Hungary, site of Prideaux's disastrous mission. Cold War frontier zone.",
             ambient_state={
@@ -67,6 +69,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_LACON_HOUSE": Location(
+            id="LOC_LACON_HOUSE",
             name="Lacon's House",
             description="Oliver Lacon's residence, where sensitive off-the-books meetings occur.",
             ambient_state={
@@ -74,6 +77,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_SMILEY_HOUSE": Location(
+            id="LOC_SMILEY_HOUSE",
             name="Smiley's House (Bywater Street)",
             description="George Smiley's modest London home. Site of quiet domestic betrayal.",
             ambient_state={
@@ -81,6 +85,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_SAFE_HOUSE": Location(
+            id="LOC_SAFE_HOUSE",
             name="Safe House (Lock Gardens)",
             description="Secret MI6 safe house where senior officers meet Polyakov for Witchcraft material.",
             ambient_state={
@@ -92,6 +97,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_SARRATT": Location(
+            id="LOC_SARRATT",
             name="Sarratt Interrogation Centre",
             description="MI6 training and interrogation facility. Site of Haydon's confession.",
             ambient_state={
@@ -100,6 +106,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_PARIS_OFFICE": Location(
+            id="LOC_PARIS_OFFICE",
             name="Paris MI6 Office",
             description="British Intelligence Paris station. Where Tarr announces he knows the mole.",
             ambient_state={
@@ -107,6 +114,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_ISTANBUL": Location(
+            id="LOC_ISTANBUL",
             name="Istanbul",
             description="Turkish city where Tarr met Boris and Irina. Crossroads of Cold War espionage.",
             ambient_state={
@@ -115,6 +123,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_ENGLAND_EXILE": Location(
+            id="LOC_ENGLAND_EXILE",
             name="England (Retirement)",
             description="Where Control and Smiley live in forced retirement after the Hungary disaster.",
             ambient_state={
@@ -122,6 +131,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MOSCOW_CENTRE": Location(
+            id="LOC_MOSCOW_CENTRE",
             name="Moscow Centre (offstage)",
             description="The Soviet intelligence headquarters from which Karla runs the mole; never depicted, only inferred.",
             ambient_state={

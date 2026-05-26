@@ -262,7 +262,9 @@ def _make_ws_with_utterance_and_orphan_belief():
                    location_id="LOC_A", status="healthy", traits={})
     return WorldStateV1(
         story_title="t", style="prose",
-        locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+        locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
         objects={},
         entities={"ENT_A": ent_a, "ENT_B": ent_b, "ENT_C": ent_c},
         events=[utterance], channels={"CHN_PHONE": channel},

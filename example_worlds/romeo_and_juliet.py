@@ -33,6 +33,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_VERONA_STREETS": Location(
+            id="LOC_VERONA_STREETS",
             name="Streets of Verona",
             description="Public squares and lanes where the Montague–Capulet feud erupts in brawls and duels.",
             ambient_state={
@@ -41,6 +42,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_PRINCE_PALACE": Location(
+            id="LOC_PRINCE_PALACE",
             name="Prince Escalus' Palace",
             description="Civic seat where Prince Escalus enforces the peace and pronounces sentence.",
             ambient_state={
@@ -48,6 +50,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_CAPULET_HOUSE": Location(
+            id="LOC_CAPULET_HOUSE",
             name="Capulet House",
             description="The Capulet family estate; site of the masquerade ball where the lovers meet.",
             ambient_state={
@@ -56,6 +59,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_CAPULET_ORCHARD": Location(
+            id="LOC_CAPULET_ORCHARD",
             name="Capulet Orchard / Balcony",
             description="The garden beneath Juliet's window where the lovers exchange vows in secret.",
             ambient_state={
@@ -64,6 +68,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_JULIETS_CHAMBER": Location(
+            id="LOC_JULIETS_CHAMBER",
             name="Juliet's Chamber",
             description="Juliet's private bedroom; site of the consummated marriage and her sleeping-potion 'death'.",
             ambient_state={
@@ -71,6 +76,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_FRIAR_CELL": Location(
+            id="LOC_FRIAR_CELL",
             name="Friar Laurence's Cell",
             description="Modest monastic chambers where the friar marries the lovers and brews the sleeping potion.",
             ambient_state={
@@ -79,6 +85,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_MANTUA": Location(
+            id="LOC_MANTUA",
             name="Mantua",
             description="Neighbouring city where Romeo lives in exile after killing Tybalt.",
             ambient_state={
@@ -88,6 +95,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_APOTHECARY": Location(
+            id="LOC_APOTHECARY",
             name="Mantuan Apothecary",
             description="Impoverished apothecary's shop in Mantua where Romeo buys the lethal poison.",
             ambient_state={
@@ -95,6 +103,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_CAPULET_CRYPT": Location(
+            id="LOC_CAPULET_CRYPT",
             name="Capulet Crypt",
             description="Family tomb outside Verona where Juliet is laid out and where both lovers (and Paris) die.",
             ambient_state={

@@ -795,7 +795,9 @@ class TestAffectiveScoreHeadroom:
     def test_no_relevant_traits_penalty(self):
         """Entity with no matching traits must get +0.5 penalty."""
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
             objects={},
             entities={
                 "ENT_X": Entity(
@@ -850,7 +852,9 @@ class TestNarrativeTensionEdgeCases:
     def test_empty_events_returns_empty(self):
         """World with no events must return empty list."""
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
             objects={},
             entities={
                 "ENT_X": Entity(
@@ -870,7 +874,9 @@ class TestNarrativeTensionEdgeCases:
     def test_single_event_zero_displacement(self):
         """Single event must have displacement=0."""
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
             objects={},
             entities={
                 "ENT_X": Entity(
@@ -929,7 +935,9 @@ class TestMysteryScore:
         """World with a chain: EVT_SETUP → EVT_MURDER → ENT_VICTIM.
         Reader sees EVT_MURDER (syuzhet=1) but NOT EVT_SETUP (syuzhet=3)."""
         return WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
             objects={},
             entities={
                 "ENT_VICTIM": Entity(
@@ -1020,7 +1028,9 @@ class TestDramaticIronyScore:
     def test_irony_zero_when_character_aware(self):
         """Irony = 0 when character's beliefs cover all revealed causes."""
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
             objects={},
             entities={
                 "ENT_A": Entity(
@@ -1103,7 +1113,9 @@ class TestDramaticIronyScore:
                 terminated_at_fabula=channel_terminated_at,
             )
         return WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
             objects={},
             entities={
                 "ENT_A": Entity(
@@ -1241,7 +1253,9 @@ class TestSuspenseScore:
     def _make_suspense_world(self):
         """World with strong threat and weak hope for ENT_HERO."""
         return WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
             objects={},
             entities={
                 "ENT_HERO": Entity(
@@ -1302,7 +1316,9 @@ class TestSuspenseScore:
         not "one-sided == 0".
         """
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
             objects={},
             entities={
                 "ENT_X": Entity(id="ENT_X", name="X", location_id="LOC_A",
@@ -1350,7 +1366,9 @@ class TestSurpriseScore:
     def test_surprise_from_unrevealed_causes(self):
         """When causal edges are hidden from reader, prior ≠ actual → KL > 0."""
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
             objects={},
             entities={
                 "ENT_A": Entity(
@@ -1389,7 +1407,9 @@ class TestSurpriseScore:
     def test_surprise_zero_when_all_revealed(self):
         """When all causes are revealed, prior ≈ actual → KL ≈ 0."""
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
             objects={},
             entities={
                 "ENT_A": Entity(
@@ -1433,7 +1453,9 @@ class TestSurpriseScore:
         """Traits further from 0.5 should produce higher KL (more surprise)."""
         def _make_ws(val):
             return WorldStateV1(
-                locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+                locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="A", ambient_state={})},
                 objects={},
                 entities={
                     "ENT_A": Entity(

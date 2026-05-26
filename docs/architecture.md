@@ -1,7 +1,7 @@
 # Architecture
 
 This document is the technical reference for Shadow-Loom. It covers the data
-model, the 12-step pipeline in implementation detail, the runtime modules, the
+model, the 8-step pipeline in implementation detail, the runtime modules, the
 persistence layer, and the integration surfaces (UI + MCP).
 
 For the conceptual / theoretical grounding of the ideas described here, see
@@ -384,7 +384,11 @@ intervened_nodes }`.
 
 ### Step 8: Affective Calculus ([`directive_assembly.py`](../shadow_loom/directive_assembly.py))
 
-Four structural-effect scorers operate purely on the graph geometry:
+Shadow-Loom implements **11 total affect scorers** organized into two complementary layers:
+
+#### Structural Affect Scorers (5 scorers - graph geometry)
+
+Five **structural-effect scorers** operate purely on graph topology and event ordering, implementing narrative information-theory from Brewer & Lichtenstein (1982), Sternberg (1978), Carroll (2001), and Itti & Baldi (2009). These scorers work on ANY world graph, requiring no proposition catalogue:
 
 | Effect | Formula |
 |---|---|
@@ -392,8 +396,11 @@ Four structural-effect scorers operate purely on the graph geometry:
 | **Dramatic Irony** | Per-character mean of $\dfrac{\sum_{e \in R_t,\, e \notin K_c} w_e}{\sum_{e \in R_t} w_e + K}$, where $R_t$ is the set of events revealed to the reader by `syuzhet_anchor` $t$, $K_c$ is what character $c$ knows at that anchor, $w_e$ is event ``e``'s intensity (default 1.0), and $K = 1$ is a saturation constant. The score is therefore the *fraction of the reader's privileged view* the character is in the dark about — a Sternberg-style gap fraction. A character is treated as knowing an event when (a) they participate in it as actor or target *and* it has happened by the syuzhet anchor's fabula frontier, (b) a revealed utterance addressed to or spoken by them refers to it, or (c) they hold a `Belief` whose `target_id` matches the event id and whose provenance still resolves. Two earlier denominators failed: the *cumulative ratio over revealed-only edges* form plateaued by the third reveal because numerator and denominator grew together (Reservoir Dogs *decayed* from 0.25 to 0.06 as the protagonist became actor-of-record on more revealed edges); switching to the **full event mass** instead pinned the curve into a monotone rise across 21/21 example-world fixtures because the denominator stopped moving while the numerator kept growing — contradicting the rise-peak-fall arc Sternberg, Booth and Stanton predict for canonical irony plots (Macduff hearing of his family; Poirot's denouement; Nick's letter to Daisy). The current **revealed-mass + K** form restores the theoretical shape: it rises with new reveals and falls when participation, addressed utterances, or belief acquisition close the gap, producing rise-peak-fall in 16/21 worlds. |
 | **Suspense** | $\text{balance} \times \text{stakes}$ clamped to $[0, 1]$, where $\text{balance} = 1 - \dfrac{|w_\text{threat} - w_\text{hope}|}{w_\text{threat} + w_\text{hope}}$ peaks at genuine outcome uncertainty and decays under one-sided dominance, and $\text{stakes} = \dfrac{w_\text{threat} + w_\text{hope}}{w_\text{threat} + w_\text{hope} + K}$ saturates so balanced fragments don't pin the gauge ($K = 2$ by default). For each focal entity, every unrevealed event in which the entity is a non-acting target contributes its `evidence_strength`-derived probability $p$ to $w_\text{threat}$, and every unrevealed event in which the entity is an actor contributes $p$ to $w_\text{hope}$. The probability proxy is the strongest incoming causal-edge weight on the event (outgoing as fallback, 0.5 default). Returns 0 at the **despair** boundary ($w_\text{hope} = 0$) and the **safety** boundary ($w_\text{threat} = 0$). The earlier asymmetric $\max(0, (w_\text{threat} - w_\text{hope})/(w_\text{threat}+w_\text{hope}))$ form collapsed to 0 on every fixture in which the protagonist authors most of their own forward events; balance × stakes follows Brewer & Lichtenstein's structural-affect framing of suspense as a response to outcome ambiguity. Inspired by Wilmot & Keller (2020); see [academic-foundations.md §3.1](academic-foundations.md#31-suspense-as-hopefear-here-hopethreat-anticipation--structural-affect-lineage). |
 | **Surprise** | Per-trait binary KL divergence $D_\text{KL}(p \| q) = p\log\tfrac{p}{q} + (1-p)\log\tfrac{1-p}{1-q}$. Posterior $p$ is the entity's *final-state* trait value resolved via `reconstruct_entity_at(ent, t_max)` so authored `state_timeline` arcs are honoured (sandbox-preferred when running counterfactuals). Prior $q$ starts at the **leave-one-out** per-trait corpus marginal (mean across every *other* entity, falling back to 0.5 when fewer than two other entities carry the trait) — leave-one-out prevents the focal entity from biasing its own prior, which would otherwise collapse KL on the small casts typical of the example fixtures. The prior is then pulled toward the actual value by a geometric update $q \mathrel{+}= w \cdot (\text{actual} - q)$ for each revealed causal edge whose target is the entity, monotonically converging on the truth as evidence accumulates rather than overshooting. Each per-trait KL is run through a soft-saturation $1 - e^{-\text{KL}}$ (so perceptually meaningful KLs in the 0.2–1.5 band map to 0.18–0.78 of the gauge) and the result is averaged across the focal traits. The earlier $\text{avg}(\text{KL})/\log(1/\varepsilon)$ form divided by the *theoretical* binary-KL maximum ($\approx 4.6$ at $\varepsilon = 0.01$), squashing the entire perceptual signal into the bottom 4% of the gauge — every ``example_world`` plot read as flat ≤ 0.10 even when canonical surprise traits (Macbeth's despair, Macduff's grief) carried per-trait KLs of 0.27–0.50. See [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence). |
+| **Tension** | Graph-theoretic measure of unresolved conflicts (implementation TBD). |
 
-Six emotional effects (`grief`, `rage`, `joy`, `regret`, `love`, `fear`) use
+#### Character Emotional Scorers (6 scorers - trait trajectories)
+
+Six **character-level emotional effects** (`grief`, `rage`, `joy`, `regret`, `love`, `fear`) use
 trait-trajectory **closeness-to-target**: a single shared
 ``_EFFECT_TRAITS`` table maps each effect to ``(positive_indicators,
 inverse_indicators)`` calibrated against the actual trait vocabulary of
@@ -411,6 +418,11 @@ trait (``messianic_self_image``, ``moral_collapse``, ``class_anxiety``,
 ``pomposity`` …) — a deliberate stylistic choice on a few worlds —
 still surface as the worst-case loss rather than silently scoring at
 the midpoint.
+
+**Scorer Taxonomy Summary:**
+- **Structural (5):** Mystery, Dramatic Irony, Suspense, Surprise, Tension - operate on graph geometry, syuzhet ordering, and event revelation patterns
+- **Emotional (6):** Fear, Joy, Grief, Rage, Regret, Love - operate on character trait trajectories and target-state closeness
+- **Total:** 11 affect scorers available for directive optimization
 
 `compute_affective_score()` returns the weighted combination requested by the
 `DirectiveQuery`.

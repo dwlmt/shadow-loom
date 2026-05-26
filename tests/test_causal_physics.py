@@ -42,9 +42,13 @@ def _make_minimal_world() -> WorldStateV1:
     """Two-room world with two entities and one causal chain."""
     return WorldStateV1(
         locations={
-            "LOC_A": Location(name="Room A", description="Room A",
+            "LOC_A": Location(
+                id="LOC_A",
+                name="Room A", description="Room A",
                               ambient_state={}),
-            "LOC_B": Location(name="Room B", description="Room B",
+            "LOC_B": Location(
+                id="LOC_B",
+                name="Room B", description="Room B",
                               ambient_state={}),
         },
         objects={},
@@ -434,7 +438,9 @@ class TestMechanismTraitMap:
         """World with a single causal edge using the given mechanism."""
         return WorldStateV1(
             locations={
-                "LOC_A": Location(name="Room A", description="A", ambient_state={}),
+                "LOC_A": Location(
+                id="LOC_A",
+                name="Room A", description="A", ambient_state={}),
             },
             objects={},
             entities={
@@ -524,7 +530,9 @@ class TestSignedDeltaPropagation:
         """If source courage=0.2, target courage=0.8, target must decrease."""
         ws = WorldStateV1(
             locations={
-                "LOC_A": Location(name="Room A", description="A", ambient_state={}),
+                "LOC_A": Location(
+                id="LOC_A",
+                name="Room A", description="A", ambient_state={}),
             },
             objects={},
             entities={
@@ -563,7 +571,9 @@ class TestSignedDeltaPropagation:
         """If source courage=0.9, target courage=0.2, target must increase."""
         ws = WorldStateV1(
             locations={
-                "LOC_A": Location(name="Room A", description="A", ambient_state={}),
+                "LOC_A": Location(
+                id="LOC_A",
+                name="Room A", description="A", ambient_state={}),
             },
             objects={},
             entities={
@@ -637,7 +647,9 @@ class TestAbductionEventEvidence:
             WorldStateV1, Location, Entity, EventNode, CausalEdge, TraitVector,
         )
         ws = WorldStateV1(
-            locations={"LOC_A": Location(name="A", description="", ambient_state={})},
+            locations={"LOC_A": Location(
+                id="LOC_A",
+                name="A", description="", ambient_state={})},
             objects={},
             entities={
                 "ENT_BOB": Entity(
@@ -746,8 +758,12 @@ class TestSpatialReachabilityOwnership:
         """An unlock object with owner_id=None must NOT unlock barrier."""
         ws = WorldStateV1(
             locations={
-                "LOC_A": Location(name="Room A", description="A", ambient_state={}),
-                "LOC_B": Location(name="Room B", description="B", ambient_state={}),
+                "LOC_A": Location(
+                id="LOC_A",
+                name="Room A", description="A", ambient_state={}),
+                "LOC_B": Location(
+                id="LOC_B",
+                name="Room B", description="B", ambient_state={}),
             },
             objects={
                 "OBJ_DOOR": NarrativeObject(
@@ -792,8 +808,12 @@ class TestSpatialReachabilityOwnership:
         """An unlock object owned by an entity must unlock barrier."""
         ws = WorldStateV1(
             locations={
-                "LOC_A": Location(name="Room A", description="A", ambient_state={}),
-                "LOC_B": Location(name="Room B", description="B", ambient_state={}),
+                "LOC_A": Location(
+                id="LOC_A",
+                name="Room A", description="A", ambient_state={}),
+                "LOC_B": Location(
+                id="LOC_B",
+                name="Room B", description="B", ambient_state={}),
             },
             objects={
                 "OBJ_DOOR": NarrativeObject(
@@ -837,8 +857,12 @@ class TestSpatialReachabilityOwnership:
         """Affordance target_type matching barrier name (not just node_type) must work."""
         ws = WorldStateV1(
             locations={
-                "LOC_A": Location(name="Room A", description="A", ambient_state={}),
-                "LOC_B": Location(name="Room B", description="B", ambient_state={}),
+                "LOC_A": Location(
+                id="LOC_A",
+                name="Room A", description="A", ambient_state={}),
+                "LOC_B": Location(
+                id="LOC_B",
+                name="Room B", description="B", ambient_state={}),
             },
             objects={
                 "OBJ_GATE": NarrativeObject(
@@ -884,7 +908,9 @@ class TestMutationSocialPropagation:
         """World with a mutation_social edge: EVT_BETRAYAL → ENT_ALICE's fear of ENT_BOB increases."""
         return WorldStateV1(
             locations={
-                "LOC_A": Location(name="Room A", description="A", ambient_state={}),
+                "LOC_A": Location(
+                id="LOC_A",
+                name="Room A", description="A", ambient_state={}),
             },
             objects={},
             entities={

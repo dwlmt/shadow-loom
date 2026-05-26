@@ -32,6 +32,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_KENT_MARSHES": Location(
+            id="LOC_KENT_MARSHES",
             name="Kent Marshes",
             description="The bleak coastal marshes near the Gargery forge where Pip first meets the convict Magwitch.",
             ambient_state={
@@ -40,6 +41,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_FORGE": Location(
+            id="LOC_FORGE",
             name="Joe Gargery's Forge",
             description="The blacksmith's forge and adjoining cottage where Pip is raised by his sister and Joe.",
             ambient_state={
@@ -48,6 +50,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_SATIS_HOUSE": Location(
+            id="LOC_SATIS_HOUSE",
             name="Satis House",
             description="Miss Havisham's decaying mansion, frozen at the hour of her jilting; site of Pip's romantic ruin.",
             ambient_state={
@@ -57,6 +60,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_LONDON": Location(
+            id="LOC_LONDON",
             name="London",
             description="Bustling, filthy capital where Pip pursues his expectations among gentlemen and lawyers.",
             ambient_state={
@@ -65,6 +69,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_BARNARDS_INN": Location(
+            id="LOC_BARNARDS_INN",
             name="Barnard's Inn",
             description="Pip and Herbert's cramped chambers in London — their bachelor apartment of debts and confidences.",
             ambient_state={
@@ -72,6 +77,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_JAGGERS_OFFICE": Location(
+            id="LOC_JAGGERS_OFFICE",
             name="Jaggers's Office at Little Britain",
             description="The lawyer's intimidating chambers where the law and Pip's expectations are administered.",
             ambient_state={
@@ -79,6 +85,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_THAMES": Location(
+            id="LOC_THAMES",
             name="The Thames",
             description="Tidal river along which Pip and Herbert attempt Magwitch's escape; site of Compeyson's death.",
             ambient_state={
@@ -86,6 +93,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_SLUICE_HOUSE": Location(
+            id="LOC_SLUICE_HOUSE",
             name="Marsh Sluice-House",
             description="Abandoned lime-kiln where Orlick lures Pip and nearly murders him.",
             ambient_state={
@@ -94,6 +102,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_NEWGATE": Location(
+            id="LOC_NEWGATE",
             name="Newgate Prison Hospital",
             description="The prison infirmary where Magwitch dies under sentence of death.",
             ambient_state={
@@ -101,6 +110,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_CAIRO": Location(
+            id="LOC_CAIRO",
             name="Cairo",
             description="Egyptian outpost where Pip works for Clarriker's for eleven years, working off his debts.",
             ambient_state={

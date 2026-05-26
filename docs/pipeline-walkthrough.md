@@ -532,7 +532,7 @@ already coordinate their own concurrency internally.
 
 ## See also
 
-* [architecture.md](architecture.md) — the conceptual map of the same 12-step pipeline (data model, modules, persistence).
+* [architecture.md](architecture.md) — the conceptual map of the same 8-step pipeline (data model, modules, persistence).
 * [model-examples.md](model-examples.md) — each step illustrated on real bundled plots (Macbeth, Death on the Nile, Reservoir Dogs, …).
 * [query-and-cycles.md](query-and-cycles.md) — the **per-query-type** walkthrough of Step 2 (router) through Step 7 (merge).
 * [mcp-guide.md](mcp-guide.md) §5 — the `run_and_save` versioning contract that wraps every `run_pipeline` call from MCP.
