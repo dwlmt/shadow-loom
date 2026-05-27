@@ -678,14 +678,10 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_INTERWAR_RESPECTABILITY", target_id="EVT_STAFF_FLIRTATION_ARC",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=5.0, fabula_time=6000, propagation_delay=10),
-        CausalEdge(source_id="EVT_STAFF_FLIRTATION_ARC", target_id="ENT_ALBERT_GODBY",
-                   causality_type="mutation_social", mechanism="social", evidence_strength="strong",
-                   causal_force=5.0, fabula_time=6000,
-                   trait_target="affinity", trait_delta=0.2, rel_counterpart_id="ENT_MYRTLE_PALMER"),
-        CausalEdge(source_id="EVT_STAFF_FLIRTATION_ARC", target_id="ENT_BERYL",
-                   causality_type="mutation_social", mechanism="social", evidence_strength="moderate",
-                   causal_force=4.0, fabula_time=6000,
-                   trait_target="affinity", trait_delta=0.2, rel_counterpart_id="ENT_STANLEY"),
+        # NOTE: the original Albert→Myrtle and Beryl→Stanley affinity edges
+        # were consolidated into the auto-patched per-axis backfill below
+        # (delta=0.7) to avoid order-dependent aggregate effects on the
+        # same dyad/axis/tick.
 
         # ── orphan utterance wirings ──
         CausalEdge(source_id="EVT_FRIENDS_SEE_THEM", target_id="EVT_UTT_LAURA_LIES_TO_FRIENDS",

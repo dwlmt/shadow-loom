@@ -162,7 +162,8 @@ world_state = WorldStateV1(
                 # Bildungsroman desire: the New Yorker is the proxy for
                 # Andrea's professional self-realisation.
                 Concern(concern_id="CCN_ANDREA_NEW_YORKER", proposition_id="PROP_ANDREA_GETS_NEW_YORKER",
-                        polarity="desire", kind="recognition", salience=0.95),
+                        polarity="desire", kind="recognition", salience=0.95,
+                        counter_concern_ids=["CCN_ANDREA_LOSE_SELF"]),
                 # The film's central anxiety — will the job consume her?
                 Concern(concern_id="CCN_ANDREA_LOSE_SELF", proposition_id="PROP_ANDREA_BECOMES_MIRANDA",
                         polarity="fear", kind="loss_of_status", salience=0.85,
@@ -346,7 +347,8 @@ world_state = WorldStateV1(
             ],
             concerns=[
                 Concern(concern_id="CCN_ALEX_KEEPS_ANDREA", proposition_id="PROP_ANDREA_ALEX_LASTS",
-                        polarity="desire", kind="love", salience=0.95),
+                        polarity="desire", kind="love", salience=0.95,
+                        counter_concern_ids=["CCN_ALEX_FEARS_RUNWAY_CHANGE"]),
                 Concern(concern_id="CCN_ALEX_FEARS_RUNWAY_CHANGE", proposition_id="PROP_ANDREA_BECOMES_MIRANDA",
                         polarity="fear", kind="abandonment", salience=0.85,
                         activation_fabula_window=[4000, 9500],
@@ -1076,7 +1078,7 @@ world_state = WorldStateV1(
                     referent_ids=["ENT_EMILY", "EVT_PARIS_TRIP"],
                     description="Emily makes the Paris Fashion Week trip with Miranda.",
                     audience_default_prior=0.7, stakes=0.7,
-                    truth_at_fabula={5500: False}),
+                    truth_at_fabula={6000: False}),
         # The Paris-hotel and Dior pivot.
         Proposition(proposition_id="PROP_MIRANDA_OFFERS_NEW_YORKER", kind="event_occurs",
                     referent_ids=["EVT_MIRANDA_OPENS_UP", "ENT_MIRANDA", "ENT_ANDREA"],

@@ -292,6 +292,18 @@ class TestPlotIngestionE2E:
             f"Per-test DB was not created at {test_db_path}"
         )
 
+        # Gold-standard invariant: an ingested world must clear the
+        # full schema audit (temporal, polarity, symmetry, dangling,
+        # world_trait, duplicate mutation_social). This mirrors the
+        # gate every hand-built ``example_worlds`` model is held to.
+        from shadow_loom.world_schema_audit import audit_world_schema
+
+        findings = audit_world_schema(ws)
+        assert not findings, (
+            f"{plot_filename}: ingested world failed schema audit:\n  "
+            + "\n  ".join(str(f) for f in findings)
+        )
+
     def test_ingest_async_short_plot(self, test_db_path):
         """Async ingestion path against a short hand-crafted plot."""
         import asyncio

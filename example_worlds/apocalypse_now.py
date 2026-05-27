@@ -621,13 +621,13 @@ world_state = WorldStateV1(
         ),
         EventNode(
             id="EVT_UTT_DOSSIER_PROFILES_KURTZ", fabula_time=3000, syuzhet_index=18,
-            event_type="utterance", speaker_id="OBJ_MISSION_DOSSIER",
+            event_type="utterance", speaker_id="ENT_NHA_TRANG_BRASS",
             addressee_ids=["ENT_WILLARD"],
-            actor_ids=["OBJ_MISSION_DOSSIER"],
-            target_ids=["ENT_KURTZ"],
+            actor_ids=["ENT_WILLARD", "ENT_NHA_TRANG_BRASS"],
+            target_ids=["ENT_KURTZ", "OBJ_MISSION_DOSSIER"],
             via_channel_id="CHN_MISSION_DOSSIER",
             truth_value="true",
-            description="On the PBR Willard reads and re-reads the classified MACV-SOG dossier on Kurtz — service record, citations, the murder of four suspected double agents, the Montagnard god-king cult.",
+            description="On the PBR Willard reads and re-reads the classified MACV-SOG dossier (OBJ_MISSION_DOSSIER) on Kurtz — service record, citations, the murder of four suspected double agents, the Montagnard god-king cult. The dossier preserves MACV-SOG's prior authorial speech act.",
             at_location_id="LOC_PBR_RIVER", content="The dossier documents Kurtz's West Point pedigree, his Special Forces excellence, his unsanctioned execution of four ARVN intelligence agents, and his retreat to a Cambodian outpost where the Montagnards worship him.",
         ),
         EventNode(
@@ -752,6 +752,27 @@ world_state = WorldStateV1(
                    causality_type="mutation", mechanism="psychological", evidence_strength="strong",
                    causal_force=8.0, fabula_time=3500,
                    trait_target="moral_anaesthesia", trait_delta=0.3),
+        # AUDIT P1-3: extend the moral_anaesthesia accretion across the
+        # later river-leg events so an interrogation at the compound
+        # arrival reads the cumulative numbing, not only the Sampan
+        # shock. Each event tightens Willard's drift toward Kurtz's
+        # logic.
+        CausalEdge(source_id="EVT_DO_LUNG_BRIDGE", target_id="ENT_WILLARD",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=4500,
+                   trait_target="moral_anaesthesia", trait_delta=0.12),
+        CausalEdge(source_id="EVT_MR_CLEAN_DEATH", target_id="ENT_WILLARD",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.5, fabula_time=4800,
+                   trait_target="moral_anaesthesia", trait_delta=0.1),
+        CausalEdge(source_id="EVT_CHIEF_SPEARED", target_id="ENT_WILLARD",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=5500,
+                   trait_target="moral_anaesthesia", trait_delta=0.12),
+        CausalEdge(source_id="EVT_WILLARD_READS_DOSSIER", target_id="ENT_WILLARD",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=7.5, fabula_time=7000,
+                   trait_target="moral_anaesthesia", trait_delta=0.15),
         CausalEdge(source_id="EVT_SAMPAN_MASSACRE", target_id="ENT_LANCE",
                    causality_type="mutation", mechanism="psychological", evidence_strength="strong",
                    causal_force=7.0, fabula_time=3500,
@@ -1285,7 +1306,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_KURTZ_KILLED", "ENT_WILLARD", "ENT_KURTZ"],
             description="Willard succeeds in his orders to terminate Kurtz with extreme prejudice.",
             audience_default_prior=0.65, stakes=1.0,
-            truth_at_fabula={500: False, 8100: True},
+            truth_at_fabula={8100: True},
         ),
         Proposition(
             proposition_id="PROP_KURTZ_IS_SANE",

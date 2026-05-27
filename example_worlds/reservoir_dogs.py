@@ -136,7 +136,7 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_ORANGE",
                        perceived_state="Orange is a good kid who can be saved; not a cop", proposition_id="PROP_WHITE_KNOWS_TRUTH",
-                       confidence=0.85, inertia=0.5, established_at_fabula=1000, evidence_strength="strong"),
+                       confidence=0.85, inertia=0.78, established_at_fabula=1000, evidence_strength="strong"),
                 Belief(target_id="ENT_BLONDE",
                        perceived_state="Blonde is a psychopath who blew the heist by shooting civilians", proposition_id="PROP_BLONDE_PSYCHO",
                        confidence=0.85, inertia=0.5, established_at_fabula=5000, evidence_strength="strong"),
@@ -1182,7 +1182,8 @@ world_state = WorldStateV1(
                     referent_ids=["EVT_HEIST_GOES_WRONG"],
                     description="The diamond heist goes off without complications.",
                     audience_default_prior=0.4, stakes=0.85,
-                    truth_at_fabula={3000: False}),
+                    truth_at_fabula={3000: False},
+                    inverse_proposition_id="PROP_HEIST_BUSTED"),
         Proposition(proposition_id="PROP_RAT_EXISTS", kind="trait_holds",
                     referent_ids=["ENT_ORANGE"],
                     description="One of the crew is an undercover police informant.",

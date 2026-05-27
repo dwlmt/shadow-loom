@@ -128,7 +128,8 @@ world_state = WorldStateV1(
             concerns=[
                 Concern(concern_id="CCN_WANDA_DESIRE_GETS_DIAMONDS", proposition_id="PROP_WANDA_GETS_DIAMONDS",
                         polarity="desire", kind="acquisitive_payoff", salience=0.95,
-                        activation_fabula_window=(0, 26000)),
+                        activation_fabula_window=(0, 26000),
+                        counter_concern_ids=["CCN_WANDA_DESIRE_LOVES_ARCHIE"]),
                 Concern(concern_id="CCN_WANDA_DESIRE_GEORGE_CONVICTED", proposition_id="PROP_GEORGE_CONVICTED",
                         polarity="desire", kind="eliminate_rival", salience=0.7,
                         activation_fabula_window=(1000, 18000)),
@@ -248,7 +249,8 @@ world_state = WorldStateV1(
             concerns=[
                 Concern(concern_id="CCN_KEN_DESIRE_LOYAL_TO_GEORGE", proposition_id="PROP_KEN_LOYAL_TO_GEORGE",
                         polarity="desire", kind="crew_loyalty", salience=0.9,
-                        activation_fabula_window=(0, 22000)),
+                        activation_fabula_window=(0, 22000),
+                        counter_concern_ids=["CCN_KEN_FEAR_COADY_DIES"]),
                 Concern(concern_id="CCN_KEN_FEAR_COADY_DIES", proposition_id="PROP_MRS_COADY_DIES",
                         polarity="fear", kind="animal_lover_squeamishness", salience=0.6,
                         activation_fabula_window=(13000, 14000),
@@ -350,7 +352,8 @@ world_state = WorldStateV1(
             concerns=[
                 Concern(concern_id="CCN_ARCHIE_DESIRE_WANDA_LOVES_HIM", proposition_id="PROP_WANDA_LOVES_ARCHIE",
                         polarity="desire", kind="midlife_awakening", salience=0.9,
-                        activation_fabula_window=(7000, 26000)),
+                        activation_fabula_window=(7000, 26000),
+                        counter_concern_ids=["CCN_ARCHIE_DESIRE_FAITHFUL_FACADE"]),
                 Concern(concern_id="CCN_ARCHIE_DESIRE_FAITHFUL_FACADE", proposition_id="PROP_ARCHIE_FAITHFUL",
                         polarity="desire", kind="protect_marriage", salience=0.7,
                         activation_fabula_window=(7000, 17000),
@@ -1353,6 +1356,7 @@ world_state = WorldStateV1(
             description="Otto and Wanda are siblings (the social fiction shown to George and Ken).",
             audience_default_prior=0.45, stakes=0.6,
             truth_at_fabula={0: False},
+            inverse_proposition_id="PROP_WANDA_LOVES_OTTO",
         ),
         Proposition(
             proposition_id="PROP_WANDA_LOVES_OTTO",
@@ -1368,7 +1372,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_WANDA_DOUBLECROSSES_OTTO", "ENT_WANDA", "ENT_OTTO"],
             description="Wanda double-crosses Otto, knocking him out and leaving with the diamonds and Archie.",
             audience_default_prior=0.3, stakes=0.85,
-            truth_at_fabula={0: False, 22000: True},
+            truth_at_fabula={22000: True},
         ),
         Proposition(
             proposition_id="PROP_WANDA_LOVES_ARCHIE",
@@ -1424,7 +1428,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_OTTO_INTERROGATES_KEN", "ENT_KEN", "ENT_OTTO"],
             description="Ken cracks under Otto's interrogation and reveals the location of the diamonds.",
             audience_default_prior=0.5, stakes=0.85,
-            truth_at_fabula={0: False, 19000: True},
+            truth_at_fabula={19000: True},
         ),
         Proposition(
             proposition_id="PROP_KEN_REVENGE_ON_OTTO",
@@ -1432,7 +1436,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_OTTO_STEAMROLLED", "ENT_KEN", "ENT_OTTO"],
             description="Ken takes vengeance on Otto for the fish-eating with the steamroller.",
             audience_default_prior=0.25, stakes=0.7,
-            truth_at_fabula={0: False, 25000: True},
+            truth_at_fabula={25000: True},
         ),
         Proposition(
             proposition_id="PROP_MRS_COADY_DIES",
@@ -1440,7 +1444,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_MRS_COADY_DIES_HEART_ATTACK", "ENT_MRS_COADY"],
             description="The Crown's only eyewitness Mrs Coady dies before testifying — clearing the way for George's possible acquittal.",
             audience_default_prior=0.55, stakes=0.85,
-            truth_at_fabula={0: False, 14000: True},
+            truth_at_fabula={14000: True},
         ),
         Proposition(
             proposition_id="PROP_OTTO_KILLS_ARCHIE",
@@ -1456,7 +1460,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_ARCHIE_WANDA_FLY_AWAY", "ENT_ARCHIE", "ENT_WANDA"],
             description="Archie and Wanda board the South-American flight together at Heathrow.",
             audience_default_prior=0.25, stakes=0.85,
-            truth_at_fabula={0: False, 26000: True},
+            truth_at_fabula={26000: True},
         ),
         # WORLD_ trait Pearl-Rung-2 reifications.
         Proposition(proposition_id="PROP_HEIST_CODE_HOLDS", kind="trait_holds",

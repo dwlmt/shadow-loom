@@ -448,7 +448,8 @@ world_state = WorldStateV1(
             concerns=[
                 Concern(concern_id="CCN_TIM_FEAR_THIEF_EXPOSED", proposition_id="PROP_TIM_IS_PEARL_THIEF",
                         polarity="fear", kind="avoid_exposure", salience=0.95,
-                        activation_fabula_window=(1000, 11000)),
+                        activation_fabula_window=(1000, 11000),
+                        counter_concern_ids=["CCN_TIM_DESIRE_PROTECT_MOTHER"]),
                 Concern(concern_id="CCN_TIM_DESIRE_PROTECT_MOTHER", proposition_id="PROP_TIM_IS_PEARL_THIEF",
                         polarity="fear", kind="filial_shame", salience=0.7,
                         activation_fabula_window=(1000, 11000),
@@ -1334,7 +1335,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_LINNET_KILLED", "ENT_LINNET"],
             description="Linnet Doyle is murdered during the Nile cruise.",
             audience_default_prior=0.85, stakes=1.0,
-            truth_at_fabula={1000: False, 9000: True},
+            truth_at_fabula={9000: True},
         ),
         Proposition(
             proposition_id="PROP_SIMON_KILLED_LINNET",
@@ -1342,7 +1343,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_LINNET_KILLED", "ENT_SIMON", "ENT_LINNET"],
             description="Simon Doyle is the actual killer of Linnet — slips into her cabin under cover of his faked leg wound and shoots her.",
             audience_default_prior=0.08, stakes=1.0,
-            truth_at_fabula={500: False, 9000: True, 13000: True},
+            truth_at_fabula={9000: True, 13000: True},
         ),
         Proposition(
             proposition_id="PROP_JACQUELINE_KILLS_LINNET",
@@ -1438,7 +1439,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_LOUISE_KILLED", "ENT_LOUISE"],
             description="Louise is murdered to suppress her blackmail.",
             audience_default_prior=0.45, stakes=0.85,
-            truth_at_fabula={9000: False, 9500: True},
+            truth_at_fabula={9500: True},
         ),
         Proposition(
             proposition_id="PROP_OTTERBOURNE_NAMES_KILLER",
@@ -1446,7 +1447,8 @@ world_state = WorldStateV1(
             referent_ids=["EVT_OTTERBOURNE_KILLED", "ENT_OTTERBOURNE"],
             description="Salome Otterbourne successfully names the killer of Louise to Poirot before being silenced.",
             audience_default_prior=0.5, stakes=0.85,
-            truth_at_fabula={9700: False, 10000: False},
+            truth_at_fabula={10000: False},
+            inverse_proposition_id="PROP_OTTERBOURNE_DIES",
         ),
         Proposition(
             proposition_id="PROP_OTTERBOURNE_DIES",
@@ -1454,7 +1456,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_OTTERBOURNE_KILLED", "ENT_OTTERBOURNE"],
             description="Salome Otterbourne is shot dead before she can finish naming the killer.",
             audience_default_prior=0.35, stakes=0.85,
-            truth_at_fabula={9700: False, 10000: True},
+            truth_at_fabula={10000: True},
         ),
         Proposition(
             proposition_id="PROP_POIROT_SOLVES_CASE",
@@ -1462,7 +1464,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_POIROT_SOLVES", "ENT_POIROT"],
             description="Poirot uncovers the Simon–Jacqueline conspiracy and exposes the killers.",
             audience_default_prior=0.95, stakes=0.95,
-            truth_at_fabula={1000: False, 13000: True},
+            truth_at_fabula={13000: True},
         ),
         Proposition(
             proposition_id="PROP_JACQUELINE_SUICIDE_PACT",
@@ -1470,7 +1472,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_JACQUELINE_SUICIDE_PACT", "ENT_JACQUELINE", "ENT_SIMON"],
             description="Jacqueline shoots Simon and herself with a concealed second pistol on the Shellal quay to escape the gallows.",
             audience_default_prior=0.2, stakes=0.85,
-            truth_at_fabula={13000: False, 14000: True},
+            truth_at_fabula={14000: True},
         ),
         # WORLD_ trait Pearl-Rung-2 reifications.
         Proposition(

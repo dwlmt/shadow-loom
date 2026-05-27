@@ -698,9 +698,9 @@ world_state = WorldStateV1(
         EventNode(
             id="EVT_UTT_LOCKWOOD_READS_DIARY",
             event_type="utterance", fabula_time=18000, syuzhet_index=35,
-            speaker_id="OBJ_CATHERINES_DIARY", addressee_ids=["ENT_LOCKWOOD"],
-            actor_ids=["ENT_LOCKWOOD", "OBJ_CATHERINES_DIARY"], target_ids=["ENT_CATHERINE", "ENT_HINDLEY", "ENT_HEATHCLIFF"],
-            description="Snowed in at the Heights, Lockwood reads Catherine's childhood diary entries chronicling Hindley's tyranny and her bond with Heathcliff.",
+            speaker_id="ENT_CATHERINE", addressee_ids=["ENT_LOCKWOOD"],
+            actor_ids=["ENT_LOCKWOOD", "ENT_CATHERINE"], target_ids=["ENT_CATHERINE", "ENT_HINDLEY", "ENT_HEATHCLIFF", "OBJ_CATHERINES_DIARY"],
+            description="Snowed in at the Heights, Lockwood reads Catherine's childhood diary entries (OBJ_CATHERINES_DIARY) chronicling Hindley's tyranny and her bond with Heathcliff. The diary preserves Catherine's prior authorial speech act.",
             at_location_id="LOC_WUTHERING_HEIGHTS", content="H. and I are going to rebel — we took our initiatory step this evening... an awful Sunday!",
             via_channel_id="CHN_CATHERINES_DIARY", truth_value="true",
         ),
@@ -1158,7 +1158,7 @@ world_state = WorldStateV1(
             id="CHN_CATHERINES_DIARY",
             name="Catherine Earnshaw's childhood diary",
             medium="diary",
-            participant_ids=["OBJ_CATHERINES_DIARY", "ENT_LOCKWOOD"],
+            participant_ids=["ENT_CATHERINE", "OBJ_CATHERINES_DIARY", "ENT_LOCKWOOD"],
             directionality="simplex",
             established_at_fabula=3000,
             terminated_at_fabula=None,
@@ -1324,6 +1324,7 @@ world_state = WorldStateV1(
         # Heathcliff → Hareton — surrogate son raised in deliberate ignorance.
         RelationshipEdge(
             source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_HARETON",
+            established_at_fabula=11500,
             metrics={
                 "affinity": RelationshipMetric(value=-0.35, inertia=0.5, evidence_strength="strong", last_updated_fabula=12000),
                 "power_dynamic": RelationshipMetric(value=0.9, inertia=0.75, evidence_strength="strong", last_updated_fabula=12000),
@@ -1331,6 +1332,7 @@ world_state = WorldStateV1(
         ),
         RelationshipEdge(
             source_entity_id="ENT_HARETON", target_entity_id="ENT_HEATHCLIFF",
+            established_at_fabula=11500,
             metrics={
                 "affinity": RelationshipMetric(value=0.65, inertia=0.5, evidence_strength="strong", last_updated_fabula=19500),
                 "power_dynamic": RelationshipMetric(value=-0.9, inertia=0.7, evidence_strength="strong", last_updated_fabula=12000),
@@ -1339,6 +1341,7 @@ world_state = WorldStateV1(
         # Heathcliff ↔ Linton — owned son.
         RelationshipEdge(
             source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_LINTON",
+            established_at_fabula=15000,
             metrics={
                 "affinity":      RelationshipMetric(value=-0.5, inertia=0.5, evidence_strength="strong", last_updated_fabula=15000),
                 "power_dynamic": RelationshipMetric(value=0.95, inertia=0.75, evidence_strength="strong", last_updated_fabula=15000),
@@ -1346,6 +1349,7 @@ world_state = WorldStateV1(
         ),
         RelationshipEdge(
             source_entity_id="ENT_LINTON", target_entity_id="ENT_HEATHCLIFF",
+            established_at_fabula=15000,
             metrics={
                 "fear":          RelationshipMetric(value=0.95, inertia=0.25, evidence_strength="strong", last_updated_fabula=15000),
                 "power_dynamic": RelationshipMetric(value=-0.95, inertia=0.75, evidence_strength="strong", last_updated_fabula=15000),
@@ -1354,12 +1358,14 @@ world_state = WorldStateV1(
         # Cathy ↔ Hareton — resentment to love.
         RelationshipEdge(
             source_entity_id="ENT_CATHY", target_entity_id="ENT_HARETON",
+            established_at_fabula=18500,
             metrics={
                 "affinity": RelationshipMetric(value=0.85, inertia=0.55, evidence_strength="strong", last_updated_fabula=19000),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_HARETON", target_entity_id="ENT_CATHY",
+            established_at_fabula=18500,
             metrics={
                 "affinity": RelationshipMetric(value=0.9, inertia=0.55, evidence_strength="strong", last_updated_fabula=19000),
             },

@@ -352,7 +352,22 @@ world_state = WorldStateV1(
                 "loyalty": TraitVector(value=0.7, inertia=0.6, evidence_strength="moderate"),
                 "professionalism": TraitVector(value=0.75, inertia=0.65, evidence_strength="moderate"),
             },
-            beliefs=[],
+            # AUDIT P1-1: Bland’s career rides on Witchcraft — he
+            # must hold an explicit prior on the source material and on
+            # Alleline’s legitimacy so interrogation queries against
+            # the inner ring return non-empty posterior tables.
+            beliefs=[
+                Belief(target_id="OBJ_WITCHCRAFT_MATERIAL",
+                       perceived_state="Witchcraft is genuine high-grade Soviet product",
+                       confidence=0.8, inertia=0.55, evidence_strength="moderate"),
+                Belief(target_id="ENT_PERCY_ALLELINE",
+                       perceived_state="Alleline’s chieftaincy is the natural reward for breaking Moscow Centre",
+                       confidence=0.75, inertia=0.5, evidence_strength="moderate"),
+                Belief(target_id="ENT_BILL_HAYDON",
+                       perceived_state="Haydon is the Circus’s brilliant operational lead, untouchable",
+                       proposition_id="PROP_HAYDON_LOYAL",
+                       confidence=0.7, inertia=0.5, evidence_strength="moderate"),
+            ],
         ),
         "ENT_TOBY_ESTERHASE": Entity(
             id="ENT_TOBY_ESTERHASE", name="Toby Esterhase",
@@ -362,7 +377,23 @@ world_state = WorldStateV1(
                 "fear": TraitVector(value=0.5, inertia=0.3, evidence_strength="moderate"),
                 "professionalism": TraitVector(value=0.7, inertia=0.6, evidence_strength="moderate"),
             },
-            beliefs=[],
+            # AUDIT P1-1: Esterhase runs the lamplighters who service
+            # the Witchcraft drop; surface his stake in the source
+            # being genuine and his fear-modulated deference to the
+            # inner ring so interrogation can read his shift after
+            # being pressed (state_timeline below already raises fear).
+            beliefs=[
+                Belief(target_id="OBJ_WITCHCRAFT_MATERIAL",
+                       perceived_state="Witchcraft is real — my lamplighters are servicing a Centre source",
+                       confidence=0.75, inertia=0.5, evidence_strength="moderate"),
+                Belief(target_id="ENT_BILL_HAYDON",
+                       perceived_state="Haydon is the Circus’s star; safer to defer than to question",
+                       proposition_id="PROP_HAYDON_LOYAL",
+                       confidence=0.6, inertia=0.4, evidence_strength="moderate"),
+                Belief(target_id="ENT_PERCY_ALLELINE",
+                       perceived_state="Alleline is the patron whose protection I depend on",
+                       confidence=0.65, inertia=0.45, evidence_strength="moderate"),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=19000, triggered_by="EVT_ESTERHASE_PRESSED",
                     traits={

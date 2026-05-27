@@ -308,7 +308,8 @@ world_state = WorldStateV1(
                 # promise of a new life.
                 Concern(concern_id="CCN_JILL_KEEPS_SWEETWATER", proposition_id="PROP_JILL_KEEPS_SWEETWATER",
                         polarity="desire", kind="survival", salience=1.0,
-                        activation_fabula_window=[1200, 3400]),
+                        activation_fabula_window=[1200, 3400],
+                        counter_concern_ids=["CCN_JILL_FEARS_FRANK"]),
                 Concern(concern_id="CCN_JILL_FEARS_FRANK", proposition_id="PROP_FRANK_BUYS_SWEETWATER",
                         polarity="fear", kind="mortal_threat", salience=0.85,
                         activation_fabula_window=[1200, 2950],
@@ -393,7 +394,8 @@ world_state = WorldStateV1(
                 # The film's organising desire — Morton sees the Pacific from
                 # his crutches.
                 Concern(concern_id="CCN_MORTON_REACHES_PACIFIC", proposition_id="PROP_MORTON_REACHES_PACIFIC",
-                        polarity="desire", kind="power", salience=1.0),
+                        polarity="desire", kind="power", salience=1.0,
+                        counter_concern_ids=["CCN_MORTON_FEARS_DECLINE"]),
                 Concern(concern_id="CCN_MORTON_FRANK_OBEYS", proposition_id="PROP_FRANK_EXCEEDS_BRIEF",
                         polarity="fear", kind="betrayal", salience=0.85,
                         activation_fabula_window=[500, 3100]),

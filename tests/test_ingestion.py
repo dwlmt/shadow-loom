@@ -1009,6 +1009,24 @@ def test_plot_model_passes_validation(model_path):
         pytest.fail(f"{model_path.stem} has {len(errors)} validation error(s):\n{detail}")
 
 
+@pytest.mark.parametrize("model_path", _MODEL_FILES, ids=lambda p: p.stem)
+def test_plot_model_passes_schema_audit(model_path):
+    """Gold-standard invariant: every hand-built example world must clear the
+    full schema audit (temporal, polarity, symmetry, dangling, world_trait,
+    duplicate mutation_social). This is the contract ingestion/reingestion
+    are expected to satisfy."""
+    from shadow_loom.world_schema_audit import audit_world_schema
+
+    module_name = f"example_worlds.{model_path.stem}"
+    mod = importlib.import_module(module_name)
+    ws = mod.world_state
+
+    findings = audit_world_schema(ws)
+    if findings:
+        detail = "\n".join(f"  {f}" for f in findings)
+        pytest.fail(f"{model_path.stem} has {len(findings)} schema audit finding(s):\n{detail}")
+
+
 # =====================================================================
 # ExtractionConfig defaults
 # =====================================================================

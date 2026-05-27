@@ -1450,9 +1450,19 @@ world_state = WorldStateV1(
                     truth_at_fabula={2000: True, 4000: True, 17000: False}),
         Proposition(proposition_id="PROP_JULIET_ALIVE", kind="trait_holds",
                     referent_ids=["ENT_JULIET"],
-                    description="Juliet is alive.",
+                    description="Juliet is biologically alive.",
                     audience_default_prior=0.85, stakes=0.95,
-                    truth_at_fabula={12000: False, 16500: True, 17000: False}),
+                    truth_at_fabula={17000: False},
+                    inverse_proposition_id="PROP_JULIET_APPEARS_DEAD"),
+        # AUDIT P0-3: separate the appearance proposition so the Friar's
+        # potion (12000) flips perception without contradicting the
+        # underlying biological truth. Inverse of PROP_JULIET_ALIVE
+        # across the death tick; distinct across the potion window.
+        Proposition(proposition_id="PROP_JULIET_APPEARS_DEAD", kind="trait_holds",
+                    referent_ids=["ENT_JULIET"],
+                    description="Juliet appears dead to onlookers (e.g. under the Friar's draught).",
+                    audience_default_prior=0.15, stakes=0.85,
+                    truth_at_fabula={12000: True, 16500: False, 17000: True}),
         Proposition(proposition_id="PROP_ROMEO_ALIVE", kind="trait_holds",
                     referent_ids=["ENT_ROMEO"],
                     description="Romeo is alive.",

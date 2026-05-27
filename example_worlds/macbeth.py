@@ -213,7 +213,7 @@ world_state = WorldStateV1(
                 Concern(concern_id="CCN_MACBETH_FEARS_MACDUFF", proposition_id="PROP_MACDUFF_THREAT",
                         polarity="fear", kind="mortal_threat", salience=0.85,
                         activation_fabula_window=[13000, 19000],
-                        counter_concern_ids=["CCN_MACBETH_BECOMES_KING"]),
+                        counter_concern_ids=["CCN_MACBETH_BECOMES_KING", "CCN_MACBETH_DESIRES_BIRNAM_STILL"]),
                 Concern(concern_id="CCN_MACBETH_DESIRES_INVINCIBILITY", proposition_id="PROP_MACBETH_INVINCIBLE",
                         polarity="desire", kind="power", salience=0.8,
                         activation_fabula_window=[13000, 19000]),
@@ -952,6 +952,14 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_DIVINE_RIGHT", target_id="EVT_LADY_MACBETH_SLEEPWALKING",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
                    causal_force=4.0, fabula_time=16000),
+        # AUDIT P0-8: tighten Lady Macbeth's sleepwalking onto the
+        # regicide path so counterfactual "what if Duncan lived?"
+        # surgeries propagate to the bedchamber scene rather than
+        # only flowing through the cosmic-vengeance latent.
+        CausalEdge(source_id="EVT_DUNCAN_MURDER", target_id="EVT_LADY_MACBETH_SLEEPWALKING",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=16000,
+                   description="Lady Macbeth's guilt over goading her husband to regicide returns as somnambulistic hand-washing."),
 
         # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
         CausalEdge(source_id="WORLD_SUPERNATURAL_PROPHECY", target_id="WORLD_DIVINE_RIGHT",
@@ -1334,7 +1342,13 @@ world_state = WorldStateV1(
                     referent_ids=["ENT_BANQUO", "ENT_FLEANCE"],
                     description="Banquo's bloodline will inherit the throne.",
                     audience_default_prior=0.5, stakes=0.85,
-                    truth_at_fabula={1000: False}),
+                    # AUDIT P1-5: the witches' prophecy is not falsified
+                    # by Macbeth's reign \u2014 Fleance escapes the
+                    # assassination (fabula 12500) and the line lives to
+                    # eventually inherit. Defer the commit to the end
+                    # of the play where the prophecy is implicitly
+                    # vindicated rather than asserting False at 1000.
+                    truth_at_fabula={19500: True}),
         Proposition(proposition_id="PROP_FLEANCE_ALIVE", kind="trait_holds",
                     referent_ids=["ENT_FLEANCE"],
                     description="Fleance survives the assassins.",

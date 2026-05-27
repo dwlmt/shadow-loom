@@ -2236,6 +2236,31 @@ def _augment_topology_with_sandbox_deltas(
                     len(closure), sorted(closure),
                 )
 
+    # AUDIT P0-1: bridge typed DoEntityDelete / DoObjectDelete from the
+    # physics sandbox into the topology's removed_*_ids so the merge
+    # cascade scrubs every referential surface (mirrors the cascade
+    # already applied in-place by ``causal_physics`` handlers).
+    try:
+        from shadow_loom.query_models import (
+            DoEntityDelete as _DoEntityDelete,
+            DoObjectDelete as _DoObjectDelete,
+        )
+        _do_targets = list(physics_result.get("do_targets") or [])
+        _do_targets += list(physics_result.get("historical_do_targets") or [])
+        for _t in _do_targets:
+            if isinstance(_t, _DoEntityDelete):
+                if _t.entity_id not in topology.removed_entity_ids:
+                    topology.removed_entity_ids.append(_t.entity_id)
+            elif isinstance(_t, _DoObjectDelete):
+                if _t.object_id not in topology.removed_object_ids:
+                    topology.removed_object_ids.append(_t.object_id)
+    except Exception:
+        logger.exception(
+            "[Bridge\u00b7do-delete] failed to bridge typed "
+            "DoEntityDelete / DoObjectDelete targets onto "
+            "topology removed_*_ids."
+        )
+
     return topology
 
 
@@ -2673,11 +2698,68 @@ def run_pipeline(
             "[Pipeline] Query type '%s' — answering question over physics state.",
             query.query_type,
         )
+        # AUDIT P0-7: compute the deterministic posterior table
+        # BEFORE the LLM answer step so the answerer (and any
+        # downstream auditor) reads off a verifiable ground truth
+        # rather than hallucinating ranks. Surfaced into
+        # ``physics_result['posterior']`` for the answer template
+        # and into ``physics_result['posterior_warnings']`` for the
+        # auditor / UI.
+        try:
+            from shadow_loom.interrogate_posterior import (
+                interrogate_posterior as _interrogate_posterior,
+                audit_posterior_consistency as _audit_posterior_consistency,
+            )
+            _ft = getattr(query, "fabula_time", None)
+            _posterior = _interrogate_posterior(ws, fabula_time=_ft)
+            physics_result["posterior"] = _posterior
+            physics_result["posterior_warnings"] = (
+                _audit_posterior_consistency(_posterior)
+            )
+            logger.info(
+                "[Pipeline·posterior] %d propositions ranked; %d warnings.",
+                len(_posterior),
+                len(physics_result["posterior_warnings"]),
+            )
+        except Exception:
+            logger.exception(
+                "[Pipeline·posterior] Failed to compute deterministic "
+                "interrogate posterior; continuing without it."
+            )
+        # AUDIT P1-2: surface deterministic affective scorers onto
+        # the physics_result so the answer template / auditor / UI
+        # see them. Never raises; emits zeros on failure.
+        try:
+            from shadow_loom.affective_scorers import (
+                compute_affective_scorers as _compute_affective_scorers,
+            )
+            physics_result["affective_scorers"] = _compute_affective_scorers(
+                ws, fabula_time=getattr(query, "fabula_time", None),
+            )
+        except Exception:
+            logger.exception(
+                "[Pipeline·affective] Failed to compute affective "
+                "scorers; continuing without them."
+            )
+        # AUDIT round-2 P0: surface immutable entity constants
+        # (Feyre.mortal_origin, Edmund.forbidden_kin) as
+        # ConstantPrerequisite candidates so abduction / Rung-3
+        # readers see intrinsic causes alongside mutable ones.
+        try:
+            from shadow_loom.interrogate_posterior import (
+                surface_entity_constants as _surface_entity_constants,
+            )
+            physics_result["entity_constants"] = _surface_entity_constants(ws)
+        except Exception:
+            logger.exception(
+                "[Pipeline\u00b7constants] Failed to surface entity "
+                "constants; continuing without them."
+            )
         try:
             _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
         except Exception:
             logger.exception(
-                "[Pipeline] Answer step failed for query_type=%s — "
+                "[Pipeline] Answer step failed for query_type=%s \u2014 "
                 "returning a degraded result with no answer prose.",
                 query.query_type,
             )
@@ -2689,11 +2771,6 @@ def run_pipeline(
             )
         return result
 
-    # =================================================================
-    # Pearl-Rung-2/3 queries also get an answer card alongside the prose
-    # so the UI / MCP surface a natural-language summary that respects
-    # the typed do_target's epistemic / ontic register (Phase-9). The
-    # prose pipeline below still runs as before.
     # =================================================================
     if query.query_type in ("intervention", "counterfactual"):
         logger.info(
@@ -3296,6 +3373,48 @@ async def run_pipeline_async(
             "[Pipeline\u00b7Async] Query type '%s' \u2014 answering question over physics state.",
             query.query_type,
         )
+        # AUDIT P0-7: mirror the sync interrogate path so async
+        # callers also receive a deterministic posterior table.
+        try:
+            from shadow_loom.interrogate_posterior import (
+                interrogate_posterior as _interrogate_posterior,
+                audit_posterior_consistency as _audit_posterior_consistency,
+            )
+            _ft = getattr(query, "fabula_time", None)
+            _posterior = _interrogate_posterior(ws, fabula_time=_ft)
+            physics_result["posterior"] = _posterior
+            physics_result["posterior_warnings"] = (
+                _audit_posterior_consistency(_posterior)
+            )
+        except Exception:
+            logger.exception(
+                "[Pipeline\u00b7Async\u00b7posterior] Failed to "
+                "compute deterministic interrogate posterior."
+            )
+        # AUDIT P1-2: mirror the sync affective-scorer surfacing.
+        try:
+            from shadow_loom.affective_scorers import (
+                compute_affective_scorers as _compute_affective_scorers,
+            )
+            physics_result["affective_scorers"] = _compute_affective_scorers(
+                ws, fabula_time=getattr(query, "fabula_time", None),
+            )
+        except Exception:
+            logger.exception(
+                "[Pipeline\u00b7Async\u00b7affective] Failed to "
+                "compute affective scorers."
+            )
+        # AUDIT round-2 P0: mirror constants surfacing in async path.
+        try:
+            from shadow_loom.interrogate_posterior import (
+                surface_entity_constants as _surface_entity_constants,
+            )
+            physics_result["entity_constants"] = _surface_entity_constants(ws)
+        except Exception:
+            logger.exception(
+                "[Pipeline\u00b7Async\u00b7constants] Failed to surface "
+                "entity constants."
+            )
         try:
             _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
         except Exception:

@@ -37,6 +37,8 @@ from shadow_loom.query_models import (
     UserRequest,
     DoTarget,
     DoEvent,
+    DoEntityDelete,
+    DoObjectDelete,
     DoTrait,
     DoBelief,
     DoConcern,
@@ -789,6 +791,7 @@ def _build_do_target_item_model(world_state: WorldStateV1):
                 "event", "trait", "belief", "concern", "proposition",
                 "world_trait", "object", "channel", "relationship",
                 "causal_edge", "spatial_edge",
+                "entity_delete", "object_delete",
             ],
             Field(..., description="Discriminator for the do-target kind."),
         ),
@@ -807,6 +810,14 @@ def _build_do_target_item_model(world_state: WorldStateV1):
                         "the event's fabula_time so the co-presence "
                         "invariant continues to hold post-surgery. Has "
                         "no effect when occurred=False.")),
+        new_fabula_time=(Optional[int], Field(default=None,
+            description="For target_kind='event': optional new fabula_time. "
+                        "When set (and occurred is True / unset), the "
+                        "do-operator rewrites the event's fabula_time and "
+                        "re-stamps EntityStateSnapshot / ObjectStateSnapshot "
+                        "entries whose triggered_by matches plus outgoing "
+                        "CausalEdge.fabula_time so per-axis last-updated "
+                        "timestamps remain consistent post-surgery.")),
         # trait
         entity_id=(Optional[ent_lit], Field(default=None,
             description="For target_kind='trait': ENT_ id whose trait is clamped.")),
@@ -1364,11 +1375,18 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                 eid = data.get("event_id") or data.get("target_id")
                 if not eid:
                     continue
-                out.append(DoEvent(
-                    event_id=eid,
-                    occurred=data.get("occurred", True),
-                    new_at_location_id=data.get("new_at_location_id"),
-                ))
+                new_ft_raw = data.get("new_fabula_time")
+                kwargs_e: Dict[str, Any] = {
+                    "event_id": eid,
+                    "occurred": data.get("occurred", True),
+                    "new_at_location_id": data.get("new_at_location_id"),
+                }
+                if new_ft_raw is not None:
+                    try:
+                        kwargs_e["new_fabula_time"] = int(new_ft_raw)
+                    except (TypeError, ValueError):
+                        pass
+                out.append(DoEvent(**kwargs_e))
             elif kind == "trait":
                 eid = data.get("entity_id") or data.get("holder_id")
                 tname = data.get("trait_name")
@@ -1441,6 +1459,12 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                     proposition_id=pid,
                     truth=coerced_truth,
                     propagate_to_beliefs=data.get("propagate_to_beliefs", True),
+                    truth_at_fabula=(
+                        {int(k): bool(v) for k, v in data["truth_at_fabula"].items()}
+                        if isinstance(data.get("truth_at_fabula"), dict)
+                        else None
+                    ),
+                    hard_lock_forever=bool(data.get("hard_lock_forever", False)),
                 ))
             elif kind == "world_trait":
                 wt_id = (
@@ -1619,6 +1643,16 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                 if ft is not None:
                     kwargs["fabula_time"] = int(ft)
                 out.append(DoSpatialEdge(**kwargs))
+            elif kind == "entity_delete":
+                eid = data.get("entity_id") or data.get("target_id") or data.get("node_id")
+                if not eid:
+                    continue
+                out.append(DoEntityDelete(entity_id=eid))
+            elif kind == "object_delete":
+                obj_id = data.get("object_id") or data.get("target_id") or data.get("node_id")
+                if not obj_id:
+                    continue
+                out.append(DoObjectDelete(object_id=obj_id))
             else:
                 continue
         except Exception:

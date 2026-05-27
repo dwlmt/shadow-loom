@@ -1922,6 +1922,20 @@ def _apply_affect_to_world(
                 commit.proposition_id,
             )
             continue
+        # AUDIT P0-5: suppress truth commits whose upstream commit
+        # has been pruned by the deletion cascade. ``suppressed_truth_commits``
+        # is precomputed by the caller as ``(proposition_id, fabula_time)``
+        # pairs that belong to events the merge has removed; honouring
+        # this set keeps proposition truth state in lockstep with the
+        # event-graph (e.g. Gone Girl ``nick_vindicated`` flipping back
+        # to ``None`` when ``EVT_AMY_RETURNS`` is suppressed).
+        if (commit.proposition_id, commit.fabula_time) in _suppressed_commits:
+            logger.info(
+                "[merge·affect] Skipped truth commit on PROP %s @ ft=%d "
+                "— upstream event was suppressed.",
+                commit.proposition_id, commit.fabula_time,
+            )
+            continue
         prop_world = getattr(prop, "world_id", "factual") or "factual"
         if prop_world != world_id:
             if world_id == "shadow" and branch_label:
@@ -2674,6 +2688,73 @@ def _get_or_clone_shadow_proposition(
     return clone
 
 
+def _get_or_clone_shadow_relationship_edge(
+    merged: WorldStateV1,
+    source_entity_id: str,
+    target_entity_id: str,
+    *,
+    branch_label: Optional[str],
+    rollback_deltas: Optional[Dict[str, float]] = None,
+) -> Optional[Any]:
+    """Lazy AMWN-split clone of a ``RelationshipEdge`` into
+    ``merged.shadow_social_topology[branch_label][f"{src}|{tgt}"]``.
+
+    Mirror of :func:`_get_or_clone_shadow_proposition` for the social
+    layer. Closes the cross-branch leak where affective
+    interrogations on a counterfactual branch returned the
+    post-mutation factual metric value despite the mutating event
+    having been intervened away.
+
+    Trim semantics on the clone:
+      * For every ``(axis, delta)`` in ``rollback_deltas`` the
+        clone's ``metrics[axis].value`` has ``delta`` subtracted
+        (clamped to [-1.0, 1.0]) and ``evidence_strength`` is
+        demoted to ``"weak"`` (the rolled-back value is now a prior
+        rather than an observation).
+      * The clone itself is tagged ``world_id="shadow"``.
+
+    Idempotent in the same merge pass: calling twice with non-empty
+    ``rollback_deltas`` will subtract twice; callers must accumulate
+    deltas before invoking. Returns ``None`` if the edge doesn't
+    exist or no ``branch_label`` is supplied.
+    """
+    if not branch_label:
+        return None
+    sidecar = merged.shadow_social_topology.setdefault(branch_label, {})
+    key = f"{source_entity_id}|{target_entity_id}"
+    if key in sidecar:
+        clone = sidecar[key]
+    else:
+        factual: Optional[Any] = None
+        for e in merged.social_topology:
+            if (
+                e.source_entity_id == source_entity_id
+                and e.target_entity_id == target_entity_id
+            ):
+                factual = e
+                break
+        if factual is None:
+            return None
+        clone = copy.deepcopy(factual)
+        clone.world_id = "shadow"
+        sidecar[key] = clone
+        logger.info(
+            "[merge\u00b7shadow-clone] AMWN-split RelationshipEdge "
+            "%s\u2192%s on branch %r.",
+            source_entity_id, target_entity_id, branch_label,
+        )
+    if rollback_deltas:
+        for axis, delta in rollback_deltas.items():
+            m = clone.metrics.get(axis)
+            if m is None:
+                continue
+            new_val = max(-1.0, min(1.0, float(m.value) - float(delta)))
+            m.value = new_val
+            if m.evidence_strength != "weak":
+                m.evidence_strength = "weak"
+    return clone
+
+
 def _demote_social_metric_axes(
     social_topology: List[Any],
     axes: List[tuple[str, str, str]],
@@ -3142,6 +3223,41 @@ def _apply_deletions(
         # Drop other entities' beliefs targeting a dropped entity.
         for ent in merged.entities.values():
             ent.beliefs = [b for b in ent.beliefs if b.target_id not in drop]
+        # AUDIT P0-2: scrub deleted entity ids off every referential
+        # surface so post-merge graph integrity is restored. Mirrors the
+        # cascade in ``causal_physics._apply_do_entity_delete``.
+        for evt in merged.events:
+            if evt.actor_ids:
+                evt.actor_ids = [a for a in evt.actor_ids if a not in drop]
+            if getattr(evt, "speaker_id", None) in drop:
+                evt.speaker_id = None
+            for fld in ("target_id", "addressee_id"):
+                if getattr(evt, fld, None) in drop:
+                    setattr(evt, fld, None)
+        for p in merged.propositions:
+            refs = getattr(p, "referent_ids", None)
+            if refs:
+                p.referent_ids = [r for r in refs if r not in drop]
+        before_c = len(merged.causal_topology or [])
+        merged.causal_topology = [
+            ce for ce in (merged.causal_topology or [])
+            if ce.source_id not in drop and ce.target_id not in drop
+        ]
+        if hasattr(changeset, "causal_edges_removed"):
+            changeset.causal_edges_removed += before_c - len(merged.causal_topology)
+        for ch in (merged.channels or {}).values():
+            parts = getattr(ch, "participants", None)
+            if parts:
+                ch.participants = [p for p in parts if p not in drop]
+        # Drop concerns owned by the deleted entity is implicit (entity
+        # itself is gone); scrub counter_concern targets across survivors.
+        for ent in merged.entities.values():
+            for c in (ent.concerns or []):
+                ccids = getattr(c, "counter_concern_ids", None)
+                if ccids:
+                    # Counter-concerns are by id only; no entity-id pruning
+                    # needed here. Left for symmetry / future extension.
+                    pass
 
     # --- Objects
     for oid in topology.removed_object_ids:
@@ -3157,6 +3273,28 @@ def _apply_deletions(
             continue
         del merged.objects[oid]
         changeset.objects_removed += 1
+        # AUDIT P0-2: scrub the object id off referential surfaces.
+        for evt in merged.events:
+            obj_ids = getattr(evt, "object_ids", None)
+            if obj_ids and oid in obj_ids:
+                evt.object_ids = [o for o in obj_ids if o != oid]
+            for fld in ("target_id",):
+                if getattr(evt, fld, None) == oid:
+                    setattr(evt, fld, None)
+        for p in merged.propositions:
+            refs = getattr(p, "referent_ids", None)
+            if refs and oid in refs:
+                p.referent_ids = [r for r in refs if r != oid]
+        merged.causal_topology = [
+            ce for ce in (merged.causal_topology or [])
+            if ce.source_id != oid and ce.target_id != oid
+        ]
+        for ent in merged.entities.values():
+            ent.beliefs = [b for b in (ent.beliefs or []) if b.target_id != oid]
+        for ch in (merged.channels or {}).values():
+            parts = getattr(ch, "participants", None)
+            if parts and oid in parts:
+                ch.participants = [p for p in parts if p != oid]
 
     # --- Locations
     for lid in topology.removed_location_ids:
@@ -3768,7 +3906,19 @@ class VersionedWorldModel(BaseModel):
         # ``_apply_deletions`` would yield an empty set because the
         # suppressed events have already been pruned.
         _suppressed_truth_commits: set[tuple[str, int]] = set()
-        if world_id == "shadow" and branch_label and getattr(topology, "suppressed_event_ids", None):
+        # Also capture the per-event fabula times of suppressed
+        # events so the referent-based proposition sweep below can
+        # trim ``truth_at_fabula`` commits at the exact tick when
+        # the now-deleted event would have fired.
+        _suppressed_event_fts: Dict[str, int] = {}
+        # AUDIT P0-5: compute suppressed truth commits for BOTH
+        # factual and shadow merges. The factual path also needs
+        # rollback when the active query deletes an event whose
+        # only justification powers a Proposition truth commit
+        # (e.g. counterfactual on the main branch). Previously
+        # this block was shadow-only, leaving a stale truth value
+        # on the canonical proposition.
+        if getattr(topology, "suppressed_event_ids", None):
             _sup_ids = set(topology.suppressed_event_ids or [])
             for _evt in merged.events:
                 if _evt.id not in _sup_ids:
@@ -3777,6 +3927,7 @@ class VersionedWorldModel(BaseModel):
                 if _ft is None:
                     continue
                 _ft_i = int(_ft)
+                _suppressed_event_fts[_evt.id] = _ft_i
                 for _pid in (
                     getattr(_evt, "asserts_proposition_id", None),
                     getattr(_evt, "denies_proposition_id", None),
@@ -3785,6 +3936,152 @@ class VersionedWorldModel(BaseModel):
                         _suppressed_truth_commits.add((_pid, _ft_i))
                 for _pid in getattr(_evt, "resolves_proposition_ids", None) or []:
                     _suppressed_truth_commits.add((_pid, _ft_i))
+            # Referent-based proposition sweep: example_worlds and
+            # author-authored worlds frequently tie a Proposition to
+            # the event that proves it via ``referent_ids`` +
+            # hardcoded ``truth_at_fabula`` rather than the
+            # ``asserts/denies/resolves_proposition_id`` fields on
+            # EventNode. The provenance loop above misses these,
+            # which lets the factual proposition's truth survive
+            # onto the shadow branch (e.g. PROP_MRS_COADY_DIES
+            # remained ``True`` at fabula=14000 even after the
+            # heart-attack event was counterfactually prevented).
+            # Cover both: any ``truth_at_fabula`` entry whose
+            # fabula_time matches a suppressed event referenced by
+            # the proposition is treated as a suppressed commit.
+            #
+            # Gap #3 widening: if EVERY event in ``referent_ids``
+            # is suppressed, also drop every entry whose fabula_time
+            # is >= the earliest suppressed referent's fabula_time.
+            # This handles the case where a proposition's later
+            # truth values (e.g. PROP_FEUDAL_ORDER_INTACT.false at
+            # the start of Macbeth's tyranny, true again after his
+            # death) are declarative entries between events whose
+            # justifications all live on the suppressed subgraph.
+            # When some referents survive, we conservatively keep
+            # the exact-tick rule \u2014 we cannot prove the
+            # intermediate ticks aren't due to the surviving event.
+            _evt_index = {e.id: e for e in merged.events}
+            for _prop in merged.propositions:
+                _refs = getattr(_prop, "referent_ids", None) or []
+                _event_refs = [_r for _r in _refs if _r in _evt_index]
+                _suppressed_event_refs = [
+                    _r for _r in _event_refs if _r in _suppressed_event_fts
+                ]
+                _hit_fts = {
+                    _suppressed_event_fts[_r] for _r in _suppressed_event_refs
+                }
+                if not _hit_fts:
+                    continue
+                _truths = getattr(_prop, "truth_at_fabula", None) or {}
+                # Always: drop ticks that exactly match a suppressed
+                # referent event's fabula_time.
+                for _ft_key in _truths:
+                    try:
+                        _ft_i = int(_ft_key)
+                    except (TypeError, ValueError):
+                        continue
+                    if _ft_i in _hit_fts:
+                        _suppressed_truth_commits.add(
+                            (_prop.proposition_id, _ft_i)
+                        )
+                # Gap #3 widening: when ALL event referents are
+                # suppressed, drop every tick at-or-after the
+                # earliest suppressed event's fabula_time. The
+                # proposition has no surviving event-justification
+                # for any of its post-suppression truth state.
+                if _event_refs and len(_suppressed_event_refs) == len(_event_refs):
+                    _gate_ft = min(_hit_fts)
+                    for _ft_key in _truths:
+                        try:
+                            _ft_i = int(_ft_key)
+                        except (TypeError, ValueError):
+                            continue
+                        if _ft_i >= _gate_ft:
+                            _suppressed_truth_commits.add(
+                                (_prop.proposition_id, _ft_i)
+                            )
+
+            # Proactive AMWN-split: clone every proposition whose
+            # ``referent_ids`` touched a suppressed event into the
+            # shadow sidecar, even when the current chunk's topology
+            # carries no truth commit for it. ``_apply_affect_to_world``
+            # only clones on demand (when a truth commit arrives), so
+            # without this sweep the factual proposition with the
+            # original ``truth_at_fabula`` would remain the only copy
+            # visible to ``projected_for_branch`` on shadow reads.
+            # (Shadow-only: the factual rollback path mutates the
+            # canonical proposition in place via the standard
+            # commit-suppression check.)
+            if world_id == "shadow" and branch_label:
+                _surviving_commits_pre: set[tuple[str, int]] = set()
+                for _evt in merged.events:
+                    if _evt.id in _sup_ids:
+                        continue
+                    _ft = getattr(_evt, "fabula_time", None)
+                    if _ft is None:
+                        continue
+                    _ft_i = int(_ft)
+                    for _pid in (
+                        getattr(_evt, "asserts_proposition_id", None),
+                        getattr(_evt, "denies_proposition_id", None),
+                    ):
+                        if _pid:
+                            _surviving_commits_pre.add((_pid, _ft_i))
+                    for _pid in getattr(_evt, "resolves_proposition_ids", None) or []:
+                        _surviving_commits_pre.add((_pid, _ft_i))
+                _seen_clones: set[str] = set()
+                for _prop in list(merged.propositions):
+                    _refs = getattr(_prop, "referent_ids", None) or []
+                    if not any(_r in _suppressed_event_fts for _r in _refs):
+                        continue
+                    if _prop.proposition_id in _seen_clones:
+                        continue
+                    _seen_clones.add(_prop.proposition_id)
+                    _get_or_clone_shadow_proposition(
+                        merged, _prop.proposition_id,
+                        branch_label=branch_label,
+                        suppressed_commits=_suppressed_truth_commits,
+                        suppressed_event_ids=_sup_ids,
+                        surviving_commits=_surviving_commits_pre,
+                    )
+
+            # Social-edge AMWN-split: for every ``mutation_social``
+            # causal edge whose source event is suppressed, accumulate
+            # the ``trait_delta`` per dyad+axis and clone the matching
+            # ``RelationshipEdge`` into the shadow_social_topology
+            # sidecar with the delta subtracted from the metric value.
+            # Gap #1 fix: ``RelationshipEdge`` is otherwise a single
+            # shared list with no per-branch view, so an affective
+            # interrogation on the counterfactual branch would read
+            # the post-mutation factual metric value despite the
+            # mutating event having been intervened away. We must run
+            # BEFORE ``_apply_deletions`` strips the mutation_social
+            # edges from ``causal_topology``.
+            # (Shadow-only: factual rollback mutates the shared edge
+            # in place via the standard delete cascade.)
+            if world_id == "shadow" and branch_label:
+                _social_rollback: dict[tuple[str, str], dict[str, float]] = {}
+                for _ce in merged.causal_topology:
+                    if _ce.source_id not in _sup_ids and _ce.target_id not in _sup_ids:
+                        continue
+                    if _ce.causality_type != "mutation_social":
+                        continue
+                    if _ce.trait_delta is None:
+                        continue
+                    _src_ent = _ce.target_id
+                    _tgt_ent = _ce.rel_counterpart_id
+                    _axis = _ce.trait_target
+                    if not (_src_ent and _tgt_ent and _axis):
+                        continue
+                    _bucket = _social_rollback.setdefault((_src_ent, _tgt_ent), {})
+                    _bucket[_axis] = _bucket.get(_axis, 0.0) + float(_ce.trait_delta)
+                for (_src_ent, _tgt_ent), _deltas in _social_rollback.items():
+                    _get_or_clone_shadow_relationship_edge(
+                        merged, _src_ent, _tgt_ent,
+                        branch_label=branch_label,
+                        rollback_deltas=_deltas,
+                    )
 
         # --- Deletion pass (P2 of prose-merge completeness) — runs
         # before additive sections so a single merge can replace-then-

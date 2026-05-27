@@ -43,6 +43,20 @@ class DoEvent(BaseModel):
             "effect when ``occurred=False``."
         ),
     )
+    new_fabula_time: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional new fabula_time the event should be re-threaded to. "
+            "When set (and ``occurred`` remains True), the do-operator "
+            "rewrites the event's ``fabula_time`` and re-stamps any "
+            "``EntityStateSnapshot`` / ``ObjectStateSnapshot`` whose "
+            "``triggered_by`` matches this event so per-axis last-updated "
+            "timestamps and reconstruction replay continue to read "
+            "consistently after the shift. Has no effect when "
+            "``occurred=False``. Use to ask 'what if EVT_X had happened "
+            "earlier/later?' without removing the event."
+        ),
+    )
 
 
 class DoProposition(BaseModel):
@@ -67,6 +81,30 @@ class DoProposition(BaseModel):
             "If True, cascade the clamp into every Belief whose proposition_id matches "
             "(adjusting confidence per evidence_strength). If False, only the "
             "audience-side ``truth_at_fabula`` is altered."
+        ),
+    )
+    truth_at_fabula: Optional[Dict[int, bool]] = Field(
+        default=None,
+        description=(
+            "Optional dict mapping fabula_time → truth value. When supplied, "
+            "overwrites the proposition's entire ``truth_at_fabula`` ledger "
+            "(rather than poking a single tick). Use for piecewise-constant "
+            "clamps such as 'PROP_X is true from 0 to 5000, false from 5000 "
+            "onward' that capture a planned reveal-then-recant arc in one "
+            "intervention."
+        ),
+    )
+    hard_lock_forever: bool = Field(
+        default=False,
+        description=(
+            "If True, freeze ``Proposition.truth_at_fabula`` after the clamp "
+            "and refuse future engine-side flips of this proposition. The "
+            "engine pins the proposition id in an internal lock set so any "
+            "subsequent ``mutation`` causal-edge resolution that would flip "
+            "the truth becomes a no-op (logged at INFO). Use for axiomatic "
+            "Rung-2/3 clamps like 'in this counterfactual Oceania is "
+            "permanently at war with Eastasia' where the storyworld must "
+            "ignore later truth-flipping events."
         ),
     )
 
@@ -451,12 +489,46 @@ class DoNarrativeObject(BaseModel):
     )
 
 
+class DoEntityDelete(BaseModel):
+    """Remove an :class:`Entity` from the world ("never existed").
+
+    Distinct from killing the entity mid-story (which clamps
+    ``status='dead'`` via :class:`DoTrait` or an event surgery). This
+    surface excises the entity entirely so every belief, relationship,
+    proposition referent, social edge, concern, and causal edge that
+    references the deleted ENT_ id is cascaded out by the merge layer
+    (see ``removed_entity_ids`` handling in ``extract_graph.merge``).
+
+    Use for "what if ENT_BANQUO never existed?" — the strict Pearl
+    Rung-3 form of an existence counterfactual. Confines to Rung-2/3
+    queries; Rung-1 observation queries never delete entities.
+    """
+    target_kind: Literal["entity_delete"] = "entity_delete"
+    entity_id: str = Field(description="ENT_ id to excise from the world.")
+
+
+class DoObjectDelete(BaseModel):
+    """Remove a :class:`NarrativeObject` from the world ("never existed").
+
+    Mirror of :class:`DoEntityDelete` for narrative objects. Cascades
+    via the merge layer's ``removed_object_ids`` set so any ObjectMutation,
+    inventory snapshot, belief, or causal edge that references the
+    deleted OBJ_ id is pruned in lock-step.
+
+    Use for "what if OBJ_DIAMONDS never existed?" — the bag-and-baggage
+    counterfactual that asks how the plot reorganises without a key
+    object.
+    """
+    target_kind: Literal["object_delete"] = "object_delete"
+    object_id: str = Field(description="OBJ_ id to excise from the world.")
+
+
 # Discriminated union — Pydantic v2 dispatches on ``target_kind``.
 DoTarget = Annotated[
     Union[
         DoEvent, DoProposition, DoBelief, DoConcern, DoTrait, DoWorldTrait,
         DoChannel, DoRelationship, DoCausalEdge, DoSpatialEdge,
-        DoNarrativeObject,
+        DoNarrativeObject, DoEntityDelete, DoObjectDelete,
     ],
     Field(discriminator="target_kind"),
 ]

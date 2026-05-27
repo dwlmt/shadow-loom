@@ -1379,7 +1379,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_HODGES_GRUDGING_RESPECT", "ENT_HODGES", "ENT_MAINWARING"],
             description="ARP Warden Hodges grants Mainwaring grudging public respect for the platoon's performance.",
             audience_default_prior=0.2, stakes=0.55,
-            truth_at_fabula={5000: False, 14000: True},
+            truth_at_fabula={14000: True},
         ),
         Proposition(
             proposition_id="PROP_FULLARD_REVERSES_JUDGMENT",
@@ -1387,7 +1387,7 @@ world_state = WorldStateV1(
             referent_ids=["ENT_FULLARD", "ENT_MAINWARING", "EVT_PARACHUTIST_CAPTURED"],
             description="Major-General Fullard reverses his contempt for Mainwaring after the German surrender.",
             audience_default_prior=0.2, stakes=0.7,
-            truth_at_fabula={2000: False, 10000: True},
+            truth_at_fabula={10000: True},
         ),
         Proposition(
             proposition_id="PROP_PLATOON_TRIUMPHS",
@@ -1395,7 +1395,7 @@ world_state = WorldStateV1(
             referent_ids=["EVT_PLATOON_MARCHES", "ENT_MAINWARING"],
             description="The Walmington Home Guard platoon emerges as the pride of the town, vindicated as effective defenders.",
             audience_default_prior=0.3, stakes=0.85,
-            truth_at_fabula={1000: False, 15000: True},
+            truth_at_fabula={15000: True},
         ),
         Proposition(
             proposition_id="PROP_BRITAIN_INVADED",

@@ -985,7 +985,7 @@ class CausalPhysicsEngine:
         from shadow_loom.query_models import (
             DoEvent, DoTrait, DoProposition, DoBelief, DoConcern, DoWorldTrait,
             DoChannel, DoRelationship, DoCausalEdge, DoSpatialEdge,
-            DoNarrativeObject,
+            DoNarrativeObject, DoEntityDelete, DoObjectDelete,
         )
 
         # Reset the per-call edge-surgery success counter. Vacuity-skip
@@ -1178,6 +1178,10 @@ class CausalPhysicsEngine:
                 self._apply_do_spatial_edge(t)
             elif isinstance(t, DoNarrativeObject):
                 self._apply_do_object(t)
+            elif isinstance(t, DoEntityDelete):
+                self._apply_do_entity_delete(t)
+            elif isinstance(t, DoObjectDelete):
+                self._apply_do_object_delete(t)
 
         # Event-relocation surgery (Rung-2/3): rewrites
         # ``EventNode.at_location_id`` and cascades EntityStateSnapshots
@@ -1188,6 +1192,20 @@ class CausalPhysicsEngine:
         for t in do_targets:
             if isinstance(t, DoEvent) and t.new_at_location_id and t.occurred is True:
                 self._apply_do_event_relocation(t)
+
+        # Event-time-shift surgery (Rung-2/3): rewrites
+        # ``EventNode.fabula_time`` and re-stamps any
+        # EntityStateSnapshot / ObjectStateSnapshot whose
+        # ``triggered_by`` matches so per-axis last-updated timestamps
+        # and reconstruction replay continue to read consistently after
+        # the shift. Independent of and composes with relocation.
+        for t in do_targets:
+            if (
+                isinstance(t, DoEvent)
+                and t.new_fabula_time is not None
+                and t.occurred is True
+            ):
+                self._apply_do_event_time_shift(t)
 
         logger.log(
             _physics_log(),
@@ -1244,6 +1262,24 @@ class CausalPhysicsEngine:
             ft = self._default_fabula_time()
         ft = int(ft)
 
+        # Hard-lock + piecewise-dict surgery (Candidate D). Pinning a
+        # proposition into the engine's ``_proposition_hard_locks``
+        # set causes downstream resolvers (event-driven truth flips,
+        # ingestion bridges) to refuse further mutations on this
+        # proposition for the rest of the engine's life. The
+        # ``truth_at_fabula`` dict overrides the canonical ledger
+        # wholesale so an operator can write a piecewise truth arc
+        # (e.g. ``{0: True, 5000: False}``) in one intervention
+        # instead of issuing per-tick clamps.
+        bulk_truth = getattr(target, "truth_at_fabula", None)
+        hard_lock = bool(getattr(target, "hard_lock_forever", False))
+        if hard_lock:
+            locks = getattr(self, "_proposition_hard_locks", None)
+            if locks is None:
+                locks = set()
+                self._proposition_hard_locks = locks
+            locks.add(target.proposition_id)
+
         old_truth: Optional[bool] = None
         prop_index: Optional[int] = None
         inverse_pid: Optional[str] = None
@@ -1260,10 +1296,18 @@ class CausalPhysicsEngine:
                 # a deep clone before mutating so external references
                 # (UI snapshots, version history, sibling queries) keep
                 # the unmodified object.
-                new_truth = {
-                    int(k): v for k, v in prop.truth_at_fabula.items() if int(k) < ft
-                }
-                new_truth[ft] = bool(target.truth)
+                if bulk_truth:
+                    # Wholesale ledger overwrite (piecewise truth arc).
+                    new_truth = {int(k): bool(v) for k, v in bulk_truth.items()}
+                    # Always honour the primary ``truth`` field at ``ft``
+                    # so the do-target's headline assertion lands even
+                    # when the bulk dict omits the anchor.
+                    new_truth.setdefault(ft, bool(target.truth))
+                else:
+                    new_truth = {
+                        int(k): v for k, v in prop.truth_at_fabula.items() if int(k) < ft
+                    }
+                    new_truth[ft] = bool(target.truth)
                 clone = prop.model_copy(update={"truth_at_fabula": new_truth})
                 props_list[idx] = clone
             break
@@ -1349,6 +1393,13 @@ class CausalPhysicsEngine:
                     inverse_mirror_applied = True
                     inverse_new_truth = inv_val
                 break
+
+        if hard_lock and inverse_pid:
+            locks = getattr(self, "_proposition_hard_locks", None)
+            if locks is None:
+                locks = set()
+                self._proposition_hard_locks = locks
+            locks.add(inverse_pid)
 
         # Refresh the sandbox's serialised proposition layer so
         # downstream consumers reading ``sandbox.graph['propositions']``
@@ -2014,6 +2065,122 @@ class CausalPhysicsEngine:
             target.event_id, old_loc, new_loc, ft, cascaded, len(skipped_dead),
         )
 
+    def _apply_do_event_time_shift(self, target: Any) -> None:
+        """Rewrite an event's ``fabula_time`` and re-stamp every
+        ``EntityStateSnapshot`` / ``ObjectStateSnapshot`` /
+        ``WorldTraitSnapshot`` / ``PropositionSnapshot`` /
+        ``ConcernSnapshot`` whose ``triggered_by`` matches the shifted
+        event so per-axis ``last_updated_fabula`` timestamps and
+        ``reconstruct_*_at`` replay stay consistent at the new tick.
+
+        Also re-stamps:
+          * any ``RelationshipMetric.last_updated_fabula`` whose axis
+            was last touched by this event (best-effort: scans
+            ``social_topology`` mutation_social ``CausalEdge`` entries);
+          * the ``CausalEdge.fabula_time`` on every edge whose
+            ``source_id`` is the shifted event.
+
+        Mirrors changes into the sandbox node attrs so downstream
+        propagation observes the new tick.
+        """
+        new_ft = int(target.new_fabula_time) if target.new_fabula_time is not None else None
+        if new_ft is None:
+            return
+        # Locate the event in world_state.events (a list).
+        evt = None
+        for e in (self.world_state.events or []):
+            if e.id == target.event_id:
+                evt = e
+                break
+        if evt is None:
+            logger.warning(
+                "[CausalPhysics\u00b7do_event_time_shift] Event %s not in "
+                "world_state.events; skipping time shift.", target.event_id,
+            )
+            return
+        old_ft = int(evt.fabula_time)
+        if old_ft == new_ft:
+            return
+        evt.fabula_time = new_ft
+        # Sandbox mirror.
+        if self.sandbox.has_node(target.event_id):
+            self.sandbox.nodes[target.event_id]["fabula_time"] = new_ft
+            self._intervened_nodes.add(target.event_id)
+
+        cascaded = 0
+
+        # Re-stamp snapshots triggered_by this event across every
+        # holder kind. State-timeline snapshots are sorted by
+        # fabula_time after re-stamping so reconstruction replay sees
+        # them in the correct order.
+        def _restamp_timeline(holder: Any, attr: str) -> int:
+            timeline = list(getattr(holder, attr, None) or [])
+            n = 0
+            for snap in timeline:
+                if getattr(snap, "triggered_by", None) == target.event_id:
+                    snap.fabula_time = new_ft
+                    n += 1
+            if n:
+                timeline.sort(key=lambda s: s.fabula_time)
+                setattr(holder, attr, timeline)
+            return n
+
+        entities = self.world_state.entities or {}
+        for ent in (entities.values() if isinstance(entities, dict) else (entities or [])):
+            cascaded += _restamp_timeline(ent, "state_timeline")
+        objects = getattr(self.world_state, "objects", None) or {}
+        for obj in (objects.values() if isinstance(objects, dict) else (objects or [])):
+            cascaded += _restamp_timeline(obj, "state_timeline")
+        for prop in (self.world_state.propositions or []):
+            cascaded += _restamp_timeline(prop, "state_timeline")
+        for trait in (getattr(self.world_state, "world_traits", None) or []):
+            cascaded += _restamp_timeline(trait, "state_timeline")
+        for concern in (getattr(self.world_state, "concerns", None) or []):
+            cascaded += _restamp_timeline(concern, "state_timeline")
+
+        # Re-stamp CausalEdge.fabula_time on outgoing edges of the
+        # shifted event so the causal_topology stays ordered.
+        edges_restamped = 0
+        for cedge in (self.world_state.causal_topology or []):
+            if getattr(cedge, "source_id", None) == target.event_id:
+                cedge.fabula_time = new_ft
+                edges_restamped += 1
+
+        # Best-effort: bump RelationshipMetric.last_updated_fabula on
+        # any axis whose most-recent mutation_social edge is the
+        # shifted event.
+        metrics_restamped = 0
+        for rel in (getattr(self.world_state, "social_topology", None) or []):
+            for axis_name, metric in (rel.metrics or {}).items():
+                # Find the most recent mutation_social edge targeting
+                # this dyad+axis. If it matches the shifted event,
+                # advance/retract the metric timestamp.
+                latest_evt_id = None
+                latest_ft = -1
+                for cedge in (self.world_state.causal_topology or []):
+                    if cedge.causality_type != "mutation_social":
+                        continue
+                    if cedge.target_id != rel.source_entity_id:
+                        continue
+                    if cedge.rel_counterpart_id != rel.target_entity_id:
+                        continue
+                    if cedge.trait_target != axis_name:
+                        continue
+                    if cedge.fabula_time > latest_ft:
+                        latest_ft = cedge.fabula_time
+                        latest_evt_id = cedge.source_id
+                if latest_evt_id == target.event_id:
+                    metric.last_updated_fabula = new_ft
+                    metrics_restamped += 1
+
+        logger.info(
+            "[CausalPhysics\u00b7do_event_time_shift] Event %s shifted "
+            "%d\u2192%d; cascaded %d snapshot(s), %d causal edge(s), "
+            "%d social metric(s).",
+            target.event_id, old_ft, new_ft,
+            cascaded, edges_restamped, metrics_restamped,
+        )
+
     def _apply_do_relationship(self, target: Any) -> None:
         """Clamp a single per-axis :class:`RelationshipMetric`.
 
@@ -2646,6 +2813,158 @@ class CausalPhysicsEngine:
             # deterministic (matches entity relocation path).
             canonical.state_timeline.sort(key=lambda s: s.fabula_time)
 
+    def _apply_do_entity_delete(self, target: Any) -> None:
+        """Excise an :class:`Entity` from the world ("never existed").
+
+        Strict Pearl Rung-3 existence counterfactual. Removes the
+        entity from :attr:`WorldStateV1.entities` and cascades:
+
+        * drop every :class:`RelationshipEdge` naming the entity as
+          source or target;
+        * drop every belief in surviving entities whose ``target_id``
+          is the deleted entity;
+        * drop every concern owned by the deleted entity;
+        * drop every causal edge whose source or target references the
+          deleted entity;
+        * strip the entity id from every surviving event's
+          ``actor_ids``;
+        * clear ``speaker_id`` on events where the deleted entity was
+          the sole speaker;
+        * mirror by removing the sandbox node (which incidentally
+          drops all incident sandbox edges).
+
+        Events with no remaining ``actor_ids`` (and no speaker) survive
+        for audit visibility — operators must clamp ``occurred=False``
+        on those explicitly if they want them suppressed. This keeps
+        the surgery referent-safe without silently rewriting plot
+        causality.
+        """
+        eid = target.entity_id
+        ws = self.world_state
+        entities = ws.entities or {}
+        if eid not in entities:
+            logger.warning(
+                "[CausalPhysics\u00b7do_entity_delete] %s not in world.entities; skipping.",
+                eid,
+            )
+            return
+        del entities[eid]
+        # Social topology.
+        before_s = len(ws.social_topology or [])
+        ws.social_topology = [
+            r for r in (ws.social_topology or [])
+            if r.source_entity_id != eid and r.target_entity_id != eid
+        ]
+        # Beliefs targeting the deleted entity in survivors.
+        for other in entities.values():
+            other.beliefs = [b for b in (other.beliefs or []) if b.target_id != eid]
+        # Concerns owned by the entity (concerns live on entities;
+        # popping the entity already dropped its concerns, but if any
+        # downstream container holds dangling refs we'd cascade here).
+        # Causal topology.
+        before_c = len(ws.causal_topology or [])
+        ws.causal_topology = [
+            ce for ce in (ws.causal_topology or [])
+            if ce.source_id != eid and ce.target_id != eid
+        ]
+        # Events: scrub from actor_ids / speaker_id.
+        for evt in (ws.events or []):
+            if eid in (evt.actor_ids or []):
+                evt.actor_ids = [a for a in evt.actor_ids if a != eid]
+            if getattr(evt, "speaker_id", None) == eid:
+                evt.speaker_id = None
+            for fld in ("target_id", "addressee_id"):
+                if getattr(evt, fld, None) == eid:
+                    setattr(evt, fld, None)
+        # Propositions: scrub referent ids.
+        for p in (ws.propositions or []):
+            refs = getattr(p, "referent_ids", None)
+            if refs and eid in refs:
+                p.referent_ids = [r for r in refs if r != eid]
+        # Channels: scrub participants.
+        for ch in (ws.channels or {}).values():
+            parts = getattr(ch, "participants", None)
+            if parts and eid in parts:
+                ch.participants = [p for p in parts if p != eid]
+        # Sandbox mirror.
+        if self.sandbox.has_node(eid):
+            self.sandbox.remove_node(eid)
+        logger.info(
+            "[CausalPhysics\u00b7do_entity_delete] Excised %s "
+            "(social\u2212%d, causal\u2212%d).",
+            eid, before_s - len(ws.social_topology),
+            before_c - len(ws.causal_topology),
+        )
+        self._intervened_nodes.add(eid)
+
+    def _apply_do_object_delete(self, target: Any) -> None:
+        """Excise a :class:`NarrativeObject` from the world ("never existed").
+
+        Mirror of :meth:`_apply_do_entity_delete` for narrative
+        objects. Cascades:
+
+        * drop the object from :attr:`WorldStateV1.objects`;
+        * scrub the object id from channel participant lists (an
+          object-bearing channel like a phone-line collapses if its
+          only handset is excised);
+        * strip the object id from every event's ``object_ids`` (when
+          present) so events that depended on the object survive but
+          stop referencing it;
+        * drop causal edges naming the object as source or target;
+        * drop beliefs in any entity whose ``target_id`` is the
+          deleted object;
+        * mirror via sandbox node removal.
+
+        As with entity deletion, events are not implicitly suppressed
+        — operators clamp ``occurred=False`` themselves when the plot
+        action depended on the missing prop.
+        """
+        oid = target.object_id
+        ws = self.world_state
+        objects = ws.objects or {}
+        if oid not in objects:
+            logger.warning(
+                "[CausalPhysics\u00b7do_object_delete] %s not in world.objects; skipping.",
+                oid,
+            )
+            return
+        del objects[oid]
+        # Channels: scrub participant lists.
+        for ch in (ws.channels or {}).values():
+            participants = getattr(ch, "participants", None)
+            if participants and oid in participants:
+                ch.participants = [p for p in participants if p != oid]
+        # Events: scrub object_ids if the field exists.
+        for evt in (ws.events or []):
+            obj_ids = getattr(evt, "object_ids", None)
+            if obj_ids and oid in obj_ids:
+                evt.object_ids = [o for o in obj_ids if o != oid]
+            for fld in ("target_id",):
+                if getattr(evt, fld, None) == oid:
+                    setattr(evt, fld, None)
+        # Propositions: scrub referent ids.
+        for p in (ws.propositions or []):
+            refs = getattr(p, "referent_ids", None)
+            if refs and oid in refs:
+                p.referent_ids = [r for r in refs if r != oid]
+        # Causal topology.
+        before_c = len(ws.causal_topology or [])
+        ws.causal_topology = [
+            ce for ce in (ws.causal_topology or [])
+            if ce.source_id != oid and ce.target_id != oid
+        ]
+        # Beliefs targeting the object.
+        for ent in (ws.entities or {}).values():
+            ent.beliefs = [b for b in (ent.beliefs or []) if b.target_id != oid]
+        # Sandbox mirror.
+        if self.sandbox.has_node(oid):
+            self.sandbox.remove_node(oid)
+        logger.info(
+            "[CausalPhysics\u00b7do_object_delete] Excised %s (causal\u2212%d).",
+            oid, before_c - len(ws.causal_topology),
+        )
+        self._intervened_nodes.add(oid)
+
     def _default_fabula_time(self) -> int:
         """Best-effort fabula_time anchor when a DoTarget omits one.
 
@@ -2818,6 +3137,50 @@ class CausalPhysicsEngine:
                 pruned, len(removed_event_ids), len(removed_channel_ids),
                 len(severed_pairs),
             )
+
+        # AUDIT round-2 P0-1: canonical-side event-removal cascade.
+        # When an event is destructively removed from the canonical
+        # ``world_state.events`` list, also drop references to that
+        # event id from propositions and causal_topology so downstream
+        # readers (auditor, posterior, affective scorers, MCP queries)
+        # don't see dangling refs. We gate strictly on ``world_state``
+        # membership: sandbox-pruned events that remain in canonical
+        # (e.g. counterfactual prevention markers) keep their canonical
+        # edges intact so the shared fixture isn't structurally
+        # damaged for downstream tests/readers.
+        if removed_event_ids:
+            canonical_event_ids = {
+                getattr(e, "id", None) for e in (self.world_state.events or [])
+            }
+            truly_removed = {
+                eid for eid in removed_event_ids if eid not in canonical_event_ids
+            }
+            if truly_removed:
+                cleared_refs = 0
+                cleared_topo = 0
+                for prop in (self.world_state.propositions or []):
+                    refs = getattr(prop, "referent_ids", None) or []
+                    if any(r in truly_removed for r in refs):
+                        prop.referent_ids = [r for r in refs if r not in truly_removed]
+                        cleared_refs += 1
+                topo = list(getattr(self.world_state, "causal_topology", None) or [])
+                kept = []
+                for ce in topo:
+                    src = getattr(ce, "source_id", None)
+                    tgt = getattr(ce, "target_id", None)
+                    if (src in truly_removed) or (tgt in truly_removed):
+                        cleared_topo += 1
+                        continue
+                    kept.append(ce)
+                if cleared_topo:
+                    self.world_state.causal_topology = kept
+                if cleared_refs or cleared_topo:
+                    logger.debug(
+                        "[CausalPhysics\u00b7event-cascade] truly_removed=%d \u2192 "
+                        "cleared_proposition_refs=%d, cleared_causal_edges=%d.",
+                        len(truly_removed), cleared_refs, cleared_topo,
+                    )
+
         return pruned
 
     def _perform_graph_surgery_edge_removal(

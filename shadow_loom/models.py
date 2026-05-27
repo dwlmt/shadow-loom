@@ -4,7 +4,7 @@
 import logging
 
 from pydantic import BaseModel, Field, model_validator, field_validator
-from typing import Annotated, Any, List, Dict, Optional, Literal
+from typing import Annotated, Any, Iterable, List, Dict, Optional, Literal
 
 _logger = logging.getLogger(__name__)
 
@@ -2056,6 +2056,80 @@ def reconstruct_concern_at(concern: "Concern", fabula_time: int) -> dict:
     }
 
 
+def reconstruct_relationship_at(
+    edge: "RelationshipEdge",
+    fabula_time: int,
+    *,
+    causal_edges: "Iterable[CausalEdge]",
+    events: "Iterable[EventNode]",
+) -> dict:
+    """Reconstruct a :class:`RelationshipEdge`'s per-axis metric values
+    at a given fabula_time.
+
+    :class:`RelationshipMetric` carries no per-tick history field
+    (unlike :class:`Entity.state_timeline`), so reconstruction works
+    *backwards* from the edge's *current* values by rolling back every
+    ``mutation_social`` causal edge whose source event fires AFTER
+    ``fabula_time``. The result is the metric value the dyad would
+    have held at the requested tick.
+
+    Branch-safe: only consumes causal edges whose ``world_id`` matches
+    the holder edge's ``world_id`` (or both default to ``"factual"``),
+    mirroring the per-entity / per-trait / per-proposition guard.
+
+    Returns a dict keyed by axis (``affinity``, ``fear``,
+    ``power_dynamic``) with the rolled-back float values clamped to
+    each axis's natural range.
+
+    Limitations: this gives the *deterministic delta-replay* view, not
+    the physics-engine view (which folds inertia and evidence
+    blending). For exact engine state at a tick, replay through the
+    propagator. For audit / counterfactual / time-slice display, the
+    delta-replay view is the right semantic.
+    """
+    src = edge.source_entity_id
+    tgt = edge.target_entity_id
+    holder_world = getattr(edge, "world_id", "factual") or "factual"
+
+    event_index = {e.id: e for e in events}
+    metrics_now: Dict[str, float] = {}
+    axis_ranges: Dict[str, tuple[float, float]] = {
+        "affinity": (-1.0, 1.0),
+        "fear": (0.0, 1.0),
+        "power_dynamic": (-1.0, 1.0),
+    }
+    for axis_name, metric in edge.metrics.items():
+        metrics_now[axis_name] = float(metric.value)
+
+    for cedge in causal_edges:
+        if cedge.causality_type != "mutation_social":
+            continue
+        if cedge.source_id not in event_index:
+            continue
+        if cedge.target_id != src or cedge.rel_counterpart_id != tgt:
+            continue
+        if cedge.trait_target is None or cedge.trait_delta is None:
+            continue
+        c_world = getattr(cedge, "world_id", holder_world) or holder_world
+        if c_world != holder_world:
+            continue
+        evt = event_index[cedge.source_id]
+        if evt.fabula_time <= fabula_time:
+            # Mutation already in the past at the read tick — keep it.
+            continue
+        # Mutation is in the future relative to the read tick — undo it.
+        axis = cedge.trait_target
+        if axis not in metrics_now:
+            continue
+        metrics_now[axis] -= float(cedge.trait_delta)
+
+    out: Dict[str, float] = {}
+    for axis_name, val in metrics_now.items():
+        lo, hi = axis_ranges.get(axis_name, (-1.0, 1.0))
+        out[axis_name] = max(lo, min(hi, val))
+    return out
+
+
 # --- 5. THE MASTER STATE (The Database Payload for Narrative structure) ---
 class NarrativeStyle(BaseModel):
     """Captured profile of the source text's narrative *register*.
@@ -2251,6 +2325,29 @@ class WorldStateV1(BaseModel):
             ":meth:`world_traits_for_branch`."
         ),
     )
+    shadow_social_topology: Dict[
+        str, Dict[str, "RelationshipEdge"]
+    ] = Field(
+        default_factory=dict,
+        description=(
+            "Per-shadow-branch social-edge sidecar — mirror of "
+            "``shadow_entities`` for ``RelationshipEdge``. Lazy "
+            "AMWN-split copies of an edge are materialised when a "
+            "shadow merge suppresses a ``mutation_social`` causal "
+            "edge that contributed to one of the metrics on the "
+            "dyad. The clone subtracts the suppressed "
+            "``trait_delta`` from the matching metric value (clamped "
+            "to [-1, 1] for affinity/fear, [-1, 1] for "
+            "power_dynamic) and demotes ``evidence_strength`` to "
+            "``weak`` (the rolled-back value is now a prior rather "
+            "than an observation). Keyed by ``branch_label`` then "
+            "the dyad key ``f'{source_entity_id}|{target_entity_id}'`` "
+            "(JSON-safe string form of the ordered dyad). Closes the "
+            "leak where affective interrogations on a counterfactual "
+            "branch reported the post-mutation factual value despite "
+            "the mutating event having been intervened away."
+        ),
+    )
     events: List[EventNode]
     world_traits: Dict[str, "GlobalTrait"] = Field(
         default_factory=dict,
@@ -2429,10 +2526,42 @@ class WorldStateV1(BaseModel):
                 out.append(clone)
         return out
 
+    def social_topology_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> List["RelationshipEdge"]:
+        """Mirror of :meth:`propositions_for_branch` for
+        ``RelationshipEdge`` (the social_topology list).
+
+        Layered view: shadow clones in
+        ``self.shadow_social_topology[branch_label]`` (keyed by
+        ``(source_entity_id, target_entity_id)``) substitute for
+        their factual twins; shadow-only edges are appended.
+        """
+        if branch_world_id != "shadow" or not branch_label:
+            return self.social_topology
+        sidecar = self.shadow_social_topology.get(branch_label) or {}
+        if not sidecar:
+            return self.social_topology
+        out: List["RelationshipEdge"] = []
+        seen: set[str] = set()
+        for e in self.social_topology:
+            key = f"{e.source_entity_id}|{e.target_entity_id}"
+            clone = sidecar.get(key)
+            out.append(clone if clone is not None else e)
+            seen.add(key)
+        for key, clone in sidecar.items():
+            if key not in seen:
+                out.append(clone)
+        return out
+
     def projected_for_branch(
         self,
         branch_world_id: str = "factual",
         branch_label: Optional[str] = None,
+        *,
+        strict: bool = False,
     ) -> "WorldStateV1":
         """Return a shallow-projected ``WorldStateV1`` whose ``entities``
         dict reflects the requested branch.
@@ -2454,19 +2583,27 @@ class WorldStateV1(BaseModel):
         """
         if branch_world_id != "shadow" or not branch_label:
             if branch_world_id == "shadow" and not branch_label:
-                _logger.warning(
+                # AUDIT P1-6: in ``strict`` mode raise instead of
+                # silently falling through to factual. Default is the
+                # legacy log-and-fall-through so existing callers
+                # remain unaffected; pipeline tests / debug runs can
+                # opt in to surface the bug at the boundary.
+                msg = (
                     "[projected_for_branch] Shadow read without "
-                    "branch_label — falling back to factual baseline. "
-                    "This indicates a pipeline bug: a shadow merge "
-                    "happened with an empty label and downstream "
-                    "reads will silently see factual state."
+                    "branch_label \u2014 a shadow merge happened with "
+                    "an empty label and downstream reads would "
+                    "silently see factual state."
                 )
+                if strict:
+                    raise ValueError(msg)
+                _logger.warning(msg + " Falling back to factual baseline.")
             return self
         sidecar = self.shadow_entities.get(branch_label) or {}
         obj_sidecar = self.shadow_objects.get(branch_label) or {}
         prop_sidecar = self.shadow_propositions.get(branch_label) or {}
         wt_sidecar = self.shadow_world_traits.get(branch_label) or {}
-        if not (sidecar or obj_sidecar or prop_sidecar or wt_sidecar):
+        soc_sidecar = self.shadow_social_topology.get(branch_label) or {}
+        if not (sidecar or obj_sidecar or prop_sidecar or wt_sidecar or soc_sidecar):
             return self
         update: Dict[str, Any] = {}
         if sidecar:
@@ -2483,6 +2620,10 @@ class WorldStateV1(BaseModel):
             )
         if wt_sidecar:
             update["world_traits"] = self.world_traits_for_branch(
+                branch_world_id, branch_label,
+            )
+        if soc_sidecar:
+            update["social_topology"] = self.social_topology_for_branch(
                 branch_world_id, branch_label,
             )
         return self.model_copy(update=update)
