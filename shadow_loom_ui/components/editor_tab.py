@@ -236,12 +236,35 @@ def _render_editor(state: AppState, container) -> None:
 # Validation feedback
 # =====================================================================
 
+
+def _sanitise_exc_for_toast(exc: BaseException) -> str:
+    """Round-9 D9: return a short, type-tagged summary suitable for a
+    user-facing toast. ``str(exc)`` for arbitrary Python exceptions
+    can include filesystem paths, internal class names, raw client
+    input, or library traceback fragments — none of which belong in
+    a notify banner. Callers should still ``logger.exception(...)``
+    the original to capture the full detail in the structured log.
+
+    The format keeps the exception class (so error categories remain
+    distinguishable to the user) and clips the message to 200 chars
+    on a single line.
+    """
+    cls = type(exc).__name__
+    msg = (str(exc) or "").strip().splitlines()[0] if str(exc) else ""
+    if len(msg) > 200:
+        msg = msg[:197] + "..."
+    return f"{cls}: {msg}" if msg else cls
+
+
 def _parse_or_notify(text: str) -> Optional[dict]:
     """Parse JSON; return dict or None (showing a notify on failure)."""
     try:
         return json.loads(text or "")
     except (ValueError, TypeError) as exc:
-        ui.notify(f"Invalid JSON: {exc}", type="negative")
+        ui.notify(
+            f"Invalid JSON: {_sanitise_exc_for_toast(exc)}",
+            type="negative",
+        )
         return None
 
 
@@ -268,13 +291,19 @@ def _validate_or_notify(text: str) -> tuple[Optional[WorldStateV1], list]:
         )
         return None, []
     except ValueError as exc:
-        ui.notify(f"Invalid JSON: {exc}", type="negative")
+        ui.notify(
+            f"Invalid JSON: {_sanitise_exc_for_toast(exc)}",
+            type="negative",
+        )
         return None, []
     try:
         issues = _programmatic_validation(ws)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Consistency validation crashed")
-        ui.notify(f"Consistency check failed: {exc}", type="negative")
+        ui.notify(
+            f"Consistency check failed: {_sanitise_exc_for_toast(exc)}",
+            type="negative",
+        )
         return ws, []
     return ws, issues
 
@@ -698,7 +727,9 @@ def _add_dialog_list(
             try:
                 skeleton = build_skeleton(values)
             except ValueError as exc:
-                ui.notify(str(exc), type="warning")
+                ui.notify(
+                    _sanitise_exc_for_toast(exc), type="warning",
+                )
                 return
             items = data.setdefault(collection_key, [])
             items.append(skeleton)
@@ -1168,7 +1199,13 @@ def _confirm_save(state: AppState, edited_json: str, current_json: str) -> None:
         issues = _programmatic_validation(new_ws)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Consistency validation crashed")
-        ui.notify(f"Consistency check failed to run: {exc}", type="negative")
+        # Round-8 audit (UI-P3-01): public toast carries only the
+        # exception class; full trace is in the logs.
+        ui.notify(
+            f"Consistency check failed to run ({type(exc).__name__}); "
+            f"see logs.",
+            type="negative",
+        )
         return
 
     errors = [i for i in issues if i.severity == "error"]
@@ -1295,7 +1332,12 @@ def _do_save(state: AppState, new_ws: WorldStateV1) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Manual edit save failed")
-        ui.notify(f"Save failed: {exc}", type="negative")
+        # Round-8 audit (UI-P3-01): sanitised public message; full
+        # detail is captured by logger.exception.
+        ui.notify(
+            f"Save failed ({type(exc).__name__}); see logs.",
+            type="negative",
+        )
         return
 
     # Atomic swap: resets cursors and emits WORLD_STATE_CHANGED /

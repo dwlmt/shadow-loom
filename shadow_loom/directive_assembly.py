@@ -223,7 +223,57 @@ class RenderingDirective(BaseModel):
             "only licensed POV and head-hopping is a violation. When "
             "``pov_policy == 'rotating'`` or ``'ensemble'`` this is "
             "the *primary* / opening POV; ``additional_pov_locks`` "
-            "lists the other licensed perspectives."
+            "lists the other licensed perspectives. "
+            "\n\n"
+            "**Role across the pipeline (round-7 audit 2026-05-26).** "
+            "``pov_lock`` is the *single source of truth* for POV "
+            "across rendering, refinement, and audit. Its enforcement "
+            "is layered:\n"
+            "\n"
+            "  1. **Render-time contract** (``assemble_rendering_prompt`` "
+            "     in ``shadow_loom/generation.py``). The brief's "
+            "     ``pov_lock`` is emitted as a HARD constraint in the "
+            "     rendering prompt and tells the generation LLM whose "
+            "     consciousness it may narrate from.\n"
+            "  2. **Scene-output mirror** (``GeneratedScene.pov_entity`` "
+            "     in ``shadow_loom/generation.py``). The renderer must "
+            "     mirror the lock back in its structured output. A\n"
+            "     divergence here (``pov_lock`` set, ``pov_entity`` "
+            "     ``None``) is the most common rewrite-pressure failure; "
+            "     the feedback loop coerces it back AND records a "
+            "     synthetic ``reasoning_failure`` violation so the next "
+            "     iteration sees the breach explicitly. See "
+            "     ``shadow_loom/auditor.py::_check_pov_lock_metadata``.\n"
+            "  3. **Deterministic prose check** "
+            "     (``shadow_loom/auditor.py::"
+            "deterministic_prose_findings``). On every iteration of the "
+            "     feedback loop, a regex pass counts sentences whose "
+            "     grammatical subject is a *non-POV* proper noun "
+            "     attached to a cognitive / perceptual verb. Above "
+            "     ``AuditorConfig.pov_breach_threshold`` (default 3) "
+            "     the loop synthesises a critical ``reasoning_failure`` "
+            "     violation BEFORE the LLM auditor runs. This catches "
+            "     the omniscient-narration drift that LLM auditors "
+            "     miss under rewrite pressure.\n"
+            "  4. **LLM auditor**. The auditor prompt is told the POV "
+            "     lock and asked to flag head-hops, omniscient asides, "
+            "     and non-POV interiority. It is the slowest and "
+            "     most expressive check, but also the most "
+            "     unreliable; layers 2 and 3 exist because the LLM "
+            "     auditor empirically misses ~one-third of POV "
+            "     breaches under iteration pressure.\n"
+            "  5. **Refinement injection**. When the audit fails, the "
+            "     refinement prompt re-emits the brief verbatim "
+            "     (so ``pov_lock`` is restated) AND includes a "
+            "     dedicated Rule 7 in ``shadow_loom/prompts/"
+            "refinement.md`` forbidding ``pov_entity`` drops.\n"
+            "\n"
+            "Setting ``pov_lock=None`` deliberately disables ALL "
+            "layers above and licenses omniscient narration. Setting "
+            "``pov_lock`` and overriding "
+            "``AuditorConfig.enable_deterministic_prose_checks=False`` "
+            "keeps layers 1, 2, 4, 5 and skips layer 3 — useful for "
+            "ensemble briefs where the regex would over-fire."
         ),
     )
     additional_pov_locks: List[str] = Field(
@@ -6904,6 +6954,24 @@ class DirectiveAssembler:
 
         pov_entity = entity_ids[0] if entity_ids else None
 
+        # P0 #2b (round-7 deeper audit 2026-05-27): when the
+        # directive targets multiple entities, the primary entity is
+        # the POV anchor and the rest are additional licensed POVs
+        # under a rotating policy. Previously every RenderingDirective
+        # constructor below set only ``pov_lock`` and left
+        # ``pov_policy="single"`` and ``additional_pov_locks=[]`` at
+        # their defaults, silently hard-locking even legitimately
+        # multi-POV directives to a single perspective. Setting them
+        # here once and wiring them into every constructor below
+        # restores the documented contract on
+        # ``RenderingDirective.pov_lock``.
+        pov_additional_locks: List[str] = (
+            [eid for eid in entity_ids[1:] if eid] if entity_ids else []
+        )
+        pov_policy: Literal["single", "rotating", "ensemble"] = (
+            "rotating" if pov_additional_locks else "single"
+        )
+
         # mystery / dramatic_irony / surprise collapse without a POV
         # anchor — the entire effect depends on locking the reader to
         # one consciousness and withholding what other minds know.
@@ -6934,6 +7002,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="mystery",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="normal",
                 sensory_focus="wide",
                 stylistic_instructions=[
@@ -6960,6 +7030,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="dramatic_irony",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="normal",
                 sensory_focus="normal",
                 stylistic_instructions=[
@@ -6986,6 +7058,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="surprise",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="sharp_pivot",
                 sensory_focus="normal",
                 tone_arc="comfortable_flow → abrupt_shock",
@@ -7006,6 +7080,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="suspense",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="dilated",
                 sensory_focus="normal",
                 stylistic_instructions=[
@@ -7034,6 +7110,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="fear",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="accelerated",
                 sensory_focus="tunnel",
                 stylistic_instructions=[
@@ -7059,6 +7137,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="joy",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="normal",
                 sensory_focus="wide",
                 stylistic_instructions=[
@@ -7087,6 +7167,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="regret",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="dilated",
                 sensory_focus="normal",
                 tone_arc="harsh_reality ↔ agonizing_visualization",
@@ -7113,6 +7195,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="grief",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="dilated",
                 sensory_focus="absence",
                 stylistic_instructions=[
@@ -7141,6 +7225,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="rage",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="accelerated",
                 sensory_focus="tunnel",
                 tone_arc="passive_sorrow → active_targeted_hostility",
@@ -7169,6 +7255,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="love",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="normal",
                 sensory_focus="normal",
                 stylistic_instructions=[
@@ -7232,6 +7320,8 @@ class DirectiveAssembler:
             rendering = RenderingDirective(
                 rendering_mode="narrative_tension",
                 pov_lock=pov_entity,
+                additional_pov_locks=pov_additional_locks,
+                pov_policy=pov_policy,
                 pacing="dilated",
                 sensory_focus="normal",
                 tone_arc="sustained_pressure",

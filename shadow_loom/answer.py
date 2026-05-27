@@ -1129,7 +1129,32 @@ def answer_question(
 
     agent = _build_answer_agent(config, query_type=query_type)
     try:
-        result = agent.run_sync(user_msg)
+        # Round-12 R12-02: bound the answer-agent call so a hung
+        # provider can't pin the request handler indefinitely. The
+        # caller fails fast with TimeoutError; the underlying HTTP
+        # request keeps running on the worker thread until the
+        # provider closes it. Timeout is tunable via the env var
+        # ``SHADOW_LOOM_LLM_TIMEOUT_S`` (default 120s) shared with
+        # query_parsing.
+        import concurrent.futures as _cf
+        import os as _os
+
+        try:
+            _timeout = float(_os.environ.get("SHADOW_LOOM_LLM_TIMEOUT_S", "120"))
+        except (TypeError, ValueError):
+            _timeout = 120.0
+
+        with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+            _fut = _pool.submit(agent.run_sync, user_msg)
+            try:
+                result = _fut.result(timeout=_timeout)
+            except _cf.TimeoutError as exc:
+                logger.warning(
+                    "[Answer] agent.run_sync exceeded %.1fs timeout", _timeout,
+                )
+                raise TimeoutError(
+                    f"Answer LLM call did not complete within {_timeout:.0f}s"
+                ) from exc
         card = result.output
         # Validate that ``evidence_node_ids`` actually resolve to
         # nodes the answer agent could plausibly cite. ``physics_state``

@@ -19,7 +19,32 @@ inside-out and the test body executes after this fixture's setup phase.
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+
+# Round-11 R11-09: several test modules set ``DATABASE_URL`` and
+# ``MCP_ALLOW_OPEN_MODE`` at module scope (before imports that consume
+# the values lazily). Those writes are persistent and leak into any
+# subsequent test process / interactive shell that inherits the env.
+# This session-scoped autouse fixture snapshots and restores the two
+# variables at session start and teardown so test runs cannot
+# permanently mutate the developer's environment, and so a missing
+# module-scope write in one file cannot accidentally pick up a
+# stale value from another file's import order.
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_test_env_vars():
+    sentinels = ("DATABASE_URL", "MCP_ALLOW_OPEN_MODE", "SHADOW_LOOM_SECRET_KEY")
+    saved: dict[str, str | None] = {k: os.environ.get(k) for k in sentinels}
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 @pytest.fixture(autouse=True)

@@ -330,6 +330,11 @@ def render_convergence_trajectory(
     iterations = [r["iteration"] for r in rows]
     total = [r["violation_count"] for r in rows]
     crit = [r["critical_count"] for r in rows]
+    # Round-8 audit (UI-P2-01): severity-score line so users can see
+    # the unified Finding-stream weight (engine failures included)
+    # collapse iteration-over-iteration even when raw violation counts
+    # don't move much.
+    severity = [float(r.get("severity_score", 0.0)) for r in rows]
     passed_marks = [
         {"xAxis": r["iteration"], "label": {"formatter": "✓ passed"}}
         for r in rows if r["passed"]
@@ -354,6 +359,12 @@ def render_convergence_trajectory(
                 " params.forEach(function(p){"
                 "  lines.push(p.marker + p.seriesName + ': ' + p.value);"
                 " });"
+                " if(r.engine_failure_count){"
+                "  lines.push('engine threshold failures: ' + r.engine_failure_count);"
+                " }"
+                " if(r.failed_open){"
+                "  lines.push('\u26a0 audit failed open (error fallback)');"
+                " }"
                 " lines.push(r.passed ? '\u2713 auditor passed this iteration'"
                 "   : 'auditor still flagged issues');"
                 " return lines.join('<br/>');"
@@ -361,7 +372,7 @@ def render_convergence_trajectory(
             ),
         },
         "legend": {
-            "data": ["all violations", "critical"],
+            "data": ["all violations", "critical", "severity score"],
             "textStyle": {"color": th["text"]},
             "top": 0,
         },
@@ -373,11 +384,30 @@ def render_convergence_trajectory(
             "nameTextStyle": {"color": th["text"]},
             "axisLabel": {"color": th["text"]},
         },
-        "yAxis": {
-            "type": "value",
-            "minInterval": 1,
-            "axisLabel": {"color": th["text"]},
-        },
+        "yAxis": [
+            {
+                # Primary axis: integer violation counts.
+                "type": "value",
+                "name": "violations",
+                "minInterval": 1,
+                "axisLabel": {"color": th["text"]},
+                "nameTextStyle": {"color": th["text"]},
+            },
+            {
+                # Round-9 D8: severity_score is fractional (sum of
+                # per-finding severities normalised to ~0..N range)
+                # and was being quantised to integer ticks on the
+                # shared axis, flattening fine-grained changes. Give
+                # it a dedicated axis with continuous scaling.
+                "type": "value",
+                "name": "severity",
+                "position": "right",
+                "minInterval": 0,
+                "axisLabel": {"color": th["text"]},
+                "nameTextStyle": {"color": th["text"]},
+                "splitLine": {"show": False},
+            },
+        ],
         "series": [
             {
                 "name": "all violations",
@@ -401,6 +431,16 @@ def render_convergence_trajectory(
                 "lineStyle": {"color": "#D8334A", "width": 2.5},
                 "itemStyle": {"color": "#D8334A"},
                 "symbolSize": 8,
+            },
+            {
+                "name": "severity score",
+                "type": "line",
+                "data": severity,
+                "yAxisIndex": 1,
+                "smooth": True,
+                "lineStyle": {"color": "#6F8AB7", "width": 2, "type": "dashed"},
+                "itemStyle": {"color": "#6F8AB7"},
+                "symbolSize": 6,
             },
         ],
     }).classes("w-full").style(f"height:{height}")

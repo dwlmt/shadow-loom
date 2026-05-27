@@ -3241,7 +3241,16 @@ async def run_pipeline_async(
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
     )
-    physics_result = calculate_narrative_physics(
+    # Round-12 R12-01: ``calculate_narrative_physics`` is the heaviest
+    # CPU-bound step in the pipeline (Monte-Carlo propagation, causal-
+    # engine resolution, lattice sweeps). Calling it directly from the
+    # async pipeline blocked the NiceGUI event loop for the duration
+    # of the simulation — exactly the regression that R10 fixed for
+    # render_and_audit / run_feedback_loop. Offload to a worker
+    # thread so concurrent UI updates and websocket pongs keep
+    # flowing while physics runs.
+    physics_result = await asyncio.to_thread(
+        calculate_narrative_physics,
         request=query,
         global_world_state=ws,
         temporal_anchor=eff_temporal,
@@ -3460,7 +3469,13 @@ async def run_pipeline_async(
                         exc_info=True,
                     )
 
-            feedback = render_and_audit(
+            # Round-10 R10-09: render_and_audit is a long-running
+            # synchronous LLM call. Inside run_pipeline_async we MUST
+            # offload it to a worker thread or it blocks the event
+            # loop for the duration of generation+audit, stalling
+            # every other request on the NiceGUI/MCP server.
+            feedback = await asyncio.to_thread(
+                render_and_audit,
                 brief=brief, world_state=ws,
                 auditor_config=cfg.auditor_config,
                 generation_config=cfg.generation_config,
@@ -3488,7 +3503,10 @@ async def run_pipeline_async(
                 factual_contrast=_factual_contrast,
             )
             from shadow_loom.auditor import run_feedback_loop
-            feedback = run_feedback_loop(
+            # Round-10 R10-09: same reasoning as above — keep the
+            # event loop responsive while the auditor iterates.
+            feedback = await asyncio.to_thread(
+                run_feedback_loop,
                 initial_scene=initial_scene, brief=brief, world_state=ws,
                 auditor_config=cfg.auditor_config,
                 generation_config=cfg.generation_config,

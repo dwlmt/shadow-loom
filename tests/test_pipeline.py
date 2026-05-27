@@ -69,10 +69,10 @@ from example_worlds.reservoir_dogs import world_state as reservoir_dogs_ws
 # Mock helpers
 # =========================================================================
 
-def _mock_scene(prose="The shadow fell across the courtyard."):
+def _mock_scene(prose="The shadow fell across the courtyard.", pov_entity="ENT_MACBETH"):
     return GeneratedScene(
         prose=prose,
-        pov_entity="ENT_TEST",
+        pov_entity=pov_entity,
         rendering_mode="directive",
         constraints_honoured=["C1"],
         constraints_violated=[],
@@ -236,7 +236,10 @@ class TestObservationPipeline:
         # Mock generation
         mock_agent = MagicMock()
         mock_agent.run_sync.return_value = _mock_run_sync(
-            _mock_scene("Winston stared at the telescreen.")
+            _mock_scene(
+                "Winston stared at the telescreen.",
+                pov_entity=list(ws.entities.keys())[0],
+            )
         )
         mock_gen_builder.return_value = mock_agent
 
@@ -295,7 +298,10 @@ class TestInterventionPipeline:
 
         mock_agent = MagicMock()
         mock_agent.run_sync.return_value = _mock_run_sync(
-            _mock_scene("Macbeth's guilt dissolved as he reached for the crown.")
+            _mock_scene(
+                "Macbeth's guilt dissolved as he reached for the crown.",
+                pov_entity="ENT_MACBETH",
+            )
         )
         mock_gen_builder.return_value = mock_agent
         mock_audit.return_value = _mock_passing_audit()
@@ -351,7 +357,10 @@ class TestCounterfactualPipeline:
 
         mock_agent = MagicMock()
         mock_agent.run_sync.return_value = _mock_run_sync(
-            _mock_scene("Had Nick never returned home, Amy's plan would have unraveled.")
+            _mock_scene(
+                "Had Nick never returned home, Amy's plan would have unraveled.",
+                pov_entity=list(ws.entities.keys())[0],
+            )
         )
         mock_gen_builder.return_value = mock_agent
         mock_audit.return_value = _mock_passing_audit()
@@ -388,7 +397,10 @@ class TestDirectivePipeline:
 
         mock_agent = MagicMock()
         mock_agent.run_sync.return_value = _mock_run_sync(
-            _mock_scene("The darkness closed around Macbeth like a fist.")
+            _mock_scene(
+                "The darkness closed around Macbeth like a fist.",
+                pov_entity="ENT_MACBETH",
+            )
         )
         mock_gen_builder.return_value = mock_agent
         mock_audit.return_value = _mock_passing_audit()
@@ -508,7 +520,9 @@ class TestVersionedWorldModelInput:
         assert vwm.version == 1
 
         mock_agent = MagicMock()
-        mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene("Scene."))
+        mock_agent.run_sync.return_value = _mock_run_sync(
+            _mock_scene("Scene.", pov_entity="ENT_MACBETH")
+        )
         mock_gen.return_value = mock_agent
         mock_audit.return_value = _mock_passing_audit()
         mock_extract.return_value = _mock_topology(vwm.current)
@@ -726,13 +740,15 @@ class TestCrossPlotPipeline:
     @patch("shadow_loom.auditor.run_audit")
     @patch("shadow_loom.generation._build_generation_agent")
     def test_observation_across_plots(self, mock_gen, mock_audit, mock_extract, name, ws):
+        ent_ids = list(ws.entities.keys())[:2]
         mock_agent = MagicMock()
-        mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene("Observed."))
+        mock_agent.run_sync.return_value = _mock_run_sync(
+            _mock_scene("Observed.", pov_entity=ent_ids[0])
+        )
         mock_gen.return_value = mock_agent
         mock_audit.return_value = _mock_passing_audit()
         mock_extract.return_value = _mock_topology(ws)
 
-        ent_ids = list(ws.entities.keys())[:2]
         query = ObservationQuery(focus_entity_ids=ent_ids)
         result = run_pipeline(query, world_state=ws)
         assert result.prose is not None, f"No prose for {name}"
@@ -743,13 +759,15 @@ class TestCrossPlotPipeline:
     @patch("shadow_loom.auditor.run_audit")
     @patch("shadow_loom.generation._build_generation_agent")
     def test_intervention_across_plots(self, mock_gen, mock_audit, mock_extract, name, ws):
+        first_ent = next(iter(ws.entities))
         mock_agent = MagicMock()
-        mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene("Intervened."))
+        mock_agent.run_sync.return_value = _mock_run_sync(
+            _mock_scene("Intervened.", pov_entity=first_ent)
+        )
         mock_gen.return_value = mock_agent
         mock_audit.return_value = _mock_passing_audit()
         mock_extract.return_value = _mock_topology(ws)
 
-        first_ent = next(iter(ws.entities))
         query = InterventionQuery(
             interventions={f"{first_ent}.traits.fear.value": 0.9},
         )
@@ -762,14 +780,16 @@ class TestCrossPlotPipeline:
     @patch("shadow_loom.auditor.run_audit")
     @patch("shadow_loom.generation._build_generation_agent")
     def test_counterfactual_across_plots(self, mock_gen, mock_audit, mock_extract, name, ws):
+        first_event = ws.events[0].id if ws.events else "EVT_DUMMY"
+        ent_ids = list(ws.entities.keys())[:2]
         mock_agent = MagicMock()
-        mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene("What if."))
+        mock_agent.run_sync.return_value = _mock_run_sync(
+            _mock_scene("What if.", pov_entity=ent_ids[0])
+        )
         mock_gen.return_value = mock_agent
         mock_audit.return_value = _mock_passing_audit()
         mock_extract.return_value = _mock_topology(ws)
 
-        first_event = ws.events[0].id if ws.events else "EVT_DUMMY"
-        ent_ids = list(ws.entities.keys())[:2]
         query = CounterfactualQuery(
             historical_interventions={f"{first_event}.event_type": "prevented"},
             evidence_node_ids=ent_ids,
@@ -783,13 +803,15 @@ class TestCrossPlotPipeline:
     @patch("shadow_loom.auditor.run_audit")
     @patch("shadow_loom.generation._build_generation_agent")
     def test_directive_across_plots(self, mock_gen, mock_audit, mock_extract, name, ws):
+        ent_ids = list(ws.entities.keys())[:2]
         mock_agent = MagicMock()
-        mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene("Scene."))
+        mock_agent.run_sync.return_value = _mock_run_sync(
+            _mock_scene("Scene.", pov_entity=ent_ids[0])
+        )
         mock_gen.return_value = mock_agent
         mock_audit.return_value = _mock_passing_audit()
         mock_extract.return_value = _mock_topology(ws)
 
-        ent_ids = list(ws.entities.keys())[:2]
         query = DirectiveQuery(
             target_entity_ids=ent_ids,
             target_effect="suspense",

@@ -2573,7 +2573,7 @@ def _save_catalogue_checkpoint(
             "fingerprint": fingerprint,
             "catalogue": json.loads(catalogue.model_dump_json()),
         }
-        p.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        _atomic_write_json(p, json.dumps(envelope, indent=2))
         logger.debug("[Checkpoint] Wrote catalogue checkpoint %s", p)
     except Exception:
         logger.exception("[Checkpoint] Could not write catalogue checkpoint.")
@@ -7259,6 +7259,47 @@ def _physics_fabula_monotonicity_violations(
 _CHECKPOINT_VERSION = 2
 
 
+def _atomic_write_json(path: Path, body: str) -> None:
+    """Write *body* to *path* atomically.
+
+    Round-13 R13-07: chunk and catalogue checkpoints were previously
+    written with plain ``Path.write_text``. Two ingestion workers can
+    target the same checkpoint path concurrently (parallel chunk
+    extraction, or a re-ingest that overlaps with an in-flight pass),
+    and a process killed mid-write left a truncated JSON file that
+    crashed the next load with a ``json.JSONDecodeError``. Writing to
+    a sibling temp file in the same directory and then ``os.replace``-
+    ing into place gives us same-filesystem-atomic visibility: readers
+    see either the previous complete file or the new complete file,
+    never a partial one.
+    """
+    import os as _os
+    import tempfile as _tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = _tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    try:
+        with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+            fh.flush()
+            try:
+                _os.fsync(fh.fileno())
+            except OSError:
+                # fsync is best-effort; not all filesystems support it.
+                pass
+        _os.replace(tmp_name, path)
+    except Exception:
+        try:
+            _os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def _extraction_fingerprint(config: "ExtractionConfig") -> str:
     """Hash the extraction-config fields that materially affect output.
 
@@ -7398,10 +7439,7 @@ def _save_chunk_checkpoint(
             "stage_flags": dict(stage_flags),
             "topology": json.loads(topo.model_dump_json()),
         }
-        p.write_text(
-            json.dumps(envelope, indent=2),
-            encoding="utf-8",
-        )
+        _atomic_write_json(p, json.dumps(envelope, indent=2))
         logger.debug("[Checkpoint] Wrote %s", p)
     except Exception:
         logger.exception(
@@ -7485,7 +7523,7 @@ def _save_register_checkpoint(
             "fingerprint": fingerprint,
             "register": json.loads(register.model_dump_json()),
         }
-        p.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        _atomic_write_json(p, json.dumps(envelope, indent=2))
         logger.debug("[Checkpoint] Wrote register checkpoint %s", p)
     except Exception:
         logger.exception(
@@ -7575,7 +7613,7 @@ def _save_topologies_checkpoint(
         }
         if catalogue is not None:
             envelope["catalogue"] = json.loads(catalogue.model_dump_json())
-        p.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        _atomic_write_json(p, json.dumps(envelope, indent=2))
         logger.debug(
             "[Checkpoint] Wrote topologies checkpoint %s (%d chunks%s).",
             p, len(topologies),

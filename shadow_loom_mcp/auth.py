@@ -100,11 +100,30 @@ def _open_mode_enabled() -> bool:
 
 
 def _last_cached_entry() -> Optional[dict]:
-    """Return the most recently inserted token cache entry, or None."""
-    if not _token_user_cache:
+    """Return the single cached token entry, or None.
+
+    Round-10 R10-01: previously returned the *most recently inserted*
+    entry whenever any tokens had been cached. With more than one
+    cached identity that behaviour is an impersonation surface — any
+    open-mode caller without a request context inherits whichever
+    token was validated last (a different user's). Now we only fall
+    back when **exactly one** token has been seen, so the canonical
+    "single test client" dev pattern still works but ambiguous
+    multi-tenant fallback is denied (and logged) instead of being
+    silently resolved to the wrong identity.
+    """
+    n = len(_token_user_cache)
+    if n == 0:
         return None
-    # dict preserves insertion order in CPython 3.7+
-    last_token = next(reversed(_token_user_cache))
+    if n > 1:
+        logger.warning(
+            "[MCP·auth] Open-mode fallback refused: %d cached tokens "
+            "in process, cannot choose unambiguously. Resolving as "
+            "no-identity (returns None / empty scopes).",
+            n,
+        )
+        return None
+    last_token = next(iter(_token_user_cache))
     return _token_user_cache[last_token]
 
 
@@ -222,3 +241,65 @@ def check_project_access(
                 f"'{min_role}' for this operation."
             )
     return "Access denied: you do not have permission to access this project."
+
+
+# ── Rate limiting ────────────────────────────────────────────────
+
+# Round-12 R12-08: simple in-process token-bucket on expensive
+# generation paths (``narrate``, ``direct``) to bound LLM/compute
+# spend per identity. This is a *single-process* guard — for a
+# multi-worker deployment a shared store (Redis) is the right
+# next step, but in-process is strictly better than the zero
+# defence we had before and matches the threat model of a
+# single self-hosted MCP server.
+import os as _os
+import time as _time
+from collections import deque as _deque
+from threading import Lock as _Lock
+
+_rate_buckets: dict[tuple[str, int | None], _deque] = {}
+_rate_lock = _Lock()
+
+
+def _rate_limit_per_minute() -> int:
+    raw = _os.environ.get("SHADOW_LOOM_MCP_RATE_PER_MIN")
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return 10
+
+
+def check_rate_limit(ctx: Context, kind: str) -> Optional[str]:
+    """Enforce a per-(user, kind) rate limit on expensive MCP tools.
+
+    Returns ``None`` if the call is allowed, else an error message
+    naming the limit. ``kind`` is a free-form bucket label (e.g.
+    ``"narrate"``) so different expensive endpoints maintain
+    independent windows. Unauthenticated (open-mode) callers share
+    a single ``None`` bucket which still applies the same cap.
+    """
+    cap = _rate_limit_per_minute()
+    user_id = get_user_id(ctx)
+    key = (kind, user_id)
+    now = _time.monotonic()
+    window = 60.0
+    with _rate_lock:
+        bucket = _rate_buckets.get(key)
+        if bucket is None:
+            bucket = _deque()
+            _rate_buckets[key] = bucket
+        # Drop timestamps that have aged out of the window.
+        while bucket and (now - bucket[0]) > window:
+            bucket.popleft()
+        if len(bucket) >= cap:
+            retry_in = max(0.0, window - (now - bucket[0]))
+            return (
+                f"Rate limit exceeded: at most {cap} '{kind}' calls per "
+                f"minute per identity. Retry in ~{retry_in:.0f}s."
+            )
+        bucket.append(now)
+        return None

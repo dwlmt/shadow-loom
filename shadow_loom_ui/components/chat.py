@@ -571,6 +571,31 @@ def _build_command_bar(state: AppState) -> None:
                 text = text_input.value.strip()
                 if not text:
                     return
+                # Round-8 audit (UI-P2-02): preflight length guard so
+                # accidentally-pasted prose blobs don't trigger an
+                # expensive pipeline run. The cap is configurable via
+                # ``UI_MAX_QUERY_CHARS`` (0 disables). When tripped we
+                # surface a clear error + log it so operators can see
+                # rejected-preflight events.
+                from shadow_loom.settings import get_settings as _gs
+                _max_q = _gs().ui.max_query_chars
+                if _max_q and len(text) > _max_q:
+                    logger.warning(
+                        "[chat] query preflight rejected: %d chars > cap %d",
+                        len(text), _max_q,
+                    )
+                    messages.append({
+                        "role": "assistant",
+                        "text": (
+                            f"\u26a0\ufe0f Query is {len(text):,} characters "
+                            f"(cap: {_max_q:,}). Trim it, or paste prose "
+                            f"into the **Write** tab instead — `write` "
+                            f"runs the manual-edit path which is built "
+                            f"for long-form text."
+                        ),
+                    })
+                    _render_messages(chat_container, messages)
+                    return
                 qtype_for_run = selected_type["value"] or "general"
                 use_manual = manual_mode["active"]
                 last_request.update({
@@ -657,8 +682,16 @@ def _build_command_bar(state: AppState) -> None:
                 notify_task_complete(task)
             except Exception as e:
                 logger.exception("Command bar query failed")
-                messages.append({"role": "assistant", "text": f"\u274c Error: {e}"})
-                state.finish_task(task, error=str(e))
+                # Round-8 audit (UI-P3-01): surface a sanitised public
+                # message (exception class only) to the chat so we don't
+                # leak internal paths / SQL fragments / provider error
+                # bodies. Full detail is captured via logger.exception.
+                public_msg = (
+                    f"\u274c {type(e).__name__}: the query failed. "
+                    "Check the task log for details."
+                )
+                messages.append({"role": "assistant", "text": public_msg})
+                state.finish_task(task, error=type(e).__name__)
                 notify_task_complete(task)
             finally:
                 # All post-task UI mutations need guarding: the user

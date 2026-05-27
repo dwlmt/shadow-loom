@@ -221,8 +221,28 @@ class TavilyProvider:
         """
         import time
         start_time = time.time()
-        
+
+        # Round-10 R10-06: research queries can contain narrative
+        # spoilers or, for some operators, mildly sensitive entity
+        # names. Log a short hash by default and only embed the raw
+        # text when SHADOW_LOOM_LOG_RESEARCH_QUERIES is explicitly
+        # opted in. The hash is stable so audit + cost-tracking
+        # workflows can still correlate retries.
+        _log_raw = os.environ.get("SHADOW_LOOM_LOG_RESEARCH_QUERIES", "").strip().lower() in {"1", "true", "yes"}
+        query_hash = "sha256:" + hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
+        log_query_value = query if _log_raw else query_hash
+
         client = self._get_client()
+        # Round-12 R12-06: clamp ``max_results`` to a hard ceiling so
+        # a caller (or a forwarded MCP param) cannot demand 1000
+        # snippets and blow the downstream prompt size / cost budget.
+        # 10 is enough for distillation; deeper research should be
+        # multiple targeted queries, not one fan-out.
+        _MAX_RESULTS_CEILING = 10
+        try:
+            max_results = max(1, min(int(max_results), _MAX_RESULTS_CEILING))
+        except (TypeError, ValueError):
+            max_results = 5
         kwargs: dict = {
             "query": query,
             "max_results": max_results,
@@ -233,8 +253,47 @@ class TavilyProvider:
         if self.exclude_domains:
             kwargs["exclude_domains"] = self.exclude_domains
 
+        # Round-12 R12-05: wrap the Tavily call with bounded retries
+        # and a wall-clock timeout per attempt. ``TavilyClient`` uses
+        # httpx under the hood with no caller-visible timeout, so a
+        # slow upstream could otherwise pin the worker indefinitely.
+        # Three attempts with exponential backoff (1s, 2s, 4s)
+        # absorbs transient 5xx / connection-reset blips without
+        # masking persistent provider outages — the final exception
+        # re-raises so the caller's existing failure-logging branch
+        # runs.
+        import concurrent.futures as _cf
+
+        _PER_ATTEMPT_TIMEOUT_S = float(
+            os.environ.get("SHADOW_LOOM_RESEARCH_TIMEOUT_S", "15")
+        )
+        _MAX_ATTEMPTS = 3
+
+        def _do_search():
+            return client.search(**kwargs)
+
         try:
-            raw = client.search(**kwargs)
+            last_exc: Optional[Exception] = None
+            raw = None
+            for _attempt in range(1, _MAX_ATTEMPTS + 1):
+                with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                    _fut = _pool.submit(_do_search)
+                    try:
+                        raw = _fut.result(timeout=_PER_ATTEMPT_TIMEOUT_S)
+                        last_exc = None
+                        break
+                    except _cf.TimeoutError as exc:
+                        last_exc = TimeoutError(
+                            f"Tavily search exceeded {_PER_ATTEMPT_TIMEOUT_S:.0f}s "
+                            f"on attempt {_attempt}/{_MAX_ATTEMPTS}"
+                        )
+                    except Exception as exc:
+                        last_exc = exc
+                if _attempt < _MAX_ATTEMPTS:
+                    time.sleep(2 ** (_attempt - 1))
+            if raw is None:
+                assert last_exc is not None
+                raise last_exc
             response_time_ms = int((time.time() - start_time) * 1000)
             
             # Log API call for cost tracking
@@ -254,7 +313,7 @@ class TavilyProvider:
                         project_id=project_id,
                         agent_call_log_id=agent_call_log_id,
                         metadata={
-                            "query": query,
+                            "query": log_query_value,
                             "max_results": max_results, 
                             "search_depth": self.search_depth,
                             "results_count": results_count
@@ -280,7 +339,7 @@ class TavilyProvider:
                         project_id=project_id,
                         agent_call_log_id=agent_call_log_id,
                         metadata={
-                            "query": query,
+                            "query": log_query_value,
                             "error": str(e),
                             "search_depth": self.search_depth
                         }
@@ -288,10 +347,17 @@ class TavilyProvider:
                 except Exception as log_err:
                     logger.warning(f"Failed to log failed Tavily API call: {log_err}")
                     
-            logger.exception("[TavilyProvider] search FAILED for query=%r", query)
+            logger.exception("[TavilyProvider] search FAILED for query=%s", log_query_value)
             raise
 
         results = raw.get("results", []) if isinstance(raw, dict) else []
+        # Round-12 R12-06: cap each snippet's content length so a
+        # provider returning very long page extracts cannot blow the
+        # downstream prompt size / cost budget. 1500 chars is enough
+        # context for the distillation agent to anchor a WorldFact
+        # while keeping the assembled prompt bounded even at the
+        # ceiling of 10 snippets.
+        _SNIPPET_CHAR_CAP = 1500
         snippets: List[ResearchSnippet] = []
         for item in results:
             if not isinstance(item, dict):
@@ -299,10 +365,11 @@ class TavilyProvider:
             url = item.get("url") or ""
             if not url:
                 continue
+            content = (item.get("content", "") or "")[:_SNIPPET_CHAR_CAP]
             snippets.append(ResearchSnippet(
                 url=url,
                 title=item.get("title", "") or "",
-                content=item.get("content", "") or "",
+                content=content,
                 score=float(item.get("score", 0.0) or 0.0),
                 provider=self.name,
                 provider_model=self.search_depth,
@@ -374,8 +441,8 @@ def lookup_and_persist_topic(
 
     # Local imports to avoid top-level cycles (db ↔ models ↔ research).
     from shadow_loom.db import (
+        allocate_world_fact_id,
         get_cached_research,
-        list_world_facts,
         save_cached_research,
         upsert_world_fact,
     )
@@ -392,7 +459,15 @@ def lookup_and_persist_topic(
     if provider_override is not None:
         ext_kwargs["research_provider"] = provider_override
     if max_results_override is not None:
-        ext_kwargs["research_max_results_per_query"] = int(max_results_override)
+        # Round-12 R12-06: clamp at the entry point as well so the
+        # config-derived value carried into the cache key / agent
+        # prompt is already bounded. Defence-in-depth with the
+        # provider-level clamp.
+        try:
+            _mr = max(1, min(int(max_results_override), 10))
+        except (TypeError, ValueError):
+            _mr = 5
+        ext_kwargs["research_max_results_per_query"] = _mr
     ext_kwargs["research_topics"] = [topic]
     config = ExtractionConfig(**ext_kwargs)
 
@@ -453,19 +528,34 @@ def lookup_and_persist_topic(
     except Exception as e:
         return {"error": f"Research agent failed: {e!r}"}
 
-    existing = list_world_facts(project_id)
-    fact_id = f"FACT_{len(existing) + 1:03d}"
-    upsert_world_fact(
-        project_id=project_id,
-        fact_id=fact_id,
-        topic=topic,
-        summary=fact.summary,
-        confidence=fact.confidence,
-        source_url_primary=fact.source_url_primary or "",
-        provider=config.research_provider,
-        related_node_ids_json=_json.dumps(list(fact.related_node_ids)),
-        raw_snippets_json=_json.dumps([s.model_dump(mode="json") for s in snippets]),
-    )
+    # Round-10 R10-04: allocate the FACT id via the helper and retry
+    # on IntegrityError so concurrent MCP research_topic callers cannot
+    # both claim the same id and crash the second one. We bound the
+    # retry loop so a stuck constraint never spins forever.
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
+
+    last_err: Optional[Exception] = None
+    fact_id = ""
+    for _attempt in range(5):
+        fact_id = allocate_world_fact_id(project_id)
+        try:
+            upsert_world_fact(
+                project_id=project_id,
+                fact_id=fact_id,
+                topic=topic,
+                summary=fact.summary,
+                confidence=fact.confidence,
+                source_url_primary=fact.source_url_primary or "",
+                provider=config.research_provider,
+                related_node_ids_json=_json.dumps(list(fact.related_node_ids)),
+                raw_snippets_json=_json.dumps([s.model_dump(mode="json") for s in snippets]),
+            )
+            break
+        except _IntegrityError as e:
+            last_err = e
+            continue
+    else:
+        return {"error": f"Could not allocate WorldFact id after 5 attempts: {last_err!r}"}
 
     return {
         "project_id": project_id,

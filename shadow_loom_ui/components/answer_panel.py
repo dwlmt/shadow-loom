@@ -104,6 +104,20 @@ def build_answer_panel(state: AppState) -> None:
     state.on(StateEvent.VERSION_CHANGED, _clear)
     state.on(StateEvent.PROJECT_LOADED, _clear)
 
+    # Round-12 R12-09: detach listeners on client disconnect to avoid
+    # leaking callbacks that mutate destroyed UI elements (matches
+    # ``tasks_indicator``).
+    try:
+        client = ui.context.client
+    except Exception:
+        client = None
+    if client is not None:
+        def _cleanup():
+            state.off(StateEvent.PIPELINE_RESULT, _on_pipeline_result)
+            state.off(StateEvent.VERSION_CHANGED, _clear)
+            state.off(StateEvent.PROJECT_LOADED, _clear)
+        client.on_disconnect(_cleanup)
+
     _render()
 
 

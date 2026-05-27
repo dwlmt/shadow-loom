@@ -178,7 +178,11 @@ Regardless of emotional mode, the LLM must simultaneously satisfy underlying phy
 2. **SOFT constraints are guidelines.** Honour them when possible, but hard constraints take priority.
 3. **Ground every sentence in the mathematical state.** Trait values, relationship metrics, epistemic gaps, spatial distances — these are your source of truth. Do not invent emotions or states that contradict the numbers.
 4. **Show, don't tell.** Render internal states through action, dialogue, and physiological detail — not exposition.
-5. **Respect POV lock.** If a POV entity is specified, the entire passage must be anchored to their perspective. Other characters' internal states are only accessible through external observation.
+5. **Respect POV lock — policy-aware.** The Rendering Directive carries a `pov_lock`, an `additional_pov_locks` list, and a `pov_policy` field. Behaviour depends on `pov_policy`:
+    - `"single"` (default) — anchor the *entire* passage to `pov_lock`. Other characters' internal states are accessible only through external observation.
+    - `"rotating"` — anchor each scene-beat to ONE entity drawn from {`pov_lock`} ∪ `additional_pov_locks`. Do not head-hop within a beat; transitions between locked POVs must occur on clear beat boundaries (paragraph break, time shift, or location change). The opening beat must use `pov_lock`.
+    - `"ensemble"` — third-person omniscient is licensed; you may report any character's interiority. Even here, do NOT break the fourth wall (see Rule 10).
+   In ALL policies, mirror the entity you anchored on back in the `pov_entity` field of your structured output. Under `rotating`, mirror the entity that anchored the FINAL beat of the scene (the auditor's metadata check accepts any licensed entity).
 6. **Respect physics override.** If characters are in separate locations, they cannot physically interact.
 7. **Obey the pacing directive.** Dilated = slow, moment-by-moment. Accelerated = fast, clipped. Sharp pivot = flowing then abrupt. Normal = natural rhythm.
 8. **Obey the sensory focus.** Wide = expansive environment. Tunnel = strip background, fixate on one thing. Absence = describe what is missing. Normal = balanced.

@@ -404,7 +404,7 @@ class AuditorSettings(BaseSettings):
             "to fall back to ``CoreSettings.default_model``."
         ),
     )
-    max_iterations: int = Field(default=3)
+    max_iterations: int = Field(default=4, ge=1, le=8)
     output_retries: int = Field(default=5)
     temperature: float = Field(default=0.2)
     generation_temperature: float = Field(default=0.7)
@@ -415,6 +415,10 @@ class AuditorSettings(BaseSettings):
     min_cognitive_plausibility: float = Field(default=0.7)
     max_miracle_steps: int = Field(default=0)
     ignore_spatial_blocks: bool = Field(default=False)
+    regression_retry_budget: int = Field(default=1)
+    failed_open_tolerance: int = Field(default=2)
+    enable_deterministic_prose_checks: bool = Field(default=True)
+    pov_breach_threshold: int = Field(default=3)
 
 
 # =====================================================================
@@ -1020,6 +1024,20 @@ class UISettings(BaseSettings):
     # source for compliance.
     source_url: str = Field(default="https://github.com/dwlmt/shadow-loom")
 
+    # Round-8 audit (UI-P2-02): per-request soft cap on chat / command-bar
+    # query length. The pipeline accepts arbitrary input but a >N-character
+    # query usually indicates the user pasted prose into the query box
+    # (which should go through ``write`` instead). Setting to ``0`` disables
+    # the preflight guard entirely.
+    max_query_chars: int = Field(
+        default=2000,
+        ge=0,
+        description=(
+            "Soft cap on a single chat/command-bar query length. "
+            "Set to 0 to disable the preflight guard."
+        ),
+    )
+
     @model_validator(mode="after")
     def _honour_platform_port(self) -> "UISettings":
         """Allow the unprefixed ``PORT`` env var (Railway, Heroku, Cloud
@@ -1111,6 +1129,26 @@ def get_settings() -> "Settings":
     return Settings()
 
 
+def reset_settings_cache() -> None:
+    """Drop the cached ``Settings`` so the next ``get_settings()`` re-reads env.
+
+    Round-13 R13-06: ``get_settings`` is memoised for the whole
+    process lifetime, which is fine in production but causes silent
+    stale-config bugs in tests / hot-reload paths that mutate
+    ``os.environ`` after import. Operators (and tests) can now call
+    this to invalidate the cache deterministically. We also clear the
+    Fernet cache because its derived key is gated by the same env
+    variable.
+    """
+    get_settings.cache_clear()
+    try:
+        from shadow_loom.db import reset_fernet_cache
+        reset_fernet_cache()
+    except Exception:
+        # db module may not be importable in every test context.
+        pass
+
+
 class Settings:
     """Aggregated facade over all setting groups.
 
@@ -1192,6 +1230,12 @@ class Settings:
             "min_cognitive_plausibility": self.auditor.min_cognitive_plausibility,
             "max_miracle_steps": self.auditor.max_miracle_steps,
             "ignore_spatial_blocks": self.auditor.ignore_spatial_blocks,
+            "regression_retry_budget": self.auditor.regression_retry_budget,
+            "failed_open_tolerance": self.auditor.failed_open_tolerance,
+            "enable_deterministic_prose_checks": (
+                self.auditor.enable_deterministic_prose_checks
+            ),
+            "pov_breach_threshold": self.auditor.pov_breach_threshold,
         }
 
     def extraction_config(self) -> dict:

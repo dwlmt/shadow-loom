@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from nicegui import ui
 
+from shadow_loom_ui.components._safe_md import safe_markdown
+
 
 def help_popover(
     title: str,
@@ -47,7 +49,13 @@ def help_popover(
             ui.label(title).classes(
                 "text-base font-semibold text-slate-800"
             )
-            ui.markdown(body_md).classes(
+            # Round-11 R11-07: route help body markdown through
+            # ``safe_markdown`` rather than ``ui.markdown`` directly.
+            # Most call sites pass static strings today, but as panels
+            # start composing help text from world / story content
+            # (e.g. "what does this concern mean?" hovers) we want the
+            # rendering path to already be the sanitised one.
+            safe_markdown(body_md).classes(
                 "text-sm text-slate-600 leading-relaxed"
             )
             with ui.row().classes("w-full justify-end mt-1"):

@@ -238,6 +238,53 @@ def build_settings(state: AppState) -> None:
                     "value": _s.core.default_model,
                     "help": "Fallback PydanticAI model string.",
                 },
+                # Round-8 audit (UI-P1-01): expose the round-7 audit
+                # loop budgets so operators can see — at a glance — how
+                # rigorously the system is auditing renders without
+                # spelunking through environment variables.
+                {
+                    "name": "auditor.max_iterations",
+                    "value": str(_s.auditor.max_iterations),
+                    "help": (
+                        "Maximum audit \u2192 rewrite cycles before giving up. "
+                        "Counts the initial render's audit as iteration 1."
+                    ),
+                },
+                {
+                    "name": "auditor.regression_retry_budget",
+                    "value": str(_s.auditor.regression_retry_budget),
+                    "help": (
+                        "After a rollback, how many additional refinement "
+                        "attempts the loop is allowed before exhausting the "
+                        "iteration budget."
+                    ),
+                },
+                {
+                    "name": "auditor.failed_open_tolerance",
+                    "value": str(_s.auditor.failed_open_tolerance),
+                    "help": (
+                        "Consecutive ``failed_open`` audit results "
+                        "(error fallback, not real audit) tolerated before "
+                        "the loop bails out."
+                    ),
+                },
+                {
+                    "name": "auditor.enable_deterministic_prose_checks",
+                    "value": str(_s.auditor.enable_deterministic_prose_checks),
+                    "help": (
+                        "Cheap regex checks (POV-breach, meta-narration "
+                        "trigger phrases) run alongside the LLM auditor."
+                    ),
+                },
+                {
+                    "name": "auditor.pov_breach_threshold",
+                    "value": str(_s.auditor.pov_breach_threshold),
+                    "help": (
+                        "Number of POV-breach cognitive verbs attributed to "
+                        "non-POV entities before the deterministic check "
+                        "raises a violation."
+                    ),
+                },
             ]
             ui.table(
                 columns=[

@@ -23,7 +23,7 @@ import copy
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 import networkx as nx
 from pydantic import BaseModel, Field, model_validator
@@ -562,6 +562,17 @@ class AuditCycleSnapshot(BaseModel):
         default=None,
         description="Per-cycle engine-computed delta metrics.",
     )
+    engine_threshold_failures: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Round-9 F11: human-readable list of engine thresholds "
+            "that did not pass for THIS cycle (recomputed from "
+            "``change_impact`` and the active ``AuditorConfig``). "
+            "Empty when the engine passed or no impact was scored. "
+            "Persisted so per-iteration audit traces can report "
+            "engine state on every row, not just the terminal one."
+        ),
+    )
 
 
 class FeedbackLoopResult(BaseModel):
@@ -618,8 +629,20 @@ class AuditorConfig(BaseModel):
         description="PydanticAI model string for the generation LLM (re-renders).",
     )
     max_iterations: int = Field(
-        default=3,
-        description="Maximum audit → rewrite cycles before giving up.",
+        default=4,
+        ge=1,
+        le=8,
+        description=(
+            "Maximum audit → rewrite cycles before giving up. Counts the "
+            "initial render's audit as iteration 1, so default=4 yields "
+            "up to 3 refinement attempts. Raised from 3 in the 2026-05-26 "
+            "round-7 feedback-loop audit so the regression-retry path "
+            "(see ``run_feedback_loop``) has room to actually re-try "
+            "once after a rollback before exhausting the budget. "
+            "Round-9 E10: bounded to [1, 8] to keep wall-clock budgets "
+            "sane and prevent a misconfigured client from pinning a "
+            "worker on a pathological draft."
+        ),
     )
     output_retries: int = Field(
         default=5,
@@ -668,6 +691,50 @@ class AuditorConfig(BaseModel):
         description=(
             "When true, blocked propagations tagged as spatial_affordance "
             "do not count toward miracle-step failure."
+        ),
+    )
+    regression_retry_budget: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "How many anti-regression retries the feedback loop is "
+            "allowed after the rollback detector fires. The previous "
+            "behaviour (immediate break) corresponds to 0. Default "
+            "1 grants one retry, which empirically recovers most "
+            "regressions without burning the whole budget on a "
+            "thrashing rewriter."
+        ),
+    )
+    failed_open_tolerance: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Number of consecutive failed-open audit calls tolerated "
+            "before the loop refuses to mark prose as audited. Default "
+            "2 mirrors the pre-round-7 hardcoded value."
+        ),
+    )
+    enable_deterministic_prose_checks: bool = Field(
+        default=True,
+        description=(
+            "When true, run the deterministic POV-lock and "
+            "meta-narration regex checks "
+            "(``deterministic_prose_findings``) alongside the LLM "
+            "auditor and merge their findings into the violation list. "
+            "This catches the two violation classes most likely to slip "
+            "past the LLM auditor under rewrite pressure (round-7 "
+            "audit 2026-05-26)."
+        ),
+    )
+    pov_breach_threshold: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Minimum number of non-POV cognitive/perceptual sentences "
+            "the deterministic POV check must see before emitting a "
+            "``reasoning_failure`` violation. Set higher to reduce "
+            "false positives on ensemble scenes; set to 1 for strict "
+            "single-consciousness rendering."
         ),
     )
 
@@ -2186,6 +2253,416 @@ def assemble_audit_prompt(
     return "\n".join(sections)
 
 
+# =====================================================================
+# Round-7 design improvements (audit 2026-05-26)
+# =====================================================================
+#
+# These helpers were extracted during the round-7 feedback-loop audit
+# so the orchestrator in ``run_feedback_loop`` can reason in clean,
+# testable units instead of carrying brittle inline rules. Each helper
+# documents the specific failure mode it addresses.
+
+#: Severity weights for the regression scorer. The previous regression
+#: detector used a raw violation count, which silently treated a swap
+#: of one ``critical`` violation for two ``minor`` ones as a regression
+#: and treated promoting three ``minor`` violations to three
+#: ``critical`` ones as *not* a regression (count was unchanged). The
+#: weighted score fixes both directions: severity matters.
+_SEVERITY_WEIGHTS: Dict[str, float] = {
+    "critical": 4.0,
+    "major": 2.0,
+    "minor": 1.0,
+}
+
+
+class Finding(BaseModel):
+    """Unified view of any single issue the feedback loop is tracking.
+
+    Three sources feed findings into the loop:
+
+      * ``"auditor"`` \u2014 the LLM ``NarrativeAuditor`` ("style_mismatch",
+        "epistemic_leakage", "meta_narration", \u2026).
+      * ``"engine"`` \u2014 deterministic physics scorecard thresholds
+        (miracle steps, cyclic clusters, foreshadowing floor, \u2026).
+      * ``"deterministic"`` \u2014 cheap regex checks run alongside the
+        LLM auditor (``deterministic_prose_findings``: POV breach,
+        meta-narration trigger phrases).
+
+    The regression scorer in ``run_feedback_loop`` historically only\n    consumed ``AuditViolation`` objects, which silently zero-weighted\n    engine-threshold failures \u2014 a draft could close every LLM\n    violation while breaking a hard physics threshold and the\n    regression detector would call it an improvement. ``Finding``\n    plus ``findings_from_sources`` unify the three streams behind a\n    single severity-weighted score so a regression in *any* signal\n    source is detected uniformly.\n\n    This type is intentionally non-invasive: it is a *view* over the\n    three existing streams, not a replacement for ``AuditViolation``\n    or the ``engine_failures`` list. Call sites that already work\n    with the typed streams are unchanged; the regression scorer is\n    the one consumer that benefits from the unified view.\n    """
+
+    model_config = {"frozen": True}
+
+    source: Literal["auditor", "engine", "deterministic"]
+    finding_type: str
+    severity: Literal["critical", "major", "minor"]
+    feedback: str
+    evidence_quote: str = ""
+
+
+def findings_from_sources(
+    audit: Optional["AuditResult"],
+    engine_failures: Optional[List[str]] = None,
+) -> List[Finding]:
+    """Project an ``AuditResult`` + engine-failure list into a flat
+    ``Finding`` list for unified regression scoring.
+
+    Engine failures are mapped to ``severity="critical"`` because they
+    are deterministic violations of hard physics thresholds (miracle
+    step, cyclic cluster, etc.). The LLM auditor's per-violation
+    severity is preserved verbatim. Deterministic regex findings are
+    *already* on ``audit.violations`` by the time this is called (the
+    feedback loop merges them in before this projection runs), so they
+    are tagged with ``source="auditor"`` here \u2014 callers that need to
+    distinguish them can re-run ``deterministic_prose_findings`` for a
+    pure deterministic view.
+    """
+    out: List[Finding] = []
+    if audit is not None:
+        for v in audit.violations:
+            out.append(Finding(
+                source="auditor",
+                finding_type=v.violation_type,
+                severity=v.severity,
+                feedback=v.feedback,
+                evidence_quote=v.evidence_quote or "",
+            ))
+    for failure in engine_failures or []:
+        out.append(Finding(
+            source="engine",
+            finding_type="engine_threshold",
+            severity="critical",
+            feedback=failure,
+        ))
+    return out
+
+
+def _finding_severity_score(findings: Iterable[Finding]) -> float:
+    """Severity-weighted score over the unified ``Finding`` stream.
+
+    Used by the regression-rollback gate so a draft that closes every
+    LLM violation but breaks an engine threshold (or vice versa) is
+    correctly classified as a regression.
+    """
+    total = 0.0
+    for f in findings:
+        total += _SEVERITY_WEIGHTS.get(f.severity, _SEVERITY_WEIGHTS["minor"])
+    return total
+
+
+def _violation_severity_score(violations: List["AuditViolation"]) -> float:
+    """Return a severity-weighted score for a list of violations.
+
+    Used by the regression-rollback gate in ``run_feedback_loop``
+    instead of ``len(violations)``. A rising score (with at least one
+    newly-introduced violation type) indicates the rewriter is making
+    things *worse*, not just flagging different aspects of the same
+    issue. See ``_SEVERITY_WEIGHTS`` for the rationale.
+
+    Unknown severity strings default to the ``minor`` weight so a
+    future ``Literal`` extension cannot silently zero-out the scorer.
+    """
+    total = 0.0
+    for v in violations:
+        total += _SEVERITY_WEIGHTS.get(
+            getattr(v, "severity", "minor"), _SEVERITY_WEIGHTS["minor"],
+        )
+    return total
+
+
+# Regexes used by ``deterministic_prose_findings`` to short-circuit the
+# two violation classes most likely to slip past the LLM auditor under
+# rewrite pressure: omniscient narration of non-POV consciousnesses
+# (``pov_breach``) and self-referential narrator commentary
+# (``meta_narration``).
+#
+# These are deliberately conservative — they fire only on patterns
+# that have no defensible authored use. The LLM auditor still runs
+# afterwards and can add nuanced findings the regex misses.
+
+#: Meta-narration trigger phrases. Each phrase is a hallmark of the
+#: narrator stepping outside the diegesis to comment on the artifice
+#: of the story (e.g. "in this diverged timeline", "the established
+#: record shows"). All hits are case-insensitive whole-phrase matches.
+_META_NARRATION_PHRASES: List[str] = [
+    "established record",
+    "diverged timeline",
+    "in this universe",
+    "in this timeline",
+    "alternate history",
+    "counterfactual record",
+    "the reader",
+    "dear reader",
+    "as we have seen",
+    "as noted earlier",
+    "as established",
+    "the narrator",
+    "this story",
+    "this narrative",
+    "in our story",
+]
+
+
+def deterministic_prose_findings(
+    prose: str,
+    *,
+    pov_entity: Optional[str] = None,
+    pov_entity_aliases: Optional[Iterable[str]] = None,
+    pov_breach_threshold: int = 3,
+) -> List["AuditViolation"]:
+    """Return synthetic violations the LLM auditor frequently misses.
+
+    Two deterministic checks run here:
+
+    1. **POV-lock breach** (``pov_breach``). When ``pov_entity`` is
+       supplied, count sentences whose *grammatical subject* is a
+       proper noun that is **not** the POV entity (or one of its
+       aliases) and that is followed by a *cognitive / perceptual /
+       affective* verb ("thought", "knew", "felt", "remembered",
+       "wondered", "decided", "realised"). Each such sentence is
+       direct evidence the narration has left the POV character's
+       head. When the count exceeds ``pov_breach_threshold`` a single
+       critical violation is returned with the first 2 offending
+       sentences as evidence.
+    2. **Meta-narration** (``meta_narration``). Any sentence
+       containing a phrase from ``_META_NARRATION_PHRASES`` is
+       collected. The first hit becomes the evidence quote on a
+       critical violation.
+
+    The function returns an empty list when no violations fire. It
+    is intentionally cheap (no NLP dependency) so it can run on every
+    iteration before the LLM auditor and pre-flag the cases the
+    auditor most commonly misses under rewrite pressure (round-7 audit
+    2026-05-26 \u2014 see ``docs/architecture.md`` POV-lock section).
+    """
+    findings: List["AuditViolation"] = []
+    if not prose:
+        return findings
+
+    # Cheap sentence tokenizer: split on ., !, ?, but keep enough
+    # context per sentence to attribute subject + verb. Avoids pulling
+    # in an NLP dependency.
+    sentences = [
+        s.strip()
+        for s in re.split(r"(?<=[\.\!\?])\s+", prose)
+        if s.strip()
+    ]
+
+    # --- POV-lock check ---
+    if pov_entity:
+        alias_set: set[str] = set()
+        # Normalize the POV entity id (e.g. ``ENT_MRS_COADY``) into
+        # surface forms the prose is likely to use. Without aliases
+        # the check would over-fire on any third-person narrative.
+        if pov_entity_aliases:
+            alias_set.update(a.strip().lower() for a in pov_entity_aliases if a)
+        # Strip a leading ``ENT_`` prefix and split underscores so
+        # ``ENT_MRS_COADY`` -> {"mrs", "coady", "mrs coady"}. This is
+        # a heuristic; callers SHOULD pass explicit aliases when
+        # available.
+        bare = re.sub(r"^ENT_", "", pov_entity, flags=re.IGNORECASE)
+        parts = [p for p in re.split(r"[_\s]+", bare) if p]
+        for p in parts:
+            alias_set.add(p.lower())
+        if parts:
+            alias_set.add(" ".join(parts).lower())
+
+        cognitive_verbs = (
+            r"thought|knew|felt|remembered|wondered|decided|realised|"
+            r"realized|believed|hoped|feared|noticed|saw|heard|"
+            r"understood|recognized|recognised|suspected"
+        )
+        # Match "ProperNoun(s) [optional descriptor] cognitive_verb"
+        subj_verb_re = re.compile(
+            r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b"
+            r"(?:\s+\w+){0,3}?"
+            r"\s+(?:" + cognitive_verbs + r")\b",
+            re.IGNORECASE,
+        )
+
+        offending: List[str] = []
+        for sent in sentences:
+            m = subj_verb_re.search(sent)
+            if not m:
+                continue
+            subject = m.group(1).strip().lower()
+            # Skip if the subject is the POV entity (any alias).
+            if any(alias in subject or subject in alias for alias in alias_set):
+                continue
+            # Skip common non-character proper nouns (place names
+            # adjacent to a cognitive verb are extremely rare; this
+            # filter is conservative).
+            if subject in {"god", "heaven", "fate", "time"}:
+                continue
+            offending.append(sent)
+
+        if len(offending) >= pov_breach_threshold:
+            findings.append(AuditViolation(
+                violation_type="reasoning_failure",
+                severity="critical",
+                description=(
+                    f"POV lock broken: narration enters non-POV "
+                    f"consciousness in {len(offending)} sentence(s) "
+                    f"while brief locks POV to {pov_entity}."
+                ),
+                evidence_quote=" / ".join(offending[:2]),
+                feedback=(
+                    f"Restrict narration to {pov_entity}'s consciousness. "
+                    f"Remove or externalize the cognitive/perceptual "
+                    f"verbs attached to non-POV subjects in the "
+                    f"offending sentences."
+                ),
+            ))
+
+    # --- Meta-narration check ---
+    lower_prose = prose.lower()
+    meta_hits: List[Tuple[str, str]] = []
+    for phrase in _META_NARRATION_PHRASES:
+        idx = lower_prose.find(phrase)
+        if idx < 0:
+            continue
+        # Recover the enclosing sentence for evidence.
+        for sent in sentences:
+            if phrase in sent.lower():
+                meta_hits.append((phrase, sent))
+                break
+    if meta_hits:
+        phrase, evidence = meta_hits[0]
+        findings.append(AuditViolation(
+            violation_type="meta_narration",
+            severity="critical",
+            description=(
+                f"Meta-narration phrase \"{phrase}\" surfaces in the "
+                f"prose. The narrator must remain inside the diegesis."
+            ),
+            evidence_quote=evidence,
+            feedback=(
+                f"Remove the phrase \"{phrase}\" and any surrounding "
+                f"self-referential commentary about the story's "
+                f"timeline / record / artifice. Render the same beat "
+                f"diegetically."
+            ),
+        ))
+
+    return findings
+
+
+def _annotate_prose_with_violation_spans(
+    prose: str, violations: List["AuditViolation"], max_chars: int = 6000,
+) -> str:
+    """Return ``prose`` with each violation's ``evidence_quote`` wrapped
+    inline as a ``<<<VIOLATION:type>>>...<<</VIOLATION>>>`` marker.
+
+    Span-locating ([A] in the round-7 audit improvements) turns the
+    refinement prompt's "minimal surgical edit" instruction from a
+    vibe into a directive the rewriter can mechanically execute: the
+    spans it must touch are marked, and everything outside the
+    markers should be preserved verbatim.
+
+    Quotes that don't appear verbatim in the prose (the LLM
+    paraphrased) are silently skipped — they remain available in the
+    per-violation feedback list. Overlapping markers are flattened
+    (the longest-quote-wins) so we don't emit malformed nested tags.
+
+    The output is capped at ``max_chars`` to keep the refinement
+    prompt under the model's working budget; the surrounding caller
+    is responsible for appending the truncation marker.
+    """
+    if not prose:
+        return prose
+
+    # Build [start, end, type] triples for each quote that actually
+    # appears verbatim in the draft.
+    intervals: List[Tuple[int, int, str]] = []
+    for v in violations:
+        q = (v.evidence_quote or "").strip()
+        if not q:
+            continue
+        idx = prose.find(q)
+        if idx < 0:
+            continue
+        intervals.append((idx, idx + len(q), v.violation_type))
+
+    if not intervals:
+        return prose
+
+    # Sort by start; resolve overlaps by keeping the longest span.
+    intervals.sort(key=lambda t: (t[0], -(t[1] - t[0])))
+    flattened: List[Tuple[int, int, str]] = []
+    for start, end, vtype in intervals:
+        if flattened and start < flattened[-1][1]:
+            # Overlap with previous. Keep whichever covers more.
+            ps, pe, pt = flattened[-1]
+            if (end - start) > (pe - ps):
+                flattened[-1] = (start, end, vtype)
+            continue
+        flattened.append((start, end, vtype))
+
+    # Splice in markers from end to start so earlier indices stay
+    # valid.
+    out = prose
+    for start, end, vtype in reversed(flattened):
+        out = (
+            out[:start]
+            + f"<<<VIOLATION:{vtype}>>>"
+            + out[start:end]
+            + "<<</VIOLATION>>>"
+            + out[end:]
+        )
+    return out
+
+
+def _check_pov_lock_metadata(
+    brief_pov: Optional[str],
+    scene_pov: Optional[str],
+    *,
+    additional_locks: Optional[Iterable[str]] = None,
+    policy: str = "single",
+) -> Optional[str]:
+    """Return a violation feedback string if the scene's ``pov_entity``
+    metadata diverges from the brief's POV contract.
+
+    The orchestrator already coerces the metadata back, but a divergence
+    here is a high-signal indicator the rewriter has internally
+    abandoned the POV lock (even if the prose is then patched up). The
+    return value is intended as a synthetic ``AuditViolation`` feedback
+    line so the next refinement pass sees the breach explicitly
+    listed.
+
+    Policy semantics (round-7 deeper audit 2026-05-27 \u2014 P0 #2a):
+
+    * ``"single"`` \u2014 ``scene_pov`` must equal ``brief_pov`` exactly.
+    * ``"rotating"`` \u2014 ``scene_pov`` may be ``brief_pov`` OR any
+      entry of ``additional_locks``.
+    * ``"ensemble"`` \u2014 omniscient narration is licensed; no check
+      fires (always returns ``None``).
+    """
+    if policy == "ensemble":
+        return None
+    if not brief_pov:
+        return None
+    allowed = {brief_pov}
+    if additional_locks:
+        allowed.update(a for a in additional_locks if a)
+    if scene_pov in allowed:
+        return None
+    if policy == "rotating":
+        return (
+            f"POV-lock metadata diverged: brief licenses pov_entity in "
+            f"{sorted(allowed)!r} under rotating policy but scene "
+            f"returned pov_entity={scene_pov!r}. Mirror one of the "
+            f"licensed entities exactly in the structured output and "
+            f"keep all narration anchored to that consciousness for "
+            f"the duration of the scene."
+        )
+    return (
+        f"POV-lock metadata diverged: brief locks pov_entity="
+        f"{brief_pov!r} but scene returned pov_entity={scene_pov!r}. "
+        f"Mirror the brief's pov_entity exactly in the structured "
+        f"output and keep all narration anchored to that "
+        f"consciousness."
+    )
+
+
 def _inject_miracle_step_mechanisms(
     brief: CreativeBrief,
     blocked: List[BlockedPropagation],
@@ -2273,6 +2750,7 @@ def _build_refinement_prompt(
     prior_violations: Optional[List[AuditViolation]] = None,
     brief: Optional[CreativeBrief] = None,
     previous_prose: Optional[str] = None,
+    regression_warning: Optional[str] = None,
 ) -> str:
     """Augment the original rendering prompt with auditor feedback.
 
@@ -2307,6 +2785,19 @@ def _build_refinement_prompt(
         "previous draft. You MUST address ALL of them in this rewrite:",
         "",
     ]
+
+    # Round-7 audit (2026-05-26): when the feedback loop has just
+    # rolled back from a regression and granted an anti-regression
+    # retry, surface the warning at the very top of the feedback
+    # block so it sits above the regular violation list. The rewriter
+    # is being told: "your previous attempt broke things that were
+    # already correct; do not do that again."
+    if regression_warning:
+        feedback_lines.extend([
+            "=== REGRESSION ALERT (anti-regression retry) ===",
+            regression_warning,
+            "",
+        ])
 
     # Anchor the rewrite to the prior draft so the model can perform a
     # surgical edit instead of re-rolling every surface choice from
@@ -2406,16 +2897,12 @@ def _build_refinement_prompt(
         )
     )
     
-    # P1-FIX: Token budget protection - truncate if feedback exceeds limit
-    MAX_FEEDBACK_CHARS = 8000
-    feedback_text = "\n".join(feedback_lines)
-    if len(feedback_text) > MAX_FEEDBACK_CHARS:
-        logger.warning(
-            "[Refinement] Feedback exceeds %d chars (%d), truncating",
-            MAX_FEEDBACK_CHARS, len(feedback_text)
-        )
-        feedback_text = feedback_text[:MAX_FEEDBACK_CHARS] + "\n... (feedback truncated due to length)"
-        return original_rendering_prompt + feedback_text
+    # P3 #7 (round-7 deeper audit 2026-05-27): token-budget cap was
+    # previously applied here, BEFORE the style re-anchor block was
+    # potentially appended below, which let the final prompt exceed
+    # MAX_FEEDBACK_CHARS by the size of the style block. Defer the
+    # cap to the final assembled string so the guarantee actually
+    # holds.
 
     # Style re-anchor: when a style violation is active (or has been
     # active in a prior iteration), the original STYLE FIDELITY block
@@ -2458,7 +2945,26 @@ def _build_refinement_prompt(
                 exc_info=True,
             )
 
-    return original_rendering_prompt + "\n".join(feedback_lines)
+    # P3 #7 (round-7 deeper audit 2026-05-27): apply the token-budget
+    # cap to the FINAL assembled feedback text after every optional
+    # section (PREVIOUS DRAFT, REGRESSION ALERT, violations,
+    # non-regression constraints, rewrite task, style re-anchor) has
+    # been appended. Truncation order: keep the leading sections (the
+    # rewriter needs the previous draft and violation list more than
+    # the trailing style block).
+    MAX_FEEDBACK_CHARS = 8000
+    feedback_text = "\n".join(feedback_lines)
+    if len(feedback_text) > MAX_FEEDBACK_CHARS:
+        logger.warning(
+            "[Refinement] Feedback exceeds %d chars (%d), truncating",
+            MAX_FEEDBACK_CHARS, len(feedback_text),
+        )
+        feedback_text = (
+            feedback_text[:MAX_FEEDBACK_CHARS]
+            + "\n... (feedback truncated due to length)"
+        )
+
+    return original_rendering_prompt + feedback_text
 
 
 # =====================================================================
@@ -3991,6 +4497,16 @@ def run_feedback_loop(
         update={"model": auditor_config.generation_model}
     )
 
+    # D (round-7 audit 2026-05-26): isolate the brief from caller
+    # mutation. ``_inject_miracle_step_mechanisms`` appends
+    # InterventionMechanism entries to ``brief.intervention_mechanisms``
+    # in place. Without this deep-copy, a caller that reuses the same
+    # ``CreativeBrief`` for two pipeline calls (e.g. a UI retry
+    # button) sees the second call start with the first call's
+    # accumulated miracle-step mechanisms still attached — silently
+    # changing the brief between runs.
+    brief = brief.model_copy(deep=True)
+
     # Version the sandbox graph
     versioned: Optional[VersionedGraph] = None
     if sandbox is not None:
@@ -4015,6 +4531,20 @@ def run_feedback_loop(
     accumulated_violations: List[AuditViolation] = []
     consecutive_failed_open = 0
     correction_error: Optional[str] = None
+
+    # Anti-regression retry budget (round-7 audit 2026-05-26). When the
+    # rewriter regresses (the severity-weighted score rises and a new
+    # violation type appears), the old policy was to roll back to the
+    # prior draft and immediately ``break``. That terminated the loop
+    # on a single rewrite mistake even when iterations remained on
+    # the ``max_iterations`` budget. We now grant
+    # ``auditor_config.regression_retry_budget`` retries (default 1):
+    # roll back to the prior draft, surface a REGRESSION ALERT in the
+    # next refinement prompt naming the violation types just
+    # introduced, and let the loop continue. Exhausting the budget
+    # falls back to the original break-and-return path.
+    regression_retries_remaining = auditor_config.regression_retry_budget
+    pending_regression_warning: Optional[str] = None
 
     # Snapshot the rendering mode the brief asked for. The refinement
     # agent is forbidden from mutating it (mode-flip silently degrades
@@ -4062,6 +4592,7 @@ def run_feedback_loop(
     # while opening a major meta-narration leak) and the user sees the
     # regressed prose as the final output.
     prior_violation_count: Optional[int] = None
+    prior_violation_score: Optional[float] = None
     prior_violation_keys: set[tuple[str, str]] = set()
     prior_scene: Optional[GeneratedScene] = None
     prior_audit: Optional[AuditResult] = None
@@ -4178,6 +4709,136 @@ def run_feedback_loop(
             ),
         )
 
+        # C (round-7 audit 2026-05-26): deterministic POV-lock and
+        # meta-narration checks run alongside the LLM auditor and
+        # merge their findings into the violation list. The LLM
+        # auditor misses these classes under rewrite pressure (see
+        # round-7 pipeline log: iter-2 dropped POV + emitted
+        # "established record" meta-narration; the LLM auditor only
+        # caught one of the two). The regex check is cheap and
+        # deterministic, so it runs unconditionally when the brief
+        # carries a POV lock or whenever the prose may contain
+        # meta-narration triggers. The check is gated behind
+        # ``enable_deterministic_prose_checks`` so callers can opt
+        # out for genuine omniscient-narration briefs.
+        if auditor_config.enable_deterministic_prose_checks and not audit.failed_open:
+            brief_pov = None
+            pov_aliases: List[str] = []
+            additional_locks: List[str] = []
+            pov_policy = "single"
+            if getattr(brief, "rendering", None) is not None:
+                # The brief contract field is ``pov_lock``; the scene's
+                # mirror field is ``pov_entity``. See the POV-lock
+                # role documentation on ``RenderingDirective.pov_lock``.
+                brief_pov = getattr(brief.rendering, "pov_lock", None)
+                additional_locks = list(
+                    getattr(brief.rendering, "additional_pov_locks", None) or []
+                )
+                pov_policy = getattr(brief.rendering, "pov_policy", None) or "single"
+                # Use roster names as POV aliases when available. For
+                # rotating policy, gather aliases for the primary lock
+                # AND every additional lock so the deterministic
+                # cognitive-verb check doesn't over-flag legitimate
+                # interiority from any licensed POV.
+                licensed_ids = {brief_pov, *additional_locks} - {None}
+                roster = getattr(brief, "pov_roster", None) or []
+                for entry in roster:
+                    entity_id = getattr(entry, "entity_id", None)
+                    if entity_id in licensed_ids:
+                        names = getattr(entry, "alias_set", None) or []
+                        pov_aliases.extend(str(n) for n in names if n)
+                        canonical = getattr(entry, "canonical_name", None)
+                        if canonical:
+                            pov_aliases.append(str(canonical))
+                # Round-9 A3+B4: when the brief carries no explicit
+                # ``pov_roster`` (the common case — the brief contract
+                # has no canonical roster field), fall back to deriving
+                # aliases directly from ``world_state`` so the rotating
+                # POV check doesn't over-flag legitimate interiority
+                # from licensed characters. The deterministic checker
+                # matches subject *names* in prose, so the entity ID
+                # alone (e.g. ``ENT_MACBETH``) is useless; we need the
+                # canonical name plus any name tokens.
+                if not pov_aliases and world_state is not None:
+                    entities = getattr(world_state, "entities", None) or {}
+                    for entity_id in licensed_ids:
+                        ent = entities.get(entity_id)
+                        if ent is None:
+                            continue
+                        canonical = getattr(ent, "name", None)
+                        if canonical:
+                            pov_aliases.append(str(canonical))
+                            # Split on whitespace/punctuation so
+                            # "Macbeth (Thane of Glamis)" yields
+                            # "Macbeth" as a single-token alias too.
+                            for token in re.split(r"[\s,()\[\]/]+", str(canonical)):
+                                token = token.strip()
+                                if token and token.isalpha() and len(token) > 2:
+                                    pov_aliases.append(token)
+            # P0 #2a (round-7 deeper audit 2026-05-27): ensemble
+            # licenses omniscient narration; skip the deterministic
+            # POV check entirely. The meta-narration check still
+            # runs because ensemble is not a licence for breaking
+            # the fourth wall.
+            if pov_policy == "ensemble":
+                det_findings = deterministic_prose_findings(
+                    current_scene.prose,
+                    pov_entity=None,
+                    pov_entity_aliases=None,
+                    pov_breach_threshold=auditor_config.pov_breach_threshold,
+                )
+            else:
+                # For rotating policy, treat additional locks as
+                # additional licensed POVs by feeding their aliases
+                # into the same allowed-subject set.
+                det_findings = deterministic_prose_findings(
+                    current_scene.prose,
+                    pov_entity=brief_pov,
+                    pov_entity_aliases=pov_aliases or None,
+                    pov_breach_threshold=auditor_config.pov_breach_threshold,
+                )
+            # Pre-flag a POV-lock metadata divergence too — the
+            # orchestrator below coerces it back but a divergence is
+            # high-signal that the rewriter abandoned the POV lock.
+            pov_meta_feedback = _check_pov_lock_metadata(
+                brief_pov,
+                getattr(current_scene, "pov_entity", None),
+                additional_locks=additional_locks or None,
+                policy=pov_policy,
+            )
+            if pov_meta_feedback:
+                det_findings.append(AuditViolation(
+                    violation_type="reasoning_failure",
+                    severity="critical",
+                    description="POV-lock metadata divergence.",
+                    feedback=pov_meta_feedback,
+                ))
+            if det_findings:
+                # De-duplicate against the LLM auditor's findings on
+                # (type, evidence_quote[:160]) so the same breach
+                # isn't double-counted.
+                existing_keys = {
+                    (v.violation_type, (v.evidence_quote or "")[:160])
+                    for v in audit.violations
+                }
+                for f in det_findings:
+                    k = (f.violation_type, (f.evidence_quote or "")[:160])
+                    if k in existing_keys:
+                        continue
+                    audit.violations.append(f)
+                    existing_keys.add(k)
+                # If the deterministic check fired but the LLM said
+                # passed, override: deterministic findings are by
+                # construction true positives.
+                if det_findings and audit.passed:
+                    logger.info(
+                        "[FeedbackLoop] Deterministic prose check added "
+                        "%d finding(s) the LLM auditor missed at "
+                        "iteration %d; flipping audit.passed=False.",
+                        len(det_findings), iteration + 1,
+                    )
+                    audit.passed = False
+
         # Snapshot the current state
         graph_version = versioned.version if versioned else 0
         graph_data = versioned.snapshot_data() if versioned else {}
@@ -4191,6 +4852,7 @@ def run_feedback_loop(
             graph_version=graph_version,
             graph_data=graph_data,
             change_impact=cycle_impact,
+            engine_threshold_failures=list(engine_failures or []),
         ))
 
         # --- Track failed-open audits ---
@@ -4211,7 +4873,7 @@ def run_feedback_loop(
                 "explicitly forces.",
                 consecutive_failed_open,
             )
-            if consecutive_failed_open >= 2:
+            if consecutive_failed_open >= auditor_config.failed_open_tolerance:
                 correction_error = (
                     f"Auditor failed-open {consecutive_failed_open} times "
                     f"in a row; refusing to mark the prose as audited. "
@@ -4248,42 +4910,101 @@ def run_feedback_loop(
             iteration > 0
             and not audit.failed_open
             and prior_audit is not None
-            and prior_violation_count is not None
+            and prior_violation_score is not None
         ):
+            # P0 #1 (round-7 deeper audit 2026-05-27): unify the
+            # regression key set across the LLM auditor AND the
+            # deterministic engine. Before this, engine-only
+            # regressions (e.g. a refinement closes every LLM
+            # violation but breaks a miracle-step threshold) raised
+            # the severity score but produced an empty
+            # ``introduced_types`` set, so the rollback gate never
+            # fired. The system's core promise is that the LLM is a
+            # constrained renderer downstream of deterministic
+            # physics — engine regressions therefore MUST be at
+            # least as authoritative as LLM regressions.
             current_keys = {
                 (v.violation_type, (v.evidence_quote or "")[:160])
                 for v in audit.violations
             }
+            for failure in engine_failures or []:
+                current_keys.add(("engine_threshold", str(failure)[:160]))
             new_keys = current_keys - prior_violation_keys
             new_types = {t for (t, _q) in new_keys}
             prior_types = {t for (t, _q) in prior_violation_keys}
             introduced_types = new_types - prior_types
+            # B + F (round-7 audit 2026-05-26): severity-weighted
+            # score over the *unified* Finding stream (auditor
+            # violations + engine failures). The raw violation count
+            # used to ignore engine-threshold regressions; the
+            # unified score catches a draft that closes every LLM
+            # violation while breaking a hard physics threshold.
+            current_score = _finding_severity_score(
+                findings_from_sources(audit, engine_failures)
+            )
             if (
-                len(audit.violations) > prior_violation_count
+                current_score > prior_violation_score
                 and introduced_types
             ):
-                logger.warning(
-                    "[FeedbackLoop] Refinement REGRESSION at iteration %d: "
-                    "violation count rose %d -> %d and %d new violation "
-                    "type(s) appeared (%s). Rolling back to iteration %d "
-                    "prose and exiting loop.",
-                    iteration + 1, prior_violation_count,
-                    len(audit.violations), len(introduced_types),
-                    ", ".join(sorted(introduced_types)),
-                    iteration,
-                )
-                correction_error = (
-                    f"Refinement regressed at iteration {iteration + 1}: "
-                    f"introduced {sorted(introduced_types)}; rolled back."
-                )
-                # Use the prior iteration's scene/audit as the final.
-                if prior_scene is not None:
-                    current_scene = prior_scene
-                audit = prior_audit
-                cycle_impact = prior_cycle_impact or cycle_impact
-                graph_version = prior_graph_version
-                graph_data = prior_graph_data
-                break
+                if regression_retries_remaining > 0:
+                    regression_retries_remaining -= 1
+                    logger.warning(
+                        "[FeedbackLoop] Refinement REGRESSION at iteration "
+                        "%d: severity-weighted score rose %.1f -> %.1f and "
+                        "%d new violation type(s) appeared (%s). Rolling "
+                        "back to iteration %d prose and granting one "
+                        "anti-regression retry (remaining=%d).",
+                        iteration + 1, prior_violation_score,
+                        current_score, len(introduced_types),
+                        ", ".join(sorted(introduced_types)),
+                        iteration, regression_retries_remaining,
+                    )
+                    if prior_scene is not None:
+                        current_scene = prior_scene
+                    audit = prior_audit
+                    cycle_impact = prior_cycle_impact or cycle_impact
+                    graph_version = prior_graph_version
+                    graph_data = prior_graph_data
+                    pending_regression_warning = (
+                        f"Your previous rewrite REGRESSED by introducing "
+                        f"new violation type(s): "
+                        f"{sorted(introduced_types)}. This is an "
+                        f"anti-regression retry from the rolled-back "
+                        f"draft above. Hold the line on those constraints "
+                        f"absolutely while addressing the current "
+                        f"violations below — do NOT trade one fix for "
+                        f"another. If this rewrite regresses again the "
+                        f"loop will exit and the rolled-back draft will "
+                        f"be returned as the final output."
+                    )
+                    # Fall through into the refinement path so the
+                    # loop produces a retry draft from the rolled-back
+                    # prose with the REGRESSION ALERT surfaced.
+                else:
+                    logger.warning(
+                        "[FeedbackLoop] Refinement REGRESSION at iteration "
+                        "%d (retry budget exhausted): severity-weighted "
+                        "score rose %.1f -> %.1f and %d new violation "
+                        "type(s) appeared (%s). Rolling back to iteration "
+                        "%d prose and exiting loop.",
+                        iteration + 1, prior_violation_score,
+                        current_score, len(introduced_types),
+                        ", ".join(sorted(introduced_types)),
+                        iteration,
+                    )
+                    correction_error = (
+                        f"Refinement regressed at iteration "
+                        f"{iteration + 1} after anti-regression retry was "
+                        f"exhausted: introduced {sorted(introduced_types)}; "
+                        f"rolled back."
+                    )
+                    if prior_scene is not None:
+                        current_scene = prior_scene
+                    audit = prior_audit
+                    cycle_impact = prior_cycle_impact or cycle_impact
+                    graph_version = prior_graph_version
+                    graph_data = prior_graph_data
+                    break
 
         # --- Convergence rule ---
         # The LLM auditor's prose-level verdict is the only signal that
@@ -4443,6 +5164,20 @@ def run_feedback_loop(
         # violation flagged in earlier iterations. Pass it so the
         # refinement prompt can list non-regression constraints and
         # break the ping-pong cycle between competing fixes.
+        # A (round-7 audit 2026-05-26): annotate the previous prose
+        # with inline <<<VIOLATION:type>>>...<<</VIOLATION>>> markers
+        # around each violation's evidence_quote. This converts the
+        # "minimal surgical edit" instruction from a vibe into a
+        # directive the rewriter can mechanically execute: spans it
+        # must touch are marked, and everything outside the markers
+        # should be preserved verbatim. Quotes that don't appear in
+        # the prose (the auditor paraphrased) are silently skipped and
+        # remain available in the per-violation feedback list.
+        _prev_prose = getattr(current_scene, "prose", None)
+        if _prev_prose:
+            _prev_prose = _annotate_prose_with_violation_spans(
+                _prev_prose, audit.violations,
+            )
         refinement_prompt = _build_refinement_prompt(
             base_rendering_prompt,
             audit.violations,
@@ -4450,12 +5185,20 @@ def run_feedback_loop(
             engine_failures=engine_failures,
             prior_violations=list(accumulated_violations),
             brief=brief,
-            # Round-7 audit (2026-05-26): pass the verbatim previous
-            # draft so the rewriter can perform a minimal surgical
-            # edit instead of a full re-roll that loses correct POV/
-            # style/anti-meta choices.
-            previous_prose=getattr(current_scene, "prose", None),
+            # Round-7 audit (2026-05-26): pass the (span-annotated)
+            # previous draft so the rewriter can perform a minimal
+            # surgical edit instead of a full re-roll that loses
+            # correct POV/style/anti-meta choices.
+            previous_prose=_prev_prose,
+            # Round-7 audit (2026-05-26): when the rollback path
+            # granted an anti-regression retry, surface the warning
+            # here so the next rewrite sees a REGRESSION ALERT block
+            # naming the violation types that were just introduced.
+            regression_warning=pending_regression_warning,
         )
+        # Consume the one-shot warning so a non-regressing next
+        # iteration does not re-warn the rewriter.
+        pending_regression_warning = None
 
         # Now extend with this iteration's violations so the *next*
         # refinement pass sees them as non-regression constraints.
@@ -4467,10 +5210,19 @@ def run_feedback_loop(
         prior_scene = current_scene
         prior_audit = audit
         prior_violation_count = len(audit.violations)
+        prior_violation_score = _finding_severity_score(
+            findings_from_sources(audit, engine_failures)
+        )
         prior_violation_keys = {
             (v.violation_type, (v.evidence_quote or "")[:160])
             for v in audit.violations
         }
+        # P0 #1 (round-7 deeper audit 2026-05-27): keep engine
+        # failures in the prior-key snapshot too so the next
+        # iteration's ``current_keys - prior_violation_keys`` diff
+        # can detect a *new* engine-threshold breach.
+        for failure in engine_failures or []:
+            prior_violation_keys.add(("engine_threshold", str(failure)[:160]))
         prior_cycle_impact = cycle_impact
         prior_graph_version = graph_version
         prior_graph_data = graph_data
@@ -4506,6 +5258,29 @@ def run_feedback_loop(
                 "Keeping previous scene and exiting loop.", exc,
             )
             correction_error = f"Refinement LLM call raised: {exc!r}"
+            current_scene = prior_scene
+            break
+
+        # Round-8 audit (defensive): pydantic-ai typed output should
+        # always be a ``GeneratedScene`` in production, but tests that
+        # patch ``_build_generation_agent`` with a bare ``MagicMock``
+        # cause ``result.output`` to be a MagicMock. Subsequent
+        # ``.model_copy()`` calls then propagate MagicMocks through to
+        # ``FeedbackLoopResult`` construction, which fails pydantic
+        # validation with a confusing ``model_type`` error far from
+        # the root cause. Roll back to the prior known-good scene and
+        # exit cleanly when this happens.
+        if not isinstance(current_scene, GeneratedScene):
+            logger.error(
+                "[FeedbackLoop] Refinement returned a non-GeneratedScene "
+                "output (%s); rolling back to prior scene and exiting.",
+                type(current_scene).__name__,
+            )
+            correction_error = (
+                f"Refinement returned non-GeneratedScene output: "
+                f"{type(current_scene).__name__}"
+            )
+            current_scene = prior_scene
             break
 
         # --- Refinement rendering_mode contract ---
@@ -4643,6 +5418,7 @@ def run_feedback_loop(
     #     rollback path \u2014 in which case the existing snapshot is
     #     authoritative).
     #   * Skip when the scene is a generation_error placeholder.
+    terminal_audit_appended = False
     if (
         not correction_error
         and not current_scene.generation_error
@@ -4658,14 +5434,19 @@ def run_feedback_loop(
             auditor_config.max_iterations,
         )
         try:
+            # Round-9 A1: use the *final* causal/affective metrics
+            # recomputed against the post-refinement draft, not the
+            # last loop-iteration's ``cycle_*`` snapshots. Otherwise
+            # the terminal auditor reasons against stale engine
+            # signals that may have changed in the final refinement.
             terminal_audit = run_audit(
                 prose=current_scene.prose,
                 brief=brief,
                 config=auditor_config,
                 prior_feedback=accumulated_feedback or None,
-                causal_feedback=cycle_causal,
+                causal_feedback=final_causal,
                 world_state=world_state,
-                affective_feedback=cycle_affective,
+                affective_feedback=final_affective,
                 introduced_elements=getattr(
                     current_scene, "introduced_elements", None,
                 ),
@@ -4678,7 +5459,9 @@ def run_feedback_loop(
                 graph_version=graph_version,
                 graph_data=graph_data,
                 change_impact=final_impact,
+                engine_threshold_failures=list(final_engine_failures or []),
             ))
+            terminal_audit_appended = True
         except Exception:
             logger.exception(
                 "[FeedbackLoop] Terminal audit FAILED; returning the "
@@ -4690,7 +5473,12 @@ def run_feedback_loop(
     return FeedbackLoopResult(
         final_scene=current_scene,
         converged=False,
-        iterations=len(history),
+        # Round-9 A2: ``iterations`` counts *audit/refine cycles*, not
+        # snapshots. The terminal audit appended above shares the
+        # iteration index of the final loop pass (it re-audits the
+        # post-refinement draft of that same cycle) and should not
+        # inflate the cycle count beyond ``max_iterations``.
+        iterations=len(history) - (1 if terminal_audit_appended else 0),
         history=history,
         final_graph_version=graph_version,
         change_impact=final_impact,

@@ -281,7 +281,22 @@ class CostCalculator:
                 f"API call {log_entry.id} will have $0 cost."
             )
             return 0.0
-            
+
+        # Round-11 R11-05: do not bill the user for failed external
+        # API calls. Provider-side 4xx/5xx responses either return no
+        # payload or an error envelope, but the per-request /
+        # per-result pricing branches below would still charge full
+        # price for the request. Treat any non-2xx (3xx redirects
+        # included — we did not get the data we asked for) as $0 so
+        # cost dashboards reflect billable work only.
+        status_code = getattr(log_entry, "status_code", None)
+        if status_code is not None and not (200 <= status_code < 300):
+            logger.debug(
+                "Skipping cost for API call %s: status=%s (non-2xx, not billed)",
+                getattr(log_entry, "id", "?"), status_code,
+            )
+            return 0.0
+
         # Apply pricing based on unit type
         if rule.unit_type == "requests":
             raw_cost = rule.cost_per_unit_usd

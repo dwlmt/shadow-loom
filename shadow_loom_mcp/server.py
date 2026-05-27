@@ -113,6 +113,7 @@ from shadow_loom.query_parsing import QueryParsingConfig, parse_query
 
 from shadow_loom_mcp.auth import (
     check_project_access,
+    check_rate_limit,
     get_user_id,
     require_scope,
     verifier,
@@ -417,7 +418,16 @@ def _paginate_timeline(
         entries, mirroring legacy ``[-10:]`` behaviour.
       * ``offset > 0`` → skip ``offset`` newest entries before taking
         ``limit`` (e.g. offset=10, limit=10 → entries 11–20 from the end).
+
+    Round-12 R12-07: enforce a hard server-side ceiling on the
+    returned slice so a caller (or a malicious MCP client) cannot
+    coerce the server into serialising and shipping an arbitrarily
+    large payload. The previous ``offset == -1`` "give me everything"
+    path was an explicit DoS surface; ``limit`` was also caller-
+    controlled with no upper bound. We cap at 5000 entries per call;
+    callers needing more should paginate.
     """
+    _TIMELINE_PAGE_CEILING = 5000
     total = len(items)
     if limit == 0:
         return [], {
@@ -427,12 +437,18 @@ def _paginate_timeline(
             "truncated": total > 0,
         }
     if offset == -1:
-        return list(items), {
+        # Bounded "give me everything": cap the slice at the ceiling
+        # and surface truncation in metadata so callers can paginate
+        # the rest with offset>0.
+        cap = min(total, _TIMELINE_PAGE_CEILING)
+        return list(items[-cap:]), {
             "total": total,
             "offset": -1,
-            "limit": total,
-            "truncated": False,
+            "limit": cap,
+            "truncated": cap < total,
+            "page_ceiling": _TIMELINE_PAGE_CEILING,
         }
+    limit = min(max(0, limit), _TIMELINE_PAGE_CEILING)
     end = total - offset if offset > 0 else total
     start = max(0, end - max(0, limit))
     window = items[start:end]
@@ -442,6 +458,7 @@ def _paginate_timeline(
         "limit": limit,
         "truncated": (start > 0) or (end < total),
         "window": [start, end],
+        "page_ceiling": _TIMELINE_PAGE_CEILING,
     }
 
 
@@ -954,8 +971,16 @@ def get_channel_history(
     ]
     utts.sort(key=lambda e: (e.fabula_time, e.syuzhet_index))
 
+    # Round-12 R12-07: hard ceiling on the returned slice so a caller
+    # cannot request all utterances on a busy channel and OOM the
+    # serializer / blow the MCP message-size limit.
+    _CHANNEL_HISTORY_CEILING = 500
+    try:
+        _bounded_limit = max(1, min(int(limit), _CHANNEL_HISTORY_CEILING))
+    except (TypeError, ValueError):
+        _bounded_limit = 100
     rows = []
-    for evt in utts[:limit]:
+    for evt in utts[:_bounded_limit]:
         speaker = evt.speaker_id or (evt.actor_ids[0] if evt.actor_ids else None)
         rows.append({
             "id": evt.id,
@@ -1299,7 +1324,25 @@ def export_prose(
     if err:
         return {"error": err}
     entries = get_all_prose(pid, branch_path=branch_path)
-    return {"project_id": pid, "entries": entries}
+    # Round-12 R12-07: cap export size at 1000 entries. A long-running
+    # project can accumulate hundreds of prose versions; the unbounded
+    # return path here was an easy way to OOM the MCP serializer or
+    # blow message-size limits. Truncate the *oldest* entries first
+    # so the most recent narrative state is always preserved, and
+    # surface a ``truncated`` flag so callers know to paginate via
+    # ``branch_path`` slices.
+    _PROSE_EXPORT_CEILING = 1000
+    total = len(entries)
+    truncated = total > _PROSE_EXPORT_CEILING
+    if truncated:
+        entries = entries[-_PROSE_EXPORT_CEILING:]
+    return {
+        "project_id": pid,
+        "entries": entries,
+        "total": total,
+        "truncated": truncated,
+        "page_ceiling": _PROSE_EXPORT_CEILING,
+    }
 
 
 # =====================================================================
@@ -1856,6 +1899,8 @@ async def narrate(
     speaker_id: Optional[str] = None,
     addressee_ids: Optional[List[str]] = None,
     via_channel_id: Optional[str] = None,
+    auditor_overrides: Optional[dict] = None,
+    idempotency_key: Optional[str] = None,
 ) -> dict:
     """Generate prose and advance the story using natural language.
 
@@ -1887,6 +1932,14 @@ async def narrate(
     err = require_scope(ctx, "write")
     if err:
         return {"error": err}
+
+    # Round-12 R12-08: cap expensive LLM+physics runs per identity to
+    # prevent cost-amplification attacks (a single malicious caller
+    # firing narrate in a tight loop could exhaust LLM budget and
+    # block legitimate users).
+    rate_err = check_rate_limit(ctx, "narrate")
+    if rate_err:
+        return {"error": rate_err, "code": "RATE_LIMITED"}
 
     pid, err = resolve_project(
         project_id, project_name, ctx, min_role="editor",
@@ -1983,6 +2036,8 @@ async def narrate(
         user_row_id=user_row_id,
         raw_query=instruction,
         skip_audit=skip_audit,
+        auditor_overrides=auditor_overrides,
+        idempotency_key=idempotency_key,
     )
 
     await ctx.report_progress(4, 4, "Complete")
@@ -2009,6 +2064,8 @@ async def direct(
     version: Optional[int] = None,
     skip_audit: bool = _settings.mcp.skip_audit,
     force_implausible: bool = False,
+    auditor_overrides: Optional[dict] = None,
+    idempotency_key: Optional[str] = None,
 ) -> dict:
     """Generate a scene optimized for a specific emotional effect.
 
@@ -2022,10 +2079,17 @@ async def direct(
         skip_audit: Skip the audit loop (default True).
         force_implausible: Generate prose even when none of ``entity_ids``
             exist in the world (a fallback POV is used).
+        auditor_overrides: Optional per-call override of the audit
+            loop's budget knobs. See ``narrate`` for the allowed keys.
     """
     err = require_scope(ctx, "write")
     if err:
         return {"error": err}
+
+    # Round-12 R12-08: see narrate(); same rationale.
+    rate_err = check_rate_limit(ctx, "direct")
+    if rate_err:
+        return {"error": rate_err, "code": "RATE_LIMITED"}
 
     pid, err = resolve_project(
         project_id, project_name, ctx, min_role="editor",
@@ -2067,6 +2131,8 @@ async def direct(
         user_row_id=user_row_id,
         raw_query=f"Directive: {target_effect} (intensity={intensity})",
         skip_audit=skip_audit,
+        auditor_overrides=auditor_overrides,
+        idempotency_key=idempotency_key,
     )
 
     await ctx.report_progress(3, 3, "Complete")
@@ -2093,6 +2159,7 @@ def write(
     replace_proposition_ids: Optional[List[str]] = None,
     replace_concern_ids: Optional[List[List[str]]] = None,
     focus_entity_ids: Optional[List[str]] = None,
+    idempotency_key: Optional[str] = None,
 ) -> dict:
     """Apply user-written prose as a manual edit to the world model.
 
@@ -2236,6 +2303,7 @@ def write(
         raw_query=prose,
         skip_audit=True,
         skip_reextraction=False,
+        idempotency_key=idempotency_key,
     )
 
     return response

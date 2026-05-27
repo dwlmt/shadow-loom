@@ -648,16 +648,13 @@ generated prose:
   budget, prose density, register/POV/tense, and form class
   (`news_article`, `historical_account`, `thought_experiment`, `essay`,
   `case_study`, `transcript`); raises `style_mismatch` violations on drift.
-* **Meta-narration audit** — runs on counterfactual / abduction-driven
-  scenes. Flags prose that comments on its own counterfactual structure
-  ("timeline", "divergence", "the alternative holds", `If he had…/would have…`
-  framings, abstract aphorisms about fate or possibility) instead of rendering
-  the alternate world as a lived past-tense scene; raises `meta_narration`.
+* **Meta-narration audit** — runs for every `target_effect` (it is one of the two *universal* categories along with `style` — see *Audit-loop discipline* below). Flags prose that comments on its own structure ("timeline", "divergence", "the alternative holds", `If he had…/would have…` framings, abstract aphorisms about fate or possibility) instead of rendering the scene as a lived past-tense moment; raises `meta_narration`. Counterfactual and abduction-driven scenes are the *highest-leverage* target because the form invites authorial commentary, but the check is universal.
 
 If the auditor returns non-zero loss the refinement loop in
-`pipeline.py::run_pipeline()` regenerates with the auditor's feedback
-appended to the brief, up to `max_correction_retries`. On success the new
-world state is committed back to the canonical graph.
+`auditor.py::run_feedback_loop()` regenerates with the auditor's feedback
+appended to the brief, up to `AuditorConfig.max_iterations` (default 4 as of
+the round-7 audit 2026-05-26; was 3). On success the new world state is
+committed back to the canonical graph.
 
 **Audit-loop discipline.** The loop is engineered to avoid the classic
 ping-pong failure mode where each iteration fixes one category and
@@ -741,10 +738,91 @@ audit notes in `/memories/repo/`.
 
 ---
 
-## 7. Modules at a glance
+## 6½. POV lock — the layered enforcement contract
 
-| Module | Lines | Role |
-|---|---|---|
+The POV lock is one of the most failure-prone constraints in the
+pipeline because (a) it has no deterministic source-of-truth in the
+prose itself and (b) the rendering LLM frequently abandons it under
+rewrite pressure. Round 7 (2026-05-26) hardened the enforcement
+into **five layered checks** so a breach in one layer is caught by
+the next.
+
+The lock itself is `RenderingDirective.pov_lock` (a single entity
+ID, e.g. `"ENT_MRS_COADY"`), with `pov_policy` choosing strict
+single, rotating-by-beat, or ensemble semantics, and
+`additional_pov_locks` carrying the rest of the licensed roster
+under the non-single policies.
+
+### Layer 1 — Render-time contract (`shadow_loom/generation.py`)
+
+`assemble_rendering_prompt` injects `pov_lock` into the generation
+LLM's prompt as a HARD constraint with an explicit instruction:
+narrate only from the locked entity's consciousness; no head-hops;
+no omniscient asides. This is where the contract is *introduced*.
+
+### Layer 2 — Scene-output mirror (`GeneratedScene.pov_entity`)
+
+The renderer must mirror the lock back via its structured output
+field `pov_entity`. A divergence here (brief has `pov_lock` set,
+scene returns `pov_entity=None` or a different entity) is the
+single highest-signal indicator the rewriter has internally
+abandoned the POV lock. `run_feedback_loop`:
+
+1. **Coerces** the divergent metadata back so downstream consumers
+   see the correct anchor.
+2. **Records** a synthetic `reasoning_failure` violation via
+   `_check_pov_lock_metadata` so the next refinement iteration is
+   forced to address the breach (rather than the orchestrator
+   silently papering over it).
+
+### Layer 3 — Deterministic prose regex (`deterministic_prose_findings`)
+
+A regex pass counts sentences whose grammatical subject is a
+*non-POV* proper noun attached to a cognitive / perceptual /
+affective verb ("thought", "knew", "felt", "wondered",
+"realised", …). Above `AuditorConfig.pov_breach_threshold`
+(default 3) the loop synthesises a critical violation
+**before** the LLM auditor runs, so the LLM agrees with a
+deterministic verdict instead of arbitrating in isolation. Cheap
+(no NLP dep), conservative (won't fire on action / dialogue
+prose), and the only layer that catches breaches the LLM auditor
+empirically misses ~one-third of the time. Disable with
+`AuditorConfig.enable_deterministic_prose_checks=False` for
+genuine omniscient briefs.
+
+### Layer 4 — LLM auditor (`shadow_loom/auditor.py`)
+
+The auditor prompt is told the POV lock and asked to flag
+head-hops, omniscient asides, and non-POV interiority. Slowest
+and most expressive, but the most unreliable under iteration
+pressure — which is why layers 2 and 3 exist.
+
+### Layer 5 — Refinement-time re-injection (`shadow_loom/prompts/refinement.md`)
+
+When the audit fails and a rewrite is required, the refinement
+prompt re-emits the brief verbatim (so `pov_lock` is restated) and
+the `refinement.md` system prompt carries a dedicated **Rule 7**
+explicitly forbidding `pov_entity` drops in the structured output.
+The user prompt additionally includes the *previous draft* with
+inline `<<<VIOLATION:type>>>` markers around any POV-breach
+evidence, so the rewriter is told exactly which sentences to
+revise instead of being asked to re-roll from scratch.
+
+### Failure-mode summary
+
+| Layer | Failure mode it catches | Cost |
+|------:|-------------------------|------|
+| 1 | Renderer never saw the lock | free (prompt assembly) |
+| 2 | Renderer saw it but mis-reported metadata | free (struct compare) |
+| 3 | Renderer mis-reported nothing but wrote omniscient prose | regex (microseconds) |
+| 4 | Subtle head-hops, omniscient asides | LLM call |
+| 5 | Refinement iteration would drop the lock again | free (prompt template) |
+
+Setting `pov_lock=None` deliberately disables all five layers and
+licenses true omniscient narration.
+
+---
+
 | [`models.py`](../shadow_loom/models.py) | 440 | `WorldStateV1` schema + temporal reconstruction. |
 | [`ingestion.py`](../shadow_loom/ingestion.py) | 8 649 | LLM-driven world extraction, normalisation, programmatic validation, correction loop with oscillation guard, error-relevant subgraph payloads, and final-pass validation snapshot. |
 | [`extract_graph.py`](../shadow_loom/extract_graph.py) | 724 | Ego-graph slicing with temporal filters. |

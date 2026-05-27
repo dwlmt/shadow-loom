@@ -7,9 +7,26 @@
 # DEFAULT_MODEL in .env to an openrouter:* or openai:* model and
 # Postgres-only deployment still works.
 #
+# Required env vars (set in a sibling .env file or export in shell):
+#   POSTGRES_PASSWORD   — Postgres superuser password. No default;
+#                         compose will refuse to start if unset.
+#   STORAGE_SECRET      — NiceGUI session cookie signing key. No
+#                         default; cookies become forgeable without it.
+#
 # Bring up:        docker compose up --build
 # Tail logs:       docker compose logs -f app
 # Reset DB:        docker compose down -v   # ⚠ wipes the postgres volume
+#
+# Round-11 R11-11: the previous version hard-coded
+# ``POSTGRES_PASSWORD=shadow_loom`` and exposed Postgres on the host's
+# ``5432`` port — anyone who ``docker compose up``'d on a shared box
+# (or a VPS without a firewall) was running a publicly reachable
+# Postgres with a known password. We now require the password from
+# the environment (no literal fallback), drop the host port mapping
+# so Postgres is reachable only by the ``app`` service over the
+# internal compose network, and require ``STORAGE_SECRET`` to be set
+# explicitly so prod deployments cannot silently inherit a dev
+# placeholder that would let an attacker forge session cookies.
 # =====================================================================
 
 services:
@@ -17,15 +34,17 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: shadow_loom
-      POSTGRES_PASSWORD: shadow_loom
-      POSTGRES_DB: shadow_loom
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-shadow_loom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env or the environment}
+      POSTGRES_DB: ${POSTGRES_DB:-shadow_loom}
+    # No ``ports:`` mapping — Postgres is reachable only from sibling
+    # services (``app``) over the internal compose network. To access
+    # the DB from the host for debugging, use ``docker compose exec
+    # postgres psql -U shadow_loom`` instead.
     volumes:
       - shadow_loom_pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U shadow_loom"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-shadow_loom}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -40,11 +59,11 @@ services:
       - "7860:7860"
     environment:
       # Connect the app container to the postgres service.
-      DATABASE_URL: postgresql+psycopg://shadow_loom:shadow_loom@postgres:5432/shadow_loom
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-shadow_loom}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-shadow_loom}
       # Talk to a host-side Ollama daemon (Linux: needs --add-host).
       # On Docker Desktop (Mac/Windows) host.docker.internal is built in.
       OLLAMA_BASE_URL: http://host.docker.internal:11434/v1/
-      STORAGE_SECRET: ${STORAGE_SECRET:-local-dev-not-a-real-secret}
+      STORAGE_SECRET: ${STORAGE_SECRET:?STORAGE_SECRET must be set in .env or the environment}
       UI_HOST: 0.0.0.0
       UI_PORT: 7860
       UI_SOURCE_URL: ${UI_SOURCE_URL:-https://github.com/dwlmt/shadow-loom}

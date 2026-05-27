@@ -160,9 +160,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if any(path.startswith(p) for p in self.OPEN_PREFIXES):
             return await call_next(request)
 
-        # Bearer token auth for API / MCP requests
+        # Bearer token auth for API / MCP requests ONLY. Round-10
+        # R10-02: previously a valid bearer satisfied auth for *any*
+        # route (including page routes), which short-circuited the
+        # session/CSRF flow that pages rely on and let an API key
+        # holder reach UI routes that were never meant to be machine
+        # surfaces. Restrict bearer validation to ``/api/*`` so page
+        # routes always go through the session-based path below.
+        is_api_path = path.startswith("/api/")
         auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
+        if is_api_path and auth_header.startswith("Bearer "):
             token = auth_header[7:]
             # validate_api_key hits the DB synchronously \u2014 offload so we
             # do not stall the event loop under concurrent API traffic.
@@ -174,10 +181,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.api_key_scopes = key_row.scopes.split(",")
                 return await call_next(request)
             # Invalid token on API routes → 401
-            if path.startswith("/api/"):
-                return JSONResponse(
-                    {"error": "Invalid or expired API key"}, status_code=401
-                )
+            return JSONResponse(
+                {"error": "Invalid or expired API key"}, status_code=401
+            )
 
         if not config.AUTH_ENABLED:
             # When AUTH_REQUIRED is set but no provider could be loaded

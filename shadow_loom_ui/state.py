@@ -195,6 +195,13 @@ class AppState:
     # us cancel everything cleanly on session shutdown.
     _async_tasks: "set[asyncio.Task]" = field(default_factory=set)
 
+    # Round-11 R11-02: deferred re-extraction work runs on raw
+    # ``threading.Thread`` instances (not the asyncio loop) so we keep
+    # a separate registry for them. ``teardown`` joins these
+    # best-effort during session eviction so a closed-tab session
+    # does not leak a worker that keeps mutating dead state.
+    _deferred_threads: "list[threading.Thread]" = field(default_factory=list)
+
     # Per-panel task slots: each panel id maps to its in-flight refresh
     # task. Spawning a new task for a panel cancels the previous one,
     # so rapid cursor scrubs collapse to the latest render only.
@@ -446,6 +453,48 @@ class AppState:
                 "[AppState] %d background task(s) did not finish within %.1fs",
                 len(still_alive), timeout,
             )
+
+    def teardown(self, *, thread_timeout: float = 2.0) -> None:
+        """Synchronously release session-owned background work.
+
+        Round-11 R11-03: called from the session-eviction path in
+        :mod:`shadow_loom_ui.app`, which runs in a sync NiceGUI handler
+        and cannot await :meth:`cancel_all_async_tasks`. We do the
+        thread-safe parts here:
+
+        * ``task.cancel()`` is safe to call from any thread — the
+          owning event loop will pick up the cancellation on its next
+          iteration. We do *not* try to await the tasks (no loop in
+          scope) and accept that a few may run a bit longer; the
+          weak-ref drop on AppState ensures their I/O targets fade
+          out as the session does.
+        * Deferred ``threading.Thread`` workers (R11-02) get a
+          best-effort ``join(timeout=...)`` so they finish their
+          current write rather than racing GC of the popped state.
+        """
+        # Cancel any in-flight asyncio tasks (thread-safe).
+        for t in list(self._async_tasks):
+            if not t.done():
+                try:
+                    t.cancel()
+                except Exception:
+                    logger.debug(
+                        "[AppState] teardown: cancel failed", exc_info=True,
+                    )
+        # Join deferred re-extraction threads best-effort.
+        per_thread = max(0.05, thread_timeout / max(1, len(self._deferred_threads)))
+        for h in list(self._deferred_threads):
+            if h.is_alive():
+                try:
+                    h.join(timeout=per_thread)
+                except Exception:
+                    logger.debug(
+                        "[AppState] teardown: thread join failed",
+                        exc_info=True,
+                    )
+        self._deferred_threads = [
+            h for h in self._deferred_threads if h.is_alive()
+        ]
 
     # ---- Session setup ----
 
@@ -855,11 +904,23 @@ class AppState:
             )
             self.emit(StateEvent.PIPELINE_RESULT, result=deferred_result)
 
-        threading.Thread(
+        # Round-11 R11-02: register the deferred worker on the state
+        # so ``teardown`` can join it during session eviction. Without
+        # tracking, evicting a session whose deferred re-extraction is
+        # still in flight leaves a thread mutating now-orphaned state
+        # (racing GC of the popped AppState). Trim already-finished
+        # handles first so the list stays bounded for long-lived
+        # sessions that fire many deferred re-extractions.
+        self._deferred_threads = [
+            h for h in self._deferred_threads if h.is_alive()
+        ]
+        t = threading.Thread(
             target=_worker,
             name="deferred-reextraction",
             daemon=True,
-        ).start()
+        )
+        self._deferred_threads.append(t)
+        t.start()
 
     async def run_nl_query_async(
         self,

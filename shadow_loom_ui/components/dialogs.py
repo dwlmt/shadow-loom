@@ -274,11 +274,25 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                         await asyncio.sleep(0.5)
                         dialog.close()
                 except Exception as e:
+                    # Round-11 R11-08: surface a stable, sanitised
+                    # message to the user instead of ``str(e)``. Raw
+                    # exception strings can leak file paths, DB
+                    # constraint names, internal model identifiers,
+                    # or partial prompt content — none of which the
+                    # operator can act on, and all of which are
+                    # disclosure noise. The full traceback already
+                    # goes to the server log via ``logger.exception``
+                    # above for diagnosis.
                     logger.exception("Ingestion failed")
-                    state.finish_task(task, error=str(e))
+                    state.finish_task(
+                        task,
+                        error="Ingestion failed — see server logs for details.",
+                    )
                     notify_task_complete(task)
                     if dialog.value:
-                        status.set_text(f"Error: {e}")
+                        status.set_text(
+                            "Error: ingestion failed — see server logs for details."
+                        )
                 finally:
                     if dialog.value:
                         progress.set_visibility(False)

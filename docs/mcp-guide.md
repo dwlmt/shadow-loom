@@ -60,8 +60,8 @@ database. See [`shadow_loom_mcp/auth.py`](../shadow_loom_mcp/auth.py).
 
 | Scope | Tool groups |
 |---|---|
-| `read` | ORIENT + EXPLORE + REASON + JUDGE + `set_active_version` / `get_active_version` |
-| `write` | CREATE + most MANAGE (branch, fork, delete, promote_branch, …) |
+| `read` | ORIENT + EXPLORE + REASON + JUDGE + `get_active_version` |
+| `write` | CREATE + most MANAGE (branch, fork, delete, promote_branch, `set_active_version`, …) |
 | `admin` | `share`, `update_project_tool` |
 
 Resources (`world://…`) skip scope checks — they are intended for read-only
@@ -77,8 +77,8 @@ access. Current call sites:
 
 | `min_role` | Tools |
 |---|---|
-| `viewer` (default) | All read paths, `set_active_version` (per-user pointer), `fork` (creates new project under caller) |
-| `editor` | `set_project_settings`, `branch`, `delete_version`, `reparent_version` |
+| `viewer` (default) | All read paths, `fork` (creates new project under caller) |
+| `editor` | `set_project_settings`, `branch`, `delete_version`, `reparent_version`, `set_active_version` (per-user pointer; round-7 audit promoted from read+viewer because it mutates per-user routing) |
 | `admin` | `share`, `delete_project` |
 
 A scoped-but-under-roled call returns `{"error": "min_role=admin required …"}`
@@ -176,7 +176,7 @@ author(action="forget_fact",   project_id=42, payload={"fact_id": "FACT_003"})
 | `"delete_project"` | write | — |
 | `"delete_version"` | write | `version_row_id` *(req)*, `cascade` |
 | `"reparent_version"` | write | `version_row_id` *(req)*, `new_ancestor_id` |
-| `"set_active_version"` | read | `version_row_id` *or* `version` (sequential, project-scoped). Omit both to clear the pointer. |
+| `"set_active_version"` | write | `version_row_id` *or* `version` (sequential, project-scoped). Omit both to clear the pointer. Requires the `editor` role on the project (round-7 audit). |
 | `"get_active_version"` | read | — |
 | `"get_settings"` | read | — |
 | `"set_settings"` | write | `research_topics: list[str]` *(req)* |
@@ -295,7 +295,7 @@ for the user-facing guarantees.
 | `update_project_tool` | admin |
 | `delete_project`, `delete_version`, `reparent_version` | write |
 | `promote_branch(version_row_id)` | write |
-| `set_active_version`, `get_active_version` | read / read |
+| `set_active_version`, `get_active_version` | write / read |
 
 `set_active_version` updates the per-user `ActiveVersionRow` pointer, so every
 subsequent `narrate` / `inspect` / etc. resolves against that version unless

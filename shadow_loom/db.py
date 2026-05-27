@@ -86,6 +86,12 @@ class UserRow(SQLModel, table=True):
 
 class ProjectRow(SQLModel, table=True):
     __tablename__ = "projects"
+    __table_args__ = (
+        # Round-13 R13-02: ``list_projects`` and every dashboard
+        # query filters by ``owner_id``. Without this index the
+        # access-control join scans the full projects table.
+        Index("ix_projects_owner_id", "owner_id"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(max_length=256)
@@ -180,6 +186,11 @@ class ProjectMemberRow(SQLModel, table=True):
     __tablename__ = "project_members"
     __table_args__ = (
         UniqueConstraint("project_id", "user_id", name="uq_project_member"),
+        # Round-13 R13-02: ``list_projects`` joins through member rows
+        # by ``user_id``. The unique constraint above only covers the
+        # ``(project_id, user_id)`` pair leading with project_id, so a
+        # by-user lookup still scans.
+        Index("ix_project_members_user_id", "user_id"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -198,6 +209,8 @@ class ProjectStarRow(SQLModel, table=True):
     __tablename__ = "project_stars"
     __table_args__ = (
         UniqueConstraint("project_id", "user_id", name="uq_project_star"),
+        # Round-13 R13-02: per-user "my starred projects" feeds.
+        Index("ix_project_stars_user_id", "user_id"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -215,7 +228,11 @@ class ApiKeyRow(SQLModel, table=True):
     __tablename__ = "api_keys"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.id")
+    # Round-13 R13-03: ``list_api_keys`` and ``revoke_api_key`` filter
+    # by ``user_id`` on every settings-page load. The previous schema
+    # only indexed ``key_hash`` (validation hot path), leaving the
+    # per-user enumeration as a full table scan.
+    user_id: int = Field(foreign_key="users.id", index=True)
     name: str = Field(max_length=128)
     # AUDIT (post-2026-05-26): explicit DB index on ``key_hash``.
     # ``validate_api_key`` runs on every authenticated request and
@@ -677,6 +694,36 @@ class ProjectUsageSummaryRow(SQLModel, table=True):
     project: ProjectRow = Relationship()
 
 
+class McpIdempotencyRow(SQLModel, table=True):
+    """Round-9 C7: client-supplied idempotency cache for MCP write tools.
+
+    ``run_and_save`` consults this table before invoking the pipeline
+    when an ``idempotency_key`` is supplied. A match replays the
+    previously cached response envelope without re-running the
+    pipeline, so client-side retries (network blip, MCP transport
+    reconnect, etc.) don't produce duplicate version rows or burn
+    additional generation budget.
+
+    ``key_hash`` is ``sha256(project_id|ancestor_id|idempotency_key)``
+    so the same client-supplied key on different projects / ancestors
+    yields distinct rows.
+    """
+    __tablename__ = "mcp_idempotency"
+    __table_args__ = (
+        Index("ix_mcp_idempotency_created", "created_at"),
+    )
+
+    key_hash: str = Field(primary_key=True, max_length=64)
+    project_id: int = Field(foreign_key="projects.id", index=True)
+    ancestor_id: Optional[int] = Field(default=None, index=True)
+    version_row_id: Optional[int] = Field(default=None, foreign_key="versions.id")
+    response_json: str = Field(sa_column=Column(Text, nullable=False))
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+
+
 class SchemaVersionRow(SQLModel, table=True):
     """Lightweight schema-version ledger.
 
@@ -703,18 +750,22 @@ class SchemaVersionRow(SQLModel, table=True):
 
 
 # Bump when adding a new entry to ``_SCHEMA_MIGRATIONS`` below.
-SCHEMA_VERSION_CURRENT: int = 3
+SCHEMA_VERSION_CURRENT: int = 4
 
 # Ordered ledger of applied migrations: (version, name).
 # Version 1 is the historical baseline (everything before this ledger
 # existed); version 2 added world_id + branch_label columns to
 # ``versions`` (handled by ``_run_lightweight_migrations``); version 3
 # introduced Postgres RANGE partitioning + composite indexes on the
-# high-volume log tables (activities, agent_call_logs, api_call_logs).
+# high-volume log tables (activities, agent_call_logs, api_call_logs);
+# version 4 (round-13 R13-02/03) added per-user indexes on the hot
+# access-control tables (projects.owner_id, project_members.user_id,
+# project_stars.user_id, api_keys.user_id).
 _SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
     (1, "baseline"),
     (2, "versions.world_id+branch_label"),
     (3, "log-tables.partitioning+indexes"),
+    (4, "user-access.indexes"),
 ]
 
 
@@ -776,9 +827,37 @@ def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
 
     SQLModel.metadata.create_all(_engine)
     _run_lightweight_migrations(_engine)
+    partition_max_version: Optional[int] = None
     if database_url.startswith("postgresql"):
-        ensure_pg_partitions(_engine)
-    _record_schema_versions(_engine)
+        # Round-10 R10-07: previously partition setup failures were
+        # swallowed inside ``ensure_pg_partitions`` (logger.exception
+        # + continue), and ``_record_schema_versions`` then stamped
+        # version 3 unconditionally — giving operators a false-green
+        # migration record while the cluster was still running on the
+        # un-partitioned tables. The helper now returns a success
+        # bool. On failure we either raise (fail-fast default) or
+        # explicitly skip the v3 stamp when the operator opts in to
+        # degraded mode via ``SHADOW_LOOM_ALLOW_PARTITION_FAIL=1``.
+        ok = ensure_pg_partitions(_engine)
+        if not ok:
+            import os as _os
+            if _os.environ.get("SHADOW_LOOM_ALLOW_PARTITION_FAIL", "").strip().lower() not in {"1", "true", "yes"}:
+                raise RuntimeError(
+                    "[DB] Postgres partition setup failed; refusing to "
+                    "stamp schema version 3. Inspect the [DB·partitions] "
+                    "log entries above and re-run "
+                    "scripts/setup_pg_partitions.py --migrate. To start "
+                    "anyway in degraded mode, set "
+                    "SHADOW_LOOM_ALLOW_PARTITION_FAIL=1 (the partitioning "
+                    "migration will NOT be stamped, so the next startup "
+                    "will retry)."
+                )
+            logger.warning(
+                "[DB] SHADOW_LOOM_ALLOW_PARTITION_FAIL is set; "
+                "continuing without stamping schema version 3."
+            )
+            partition_max_version = 2  # cap stamping below v3
+    _record_schema_versions(_engine, max_version=partition_max_version)
     ensure_example_user()
     ensure_default_cost_rule()
     # Redact credentials from the DSN before logging \u2014 Postgres
@@ -804,18 +883,26 @@ def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
     logger.info("[DB] Tables initialised on %s", redacted)
 
 
-def _record_schema_versions(engine) -> None:  # noqa: ANN001
+def _record_schema_versions(engine, *, max_version: Optional[int] = None) -> None:  # noqa: ANN001
     """Stamp ``schema_versions`` so we can audit migration history.
 
     Inserts every entry from :data:`_SCHEMA_MIGRATIONS` that isn't
     already present. Idempotent: re-running just no-ops, so it's safe
     to call on every startup.
+
+    Round-10 R10-07: when *max_version* is set, migrations strictly
+    above that version are skipped. Used by ``init_db`` to avoid
+    stamping ``log-tables.partitioning+indexes`` (version 3) when
+    Postgres partition setup failed and the operator chose degraded
+    mode — the next clean startup will then complete the stamping.
     """
     with Session(engine) as s:
         existing = set(s.exec(select(SchemaVersionRow.version)).all())
         added = 0
         for version, name in _SCHEMA_MIGRATIONS:
             if version in existing:
+                continue
+            if max_version is not None and version > max_version:
                 continue
             s.add(SchemaVersionRow(version=version, name=name))
             added += 1
@@ -870,6 +957,27 @@ def _run_lightweight_migrations(engine) -> None:  # noqa: ANN001
             "ALTER TABLE versions ADD COLUMN branch_label VARCHAR(256)"
         )
 
+    # Round-13 R13-02/03: ensure the per-user access-control indexes
+    # exist on legacy databases that pre-date schema version 4.
+    # ``CREATE INDEX IF NOT EXISTS`` is identical syntax on SQLite
+    # and Postgres so a single statement list works on both backends.
+    # Each index name matches the declarative ``Index(...)`` in the
+    # SQLModel definition so ``create_all`` on a fresh DB also lands
+    # the same physical name.
+    _r13_index_specs: list[tuple[str, str, str]] = [
+        ("ix_projects_owner_id", "projects", "owner_id"),
+        ("ix_project_members_user_id", "project_members", "user_id"),
+        ("ix_project_stars_user_id", "project_stars", "user_id"),
+        ("ix_api_keys_user_id", "api_keys", "user_id"),
+    ]
+    _existing_tables = set(insp.get_table_names())
+    for idx_name, tbl, col in _r13_index_specs:
+        if tbl not in _existing_tables:
+            continue
+        statements.append(
+            f"CREATE INDEX IF NOT EXISTS {idx_name} ON {tbl} ({col})"
+        )
+
     if not statements:
         return
 
@@ -878,15 +986,29 @@ def _run_lightweight_migrations(engine) -> None:  # noqa: ANN001
     # the boot fails loudly rather than silently leaving the schema
     # half-migrated. Re-inspect after each ALTER so a racing peer that
     # already added the column is treated as a no-op.
+    #
+    # Round-11 R11-10: wrap the whole batch in a single outer
+    # transaction with per-statement SAVEPOINTs so the schema either
+    # advances atomically or rolls back to the pre-migration state.
+    # The previous per-statement ``engine.begin()`` loop could leave
+    # the schema half-migrated if a later statement raised a non-
+    # benign error after earlier ones had already committed — making
+    # subsequent boots fail with confusing "column X exists but
+    # column Y does not" errors. With SAVEPOINTs a benign duplicate
+    # rolls back just that statement while preserving the prior
+    # successful adds in the outer transaction.
     benign_fragments = (
         "duplicate column",
         "already exists",
     )
-    for sql in statements:
-        with engine.begin() as conn:
+    with engine.begin() as conn:
+        for sql in statements:
+            sp = conn.begin_nested()
             try:
                 conn.execute(text(sql))
+                sp.commit()
             except Exception as exc:  # noqa: BLE001
+                sp.rollback()
                 msg = str(exc).lower()
                 if any(frag in msg for frag in benign_fragments):
                     logger.info(
@@ -906,7 +1028,7 @@ def _run_lightweight_migrations(engine) -> None:  # noqa: ANN001
                         )
                         continue
                 logger.error(
-                    "[DB\u00b7migrate] Failed to apply: %s \u2014 re-raising.",
+                    "[DB\u00b7migrate] Failed to apply: %s \u2014 rolling back batch.",
                     sql,
                 )
                 raise
@@ -1063,8 +1185,15 @@ def ensure_pg_partitions(
     *,
     months_back: int = 3,
     months_forward: int = 3,
-) -> None:
+) -> bool:
     """Ensure log tables are partitioned and have monthly child tables.
+
+    Returns ``True`` when every step for every table in
+    :data:`_PARTITIONED_TABLES` succeeded, ``False`` when any step
+    raised. Round-10 R10-07: ``init_db`` reads this return value and
+    refuses to stamp schema version 3 on failure, so a botched
+    migration is visible at startup instead of leaving the cluster
+    running on un-partitioned log tables with a false-green ledger.
 
     For each table in :data:`_PARTITIONED_TABLES` this:
 
@@ -1087,6 +1216,7 @@ def ensure_pg_partitions(
     from sqlalchemy import text
 
     months = _months_window(months_back, months_forward)
+    all_ok = True  # Round-10 R10-07: track success across all tables.
 
     with engine.begin() as conn:
         for table in _PARTITIONED_TABLES:
@@ -1097,6 +1227,22 @@ def ensure_pg_partitions(
 
             if relkind != "p":
                 # Try to auto-convert if empty (fresh-deploy path).
+                # Round-10 R10-08: take an ACCESS EXCLUSIVE lock first
+                # so no concurrent writer can sneak rows in between the
+                # count() check and the DROP TABLE that
+                # ``_convert_table_to_partitioned`` performs. Without
+                # the lock the count→drop window is a data-loss race
+                # under READ COMMITTED isolation.
+                try:
+                    conn.execute(text(f'LOCK TABLE "{table}" IN ACCESS EXCLUSIVE MODE'))
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "[DB·partitions] Could not LOCK %r; refusing to "
+                        "auto-convert.",
+                        table,
+                    )
+                    all_ok = False
+                    continue
                 count_row = conn.execute(
                     text(f'SELECT count(*) FROM "{table}"')
                 ).scalar_one()
@@ -1114,6 +1260,7 @@ def ensure_pg_partitions(
                             "leaving as-is.",
                             table,
                         )
+                        all_ok = False
                         continue
                 else:
                     logger.warning(
@@ -1123,6 +1270,7 @@ def ensure_pg_partitions(
                         "convert (requires a maintenance window).",
                         table, count_row,
                     )
+                    all_ok = False
                     continue
 
             # 1. Default partition catches anything outside the declared ranges.
@@ -1139,6 +1287,7 @@ def ensure_pg_partitions(
                     "[DB·partitions] Failed to create default partition for %s",
                     table,
                 )
+                all_ok = False
 
             # 2. Monthly partitions.
             for yy, mm in months:
@@ -1158,12 +1307,14 @@ def ensure_pg_partitions(
                         "for range [%s, %s)",
                         part_name, start, end,
                     )
+                    all_ok = False
 
     logger.info(
         "[DB·partitions] Ensured monthly partitions for %d table(s) "
-        "(window: -%d / +%d months).",
-        len(_PARTITIONED_TABLES), months_back, months_forward,
+        "(window: -%d / +%d months; ok=%s).",
+        len(_PARTITIONED_TABLES), months_back, months_forward, all_ok,
     )
+    return all_ok
 
 
 # =====================================================================
@@ -1556,6 +1707,19 @@ def fork_project(
             source="fork",
             description=f"Forked from project {source_project_id}",
             world_state_json=latest.world_state_json,
+            # Round-11 R11-04: carry forward branch identity and
+            # narrative material from the source head. Without this,
+            # forking from a shadow branch silently demoted the fork's
+            # v0 to ``world_id="factual"`` (the default) and dropped
+            # the prose/raw_query/parsed_query/changeset provenance,
+            # so loading the fork looked like a fresh factual baseline
+            # instead of a continuation of the shadow exploration.
+            world_id=latest.world_id,
+            branch_label=latest.branch_label,
+            prose=latest.prose,
+            raw_query=latest.raw_query,
+            parsed_query_json=latest.parsed_query_json,
+            changeset_json=latest.changeset_json,
         )
         s.add(ver)
         s.commit()
@@ -2018,6 +2182,85 @@ def _next_version_number(s: Session, project_id: int) -> int:
         )
     ).first()
     return (result or 0) + 1 if result is not None else 0
+
+
+# ---------------------------------------------------------------------
+# Round-9 C7: MCP idempotency cache helpers
+# ---------------------------------------------------------------------
+
+def _mcp_idempotency_hash(
+    project_id: int,
+    ancestor_id: int | None,
+    idempotency_key: str,
+) -> str:
+    """Stable sha256 over the dedupe key tuple."""
+    import hashlib
+    payload = f"{int(project_id)}|{int(ancestor_id) if ancestor_id is not None else ''}|{idempotency_key}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def get_mcp_idempotent_response(
+    project_id: int,
+    ancestor_id: int | None,
+    idempotency_key: str,
+) -> dict | None:
+    """Return the previously cached response envelope for this key,
+    or ``None`` when no prior request matched. Used by
+    ``shadow_loom_mcp.helpers.run_and_save`` to short-circuit
+    client-side retries.
+    """
+    import json
+    key_hash = _mcp_idempotency_hash(project_id, ancestor_id, idempotency_key)
+    with get_session() as s:
+        row = s.get(McpIdempotencyRow, key_hash)
+        if row is None:
+            return None
+        try:
+            return json.loads(row.response_json)
+        except (TypeError, ValueError):
+            # Corrupt cache row — treat as a miss; the caller will
+            # rerun the pipeline and overwrite below.
+            return None
+
+
+def save_mcp_idempotent_response(
+    project_id: int,
+    ancestor_id: int | None,
+    idempotency_key: str,
+    response: dict,
+    version_row_id: int | None = None,
+) -> None:
+    """Persist a response envelope under the dedupe key. Existing rows
+    are overwritten (last-write-wins) so a successful retry replaces
+    a stale failure cache.
+    """
+    import json
+    key_hash = _mcp_idempotency_hash(project_id, ancestor_id, idempotency_key)
+    try:
+        response_json = json.dumps(response, default=str)
+    except (TypeError, ValueError):
+        logger.exception(
+            "[MCP] Failed to serialise response for idempotency cache "
+            "(project=%s ancestor=%s); skipping cache write",
+            project_id, ancestor_id,
+        )
+        return
+    with get_session() as s:
+        existing = s.get(McpIdempotencyRow, key_hash)
+        if existing is not None:
+            existing.response_json = response_json
+            existing.version_row_id = version_row_id
+            existing.created_at = datetime.now(timezone.utc)
+            s.add(existing)
+        else:
+            s.add(McpIdempotencyRow(
+                key_hash=key_hash,
+                project_id=project_id,
+                ancestor_id=ancestor_id,
+                version_row_id=version_row_id,
+                response_json=response_json,
+            ))
+        s.commit()
 
 
 def save_version(
@@ -2646,6 +2889,35 @@ def promote_branch(
     promoted_world_state_json = _retag_shadow_to_factual(
         src.world_state_json,
     )
+
+    # Round-11 R11-01: the factual_head + divergence check above ran
+    # inside a session that has now been released. Between that
+    # read and the save_version() below, another writer could append
+    # a new factual VersionRow — making our ``ancestor_id`` point at
+    # a now-stale head and silently overwriting that new factual
+    # canon (the very data-loss scenario the divergence guard is
+    # designed to prevent). Re-validate inside a fresh session
+    # immediately before persisting; abort with a clear
+    # VersionMutationError if the head moved. We require operators to
+    # re-issue the promotion rather than auto-retrying so they can
+    # re-inspect the new factual contents first.
+    with get_session() as s2:
+        latest_factual = s2.exec(
+            select(VersionRow)
+            .where(VersionRow.project_id == src.project_id)
+            .where(VersionRow.world_id == "factual")
+            .order_by(VersionRow.version.desc())
+        ).first()
+    latest_factual_id = latest_factual.id if latest_factual is not None else None
+    expected_ancestor_id = factual_head.id if factual_head is not None else None
+    if latest_factual_id != expected_ancestor_id:
+        raise VersionMutationError(
+            "Promotion aborted: factual mainline advanced concurrently "
+            f"(expected head id={expected_ancestor_id!r}, now "
+            f"id={latest_factual_id!r}). Re-inspect the new factual "
+            "head and re-issue the promotion if you still intend to "
+            "overwrite it."
+        )
 
     return save_version(
         project_id=src.project_id,
@@ -3495,6 +3767,40 @@ def list_world_facts(project_id: int) -> list["WorldFactRow"]:
         )
 
 
+def allocate_world_fact_id(project_id: int) -> str:
+    """Return the next free ``FACT_NNN`` identifier for *project_id*.
+
+    Round-10 R10-04: the previous call site used
+    ``f"FACT_{len(existing) + 1:03d}"`` which (a) raced under
+    concurrent research_topic MCP calls — two callers both saw N
+    facts and both tried to insert ``FACT_{N+1:03d}``, second one
+    crashing on the uq_world_fact_project_id constraint — and (b)
+    silently reused ids after any delete (a deleted FACT_005 would
+    make the next allocation collide with FACT_004's successor).
+
+    This helper instead scans the existing ``fact_id`` values, parses
+    the numeric suffix from any ``FACT_<n>`` shape (ignoring non-
+    conforming ids), and returns max(n)+1 zero-padded to width 3.
+    The IntegrityError retry loop in callers turns a lost race into a
+    transparent re-allocation rather than a 500.
+    """
+    with get_session() as s:
+        rows = s.exec(
+            select(WorldFactRow.fact_id).where(WorldFactRow.project_id == project_id)
+        ).all()
+    highest = 0
+    for fid in rows:
+        if not isinstance(fid, str) or not fid.startswith("FACT_"):
+            continue
+        try:
+            n = int(fid[len("FACT_"):])
+        except ValueError:
+            continue
+        if n > highest:
+            highest = n
+    return f"FACT_{highest + 1:03d}"
+
+
 def upsert_world_fact(
     *,
     project_id: int,
@@ -3645,6 +3951,177 @@ _RECOGNISED_STAGE_KEYS: frozenset[str] = frozenset({
 })
 
 
+# ---------------------------------------------------------------------
+# Round-10 R10-03: at-rest encryption for custom-provider API keys.
+#
+# Custom providers carry secrets (paid OpenAI-compatible bearer
+# tokens) that previously sat plaintext in ``custom_providers_json``.
+# Anyone with read access to the DB — or to a forgotten backup — got
+# the keys. We now Fernet-encrypt the ``api_key`` field per row, keyed
+# off ``SHADOW_LOOM_SECRET_KEY`` (must be a 32-byte urlsafe base64
+# string; generate with ``python -c "from cryptography.fernet import
+# Fernet; print(Fernet.generate_key().decode())"``).
+#
+# Backwards compatibility: rows persisted before this patch have raw
+# plaintext in ``api_key``. ``_decrypt_api_key`` detects the
+# ``ENC1:`` prefix and falls back to returning the input unchanged
+# when absent, so existing rows decrypt transparently and get
+# re-encrypted on the next ``set_user_model_settings`` write.
+#
+# When the env var is unset, ``_get_fernet`` returns ``None`` and the
+# helpers no-op (plaintext storage continues) so a fresh dev clone
+# without the secret keeps working — operators are warned once per
+# process via ``_warn_missing_secret``.
+# ---------------------------------------------------------------------
+
+_ENC_PREFIX = "ENC1:"
+_fernet_cached: object | None = None
+_fernet_warned: bool = False
+# Round-13 R13-05: snapshot of the key the cached Fernet was built
+# from. ``_get_fernet`` re-reads ``SHADOW_LOOM_SECRET_KEY`` whenever
+# the env value diverges from the snapshot so secret rotation or
+# test-time env mutations are picked up without a process restart.
+_fernet_cached_key: str | None = None
+
+
+def reset_fernet_cache() -> None:
+    """Drop the memoised Fernet instance.
+
+    Round-13 R13-05: lets tests and operator-driven secret rotation
+    invalidate the cache deterministically rather than relying on the
+    env-snapshot heuristic in ``_get_fernet``.
+    """
+    global _fernet_cached, _fernet_cached_key, _fernet_warned
+    _fernet_cached = None
+    _fernet_cached_key = None
+    _fernet_warned = False
+
+
+class InvalidSecretKeyError(RuntimeError):
+    """Raised when ``SHADOW_LOOM_SECRET_KEY`` is set but unusable.
+
+    Round-13 R13-04: previously this condition silently downgraded to
+    plaintext storage, which is a fail-open misconfiguration —
+    operators thought their provider API keys were encrypted at rest
+    when in fact a typo in the env var had disabled encryption. We
+    now raise so callers can surface a clear startup error.
+    """
+
+
+def _get_fernet():
+    """Return a memoised Fernet instance, or ``None`` when no secret
+    is configured. Local import keeps ``cryptography`` an optional
+    runtime dep at the module level.
+
+    Round-13 R13-04: when the env var is set but invalid we raise
+    :class:`InvalidSecretKeyError` rather than returning ``None``,
+    so encryption never silently downgrades to plaintext.
+    Round-13 R13-05: the cache is invalidated whenever the env value
+    changes so secret rotation takes effect without a restart.
+    """
+    global _fernet_cached, _fernet_cached_key, _fernet_warned
+    import os as _os
+    key = _os.environ.get("SHADOW_LOOM_SECRET_KEY", "").strip()
+    if _fernet_cached is not None and _fernet_cached_key == key:
+        return _fernet_cached
+    # Env diverged from snapshot — drop the cache and re-derive.
+    _fernet_cached = None
+    _fernet_cached_key = None
+    if not key:
+        if not _fernet_warned:
+            logger.warning(
+                "[DB] SHADOW_LOOM_SECRET_KEY is unset; custom-provider "
+                "API keys will be stored as PLAINTEXT. Set the env var "
+                "(value: output of "
+                "`python -c \"from cryptography.fernet import Fernet; "
+                "print(Fernet.generate_key().decode())\"`) to enable "
+                "at-rest encryption."
+            )
+            _fernet_warned = True
+        return None
+    try:
+        from cryptography.fernet import Fernet
+        _fernet_cached = Fernet(key.encode("utf-8"))
+        _fernet_cached_key = key
+    except Exception as exc:
+        # Round-13 R13-04: fail closed. Logging the exception alone
+        # would let the application keep running with PLAINTEXT
+        # encryption silently — exactly the failure mode an operator
+        # who set the env var was trying to avoid.
+        logger.exception(
+            "[DB] SHADOW_LOOM_SECRET_KEY is set but cryptography "
+            "rejected it. Refusing to fall back to plaintext storage. "
+            "The key must be a 32-byte urlsafe base64 string."
+        )
+        raise InvalidSecretKeyError(
+            "SHADOW_LOOM_SECRET_KEY is set but invalid; refusing to "
+            "downgrade to plaintext at-rest storage. Regenerate with "
+            "`python -c \"from cryptography.fernet import Fernet; "
+            "print(Fernet.generate_key().decode())\"`."
+        ) from exc
+    return _fernet_cached
+
+
+def _encrypt_api_key(plain: str) -> str:
+    """Return the Fernet ciphertext for *plain*, prefixed with
+    ``ENC1:`` so :func:`_decrypt_api_key` can tell encrypted strings
+    apart from legacy plaintext. Returns the input unchanged when no
+    secret is configured or the input is empty.
+    """
+    if not plain:
+        return plain
+    f = _get_fernet()
+    if f is None:
+        return plain
+    try:
+        token = f.encrypt(plain.encode("utf-8")).decode("ascii")
+    except Exception:
+        logger.exception(
+            "[DB] Failed to encrypt api_key; storing plaintext as "
+            "fallback so the user's settings save still succeeds."
+        )
+        return plain
+    return _ENC_PREFIX + token
+
+
+def _decrypt_api_key(stored: str) -> str:
+    """Reverse of :func:`_encrypt_api_key`. Plaintext rows (no
+    ``ENC1:`` prefix) and empty strings pass through unchanged so
+    pre-encryption deployments keep working.
+    """
+    if not stored or not stored.startswith(_ENC_PREFIX):
+        return stored
+    f = _get_fernet()
+    if f is None:
+        # We have an encrypted blob but no key — surface as empty
+        # rather than leaking the ciphertext into LLM client init.
+        logger.error(
+            "[DB] Encountered ENC1-prefixed api_key but "
+            "SHADOW_LOOM_SECRET_KEY is unset; returning empty."
+        )
+        return ""
+    try:
+        return f.decrypt(stored[len(_ENC_PREFIX):].encode("ascii")).decode("utf-8")
+    except Exception:
+        logger.exception(
+            "[DB] Failed to decrypt api_key (corrupt ciphertext or "
+            "wrong secret); returning empty."
+        )
+        return ""
+
+
+def _mask_api_key(plain: str) -> str:
+    """Return a UI-safe masked rendering of *plain* — only the last 4
+    characters are visible. Used wherever a settings surface echoes
+    a stored key back to the operator without giving them the full
+    secret. Empty input returns empty.
+    """
+    if not plain:
+        return ""
+    tail = plain[-4:] if len(plain) >= 4 else plain
+    return f"****{tail}"
+
+
 def get_user_model_settings(user_id: int) -> dict:
     """Return the user's saved model settings as a plain dict.
 
@@ -3692,10 +4169,14 @@ def get_user_model_settings(user_id: int) -> dict:
             if not prefix or not base_url or prefix in seen:
                 continue
             seen.add(prefix)
+            # Round-10 R10-03: api_key persisted with Fernet (when
+            # SHADOW_LOOM_SECRET_KEY is set). _decrypt_api_key returns
+            # the plaintext for ENC1-prefixed blobs and passes
+            # legacy plaintext rows through unchanged.
             cleaned_providers.append({
                 "prefix": prefix,
                 "base_url": base_url,
-                "api_key": str(p.get("api_key", "")),
+                "api_key": _decrypt_api_key(str(p.get("api_key", ""))),
                 "is_local": bool(p.get("is_local", False)),
             })
         return {
@@ -3744,10 +4225,12 @@ def set_user_model_settings(
             # Last wins — drop earlier dup.
             cleaned_providers = [x for x in cleaned_providers if x["prefix"] != prefix]
         seen.add(prefix)
+        # Round-10 R10-03: encrypt the secret before it ever lands in
+        # the JSON blob so neither DB dumps nor backups leak it.
         cleaned_providers.append({
             "prefix": prefix,
             "base_url": base_url,
-            "api_key": str(p.get("api_key", "")),
+            "api_key": _encrypt_api_key(str(p.get("api_key", ""))),
             "is_local": bool(p.get("is_local", False)),
         })
 

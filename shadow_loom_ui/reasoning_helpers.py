@@ -944,20 +944,51 @@ def convergence_trajectory_data(feedback_result: Any) -> List[Dict[str, Any]]:
     """Per-iteration metric trajectory from a :class:`FeedbackLoopResult`.
 
     Returns a list of ``{"iteration", "violation_count",
-    "critical_count", "passed"}`` — one row per cycle in
+    "critical_count", "passed", "failed_open", "severity_score",
+    "engine_failure_count"}`` — one row per cycle in
     ``feedback_result.history``. Empty list if feedback_result is
     falsy or has no history.
+
+    Round-8 audit (UI-P2-01): added ``failed_open``,
+    ``severity_score`` (unified Finding-stream score), and
+    ``engine_failure_count`` so the convergence chart can show *why*
+    a draft was accepted, retried, or rolled back instead of only
+    iteration-count and pass/fail. Engine failures are only known at
+    the final cycle (engine scoring runs once at loop end), so the
+    count is attached to the last row only — earlier rows report 0.
     """
     if not feedback_result:
         return []
     history = getattr(feedback_result, "history", None) or []
+    # Lazy import to avoid forcing every reasoning-helpers consumer
+    # to pull the full auditor module at import time.
+    try:
+        from shadow_loom.auditor import (
+            _finding_severity_score,
+            findings_from_sources,
+        )
+    except Exception:  # noqa: BLE001 — fallback to zero-score rows
+        _finding_severity_score = None  # type: ignore[assignment]
+        findings_from_sources = None  # type: ignore[assignment]
+    engine_failures_final = list(
+        getattr(feedback_result, "engine_threshold_failures", None) or []
+    )
     rows: List[Dict[str, Any]] = []
-    for cycle in history:
+    last_idx = len(history) - 1
+    for idx, cycle in enumerate(history):
         audit = getattr(cycle, "audit_result", None)
         violations = getattr(audit, "violations", []) if audit else []
         crit = sum(
             1 for v in violations if getattr(v, "severity", "") == "critical"
         )
+        engine_failures = engine_failures_final if idx == last_idx else []
+        severity_score = 0.0
+        if findings_from_sources is not None and _finding_severity_score is not None:
+            try:
+                findings = findings_from_sources(audit, engine_failures)
+                severity_score = float(_finding_severity_score(findings))
+            except Exception:  # noqa: BLE001 — best-effort UI metric
+                severity_score = 0.0
         rows.append({
             # ``cycle.iteration`` is 0-based in the data model; humans
             # count from 1, and the trajectory chart x-axis labels
@@ -966,6 +997,9 @@ def convergence_trajectory_data(feedback_result: Any) -> List[Dict[str, Any]]:
             "violation_count": len(violations),
             "critical_count": crit,
             "passed": bool(getattr(audit, "passed", False)) if audit else False,
+            "failed_open": bool(getattr(audit, "failed_open", False)) if audit else False,
+            "severity_score": round(severity_score, 3),
+            "engine_failure_count": len(engine_failures),
         })
     return rows
 

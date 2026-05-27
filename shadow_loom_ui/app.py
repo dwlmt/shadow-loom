@@ -98,26 +98,57 @@ _SESSION_STATES_MAX = 256
 # Idle TTL: sessions untouched for longer than this are evicted on the
 # next ``_get_session_state`` call.
 _SESSION_IDLE_TTL_SECONDS = 60 * 60 * 6  # 6h
+# Round-13 R13-01: serialise mutations to the session registry. NiceGUI
+# routes can run concurrently on the event loop and in worker threads
+# (auth callbacks, background renders), so the previous check-then-act
+# pattern in ``_get_session_state`` could race two requests for the
+# same browser id into creating two ``AppState`` objects, or have an
+# eviction sweep drop a state that another handler had just created
+# but not yet stored in ``_SESSION_LAST_TOUCH``. A single re-entrant
+# lock around the registry is enough — the critical sections are very
+# short (dict ops + a cheap ``AppState()`` constructor), and AppState
+# itself owns its own internal locking for runtime mutations.
+import threading as _threading
+_SESSION_REGISTRY_LOCK = _threading.RLock()
 
 
 def _evict_idle_sessions(now: float) -> None:
     """Drop sessions untouched past the idle TTL, then cap total count."""
-    stale = [
-        sid for sid, t in _SESSION_LAST_TOUCH.items()
-        if now - t > _SESSION_IDLE_TTL_SECONDS
-    ]
-    for sid in stale:
-        _SESSION_STATES.pop(sid, None)
-        _SESSION_LAST_TOUCH.pop(sid, None)
-    overflow = len(_SESSION_STATES) - _SESSION_STATES_MAX
-    if overflow > 0:
-        # Evict oldest-touched first.
-        victims = sorted(
-            _SESSION_LAST_TOUCH.items(), key=lambda kv: kv[1]
-        )[:overflow]
-        for sid, _ in victims:
+    with _SESSION_REGISTRY_LOCK:
+        stale = [
+            sid for sid, t in _SESSION_LAST_TOUCH.items()
+            if now - t > _SESSION_IDLE_TTL_SECONDS
+        ]
+        for sid in stale:
+            # Round-11 R11-03: tear down session-owned background work
+            # (asyncio tasks + deferred-reextraction threads) before
+            # dropping the AppState. Without this, evicted sessions leak
+            # workers that keep writing to now-orphaned state.
+            st = _SESSION_STATES.get(sid)
+            if st is not None:
+                try:
+                    st.teardown()
+                except Exception:
+                    logger.debug("session teardown failed for %s", sid, exc_info=True)
             _SESSION_STATES.pop(sid, None)
             _SESSION_LAST_TOUCH.pop(sid, None)
+        overflow = len(_SESSION_STATES) - _SESSION_STATES_MAX
+        if overflow > 0:
+            # Evict oldest-touched first.
+            victims = sorted(
+                _SESSION_LAST_TOUCH.items(), key=lambda kv: kv[1]
+            )[:overflow]
+            for sid, _ in victims:
+                st = _SESSION_STATES.get(sid)
+                if st is not None:
+                    try:
+                        st.teardown()
+                    except Exception:
+                        logger.debug(
+                            "session teardown failed for %s", sid, exc_info=True,
+                        )
+                _SESSION_STATES.pop(sid, None)
+                _SESSION_LAST_TOUCH.pop(sid, None)
 
 
 def _get_session_state() -> AppState:
@@ -151,29 +182,34 @@ def _get_session_state() -> AppState:
     import time as _time
     _now = _time.monotonic()
     _evict_idle_sessions(_now)
-    state = _SESSION_STATES.get(session_id)
-    if state is None:
-        state = AppState()
-        # Populate user info from session if authenticated
-        if storage.get("authenticated"):
-            state.set_user(
-                user_id=storage.get("user_id", 0),
-                username=storage.get("username", ""),
-                display_name=storage.get("display_name", ""),
-                avatar_url=storage.get("avatar_url", ""),
-            )
-        elif not config.AUTH_ENABLED:
-            # No OAuth providers configured \u2014 attach the built-in
-            # local user so the UI behaves like a single-user app.
-            from shadow_loom.db import ensure_local_user
-            local = ensure_local_user()
-            state.set_user(
-                user_id=local.id or 0,
-                username=local.username,
-                display_name=local.display_name or "Local User",
-            )
-        _SESSION_STATES[session_id] = state
-    _SESSION_LAST_TOUCH[session_id] = _now
+    # Round-13 R13-01: hold the registry lock across the
+    # check-then-create sequence so two concurrent requests for the
+    # same session cannot each build a fresh AppState (which would
+    # silently discard one of them when the second .setdefault won).
+    with _SESSION_REGISTRY_LOCK:
+        state = _SESSION_STATES.get(session_id)
+        if state is None:
+            state = AppState()
+            # Populate user info from session if authenticated
+            if storage.get("authenticated"):
+                state.set_user(
+                    user_id=storage.get("user_id", 0),
+                    username=storage.get("username", ""),
+                    display_name=storage.get("display_name", ""),
+                    avatar_url=storage.get("avatar_url", ""),
+                )
+            elif not config.AUTH_ENABLED:
+                # No OAuth providers configured \u2014 attach the built-in
+                # local user so the UI behaves like a single-user app.
+                from shadow_loom.db import ensure_local_user
+                local = ensure_local_user()
+                state.set_user(
+                    user_id=local.id or 0,
+                    username=local.username,
+                    display_name=local.display_name or "Local User",
+                )
+            _SESSION_STATES[session_id] = state
+        _SESSION_LAST_TOUCH[session_id] = _now
     return state
 
 

@@ -704,19 +704,28 @@ modes that surfaced on densely-constrained counterfactual queries
 (May 2026 Star Wars audit), and the propagator's cycle detection
 distinguishes *temporal-collapse* artefacts from real causal loops:
 
-1. **Refinement-regression rollback.** Each iteration's violation
-   set `{(type, evidence_quote)}` is snapshotted. If iteration
-   *n+1* both strictly increases the violation count *and*
-   introduces a violation type unseen at iteration *n*, the
-   `FeedbackLoop` rolls back to iteration *n*'s prose and exits
-   with a structured `correction_error`. Without this, the
-   rewriter regularly closes a minor density drift while opening
-   a major meta-narration leak and the user sees the regressed
-   draft as the final output.
+1. **Refinement-regression rollback.** Each iteration's *unified*
+   finding set — auditor violations *and* deterministic engine
+   threshold failures — is snapshotted as
+   `{(type, evidence_quote)}`. If iteration *n+1* both raises the
+   severity-weighted score (critical=4 / major=2 / minor=1) *and*
+   introduces a finding type unseen at iteration *n*, the
+   `FeedbackLoop` rolls back to iteration *n*'s prose. Round-7
+   (2026-05-26) added an anti-regression retry budget
+   (`AuditorConfig.regression_retry_budget`, default 1): the first
+   regression triggers a rollback **and** an explicit retry from the
+   rolled-back draft with a `REGRESSION ALERT` block prepended to
+   the refinement prompt; only a second regression exits the loop.
+   Without this, the rewriter regularly closes a minor density
+   drift while opening a major meta-narration leak and the user
+   sees the regressed draft as the final output.
 2. **`rendering_mode` is immutable across refinement.** The
    refinement agent is forbidden from mutating the brief's
    rendering mode; if it returns a mismatching mode the orchestrator
-   rejects the rewrite as a generation error and exits the loop.
+   logs a warning and **coerces the mode back** to the brief's
+   value so downstream scorers and re-extractors continue to see
+   the authoritative mode. (Earlier docs described an exit-on-drift
+   behaviour; the current contract is coerce-and-continue.)
    Without this, mode flips silently desynchronise the auditor's
    rubric from the prose's intent and convergence becomes accidental.
 3. **POV vs. summary-form mutex.** When a brief simultaneously

@@ -130,6 +130,21 @@ def build_explorer_tab(state: AppState) -> None:
     state.on(StateEvent.VERSION_CHANGED, _on_ws_change)
     state.on(StateEvent.NODE_SELECTED, _on_node_selected)
 
+    # Round-12 R12-09: detach listeners when the client disconnects so
+    # we don't accumulate dead callbacks that try to mutate elements
+    # whose owning client has been deleted (matches the cleanup
+    # pattern in ``tasks_indicator``).
+    try:
+        client = ui.context.client
+    except Exception:
+        client = None
+    if client is not None:
+        def _cleanup():
+            state.off(StateEvent.WORLD_STATE_CHANGED, _on_ws_change)
+            state.off(StateEvent.VERSION_CHANGED, _on_ws_change)
+            state.off(StateEvent.NODE_SELECTED, _on_node_selected)
+        client.on_disconnect(_cleanup)
+
 
 # =====================================================================
 # World explorer tree

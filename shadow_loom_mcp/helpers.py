@@ -14,10 +14,18 @@ from shadow_loom.db import (
     find_project_by_name,
     get_active_version,
     get_latest_version,
+    get_mcp_idempotent_response,
     get_version,
     get_version_by_id,
+    save_mcp_idempotent_response,
     save_version,
     set_active_version,
+)
+from shadow_loom.auditor import (
+    AuditorConfig,
+    Finding,
+    _finding_severity_score,
+    findings_from_sources,
 )
 from shadow_loom.extract_graph import VersionedWorldModel
 from shadow_loom.models import WorldStateV1
@@ -45,6 +53,197 @@ def _apply_inert_envelope(response: dict, physics_result: dict | None) -> None:
         reason = physics_result.get("intervention_inert_reason")
         if reason:
             response["intervention_inert_reason"] = reason
+
+
+# Round-8 audit (MCP-P1-02 / P1-01 / P2-03): contract-complete
+# envelope helpers. The MCP surface historically only exposed a
+# fragmented view of the audit + engine streams (`change_impact`,
+# `engine_threshold_failures`, `audit_converged`, `audit_iterations`)
+# and dropped scene-level POV metadata entirely, so external clients
+# couldn't tell *which* POV a draft locked to, *why* a draft was
+# accepted/retried/rolled back, or *which* engine threshold tripped
+# without re-running the math themselves. These helpers project the
+# already-typed core models (``Finding``, ``GeneratedScene``,
+# ``FeedbackLoopResult.history``) into compact dicts and are wired
+# in below at the end of ``_build_pipeline_envelope_extras``.
+
+# Round-8 audit (MCP-P1-03): allowlist of per-run auditor overrides
+# external clients are permitted to set. We intentionally restrict
+# overrides to the budget knobs added in round-7 (plus ``max_iterations``,
+# which was always env-tunable) — model names, temperatures, and
+# thresholds for engine scoring are deliberately *not* exposed via the
+# per-call surface so a misconfigured client can't downgrade engine
+# rigour silently. Unknown / disallowed keys are dropped with a
+# DEBUG log rather than raised so the call still proceeds.
+_ALLOWED_AUDITOR_OVERRIDES: frozenset[str] = frozenset({
+    "max_iterations",
+    "regression_retry_budget",
+    "failed_open_tolerance",
+    "enable_deterministic_prose_checks",
+    "pov_breach_threshold",
+})
+
+
+def _build_auditor_config_override(
+    overrides: dict[str, Any] | None,
+) -> tuple[AuditorConfig | None, list[dict[str, Any]]]:
+    """Coerce a per-call ``auditor_overrides`` dict into an
+    ``AuditorConfig`` instance for ``PipelineConfig.auditor_config``,
+    or return ``None`` when the caller didn't supply any overrides.
+
+    Returns ``(config_or_None, rejected_overrides)``. Round-9 C5 fix:
+    validate **key-by-key** so a single invalid value no longer drops
+    the entire override set. The ``rejected_overrides`` list contains
+    one ``{key, reason}`` entry per dropped override and is wired into
+    the response envelope so clients can surface the partial-apply
+    explicitly.
+
+    Round-9 C6: dropped overrides log **keys only** (plus the value's
+    type/length metadata). Client-supplied values can contain
+    arbitrary strings — never log them verbatim.
+    """
+    if not overrides:
+        return None, []
+    clean: dict[str, Any] = {}
+    rejected: list[dict[str, Any]] = []
+
+    def _value_meta(value: Any) -> str:
+        if value is None:
+            return "type=NoneType"
+        try:
+            length = len(value)  # type: ignore[arg-type]
+            return f"type={type(value).__name__},len={length}"
+        except TypeError:
+            return f"type={type(value).__name__}"
+
+    for k, v in overrides.items():
+        if k not in _ALLOWED_AUDITOR_OVERRIDES:
+            logger.debug(
+                "[MCP] Dropping disallowed auditor override key %r (%s)",
+                k, _value_meta(v),
+            )
+            rejected.append({"key": k, "reason": "disallowed_key"})
+            continue
+        if v is None:
+            rejected.append({"key": k, "reason": "null_value"})
+            continue
+        # Round-9 C5: validate this single field by constructing a
+        # one-key AuditorConfig. Pydantic surfaces a precise error for
+        # the offending field; we keep every other valid override.
+        try:
+            AuditorConfig(**{k: v})
+        except Exception as exc:  # noqa: BLE001 — bad client input
+            logger.debug(
+                "[MCP] Dropping invalid auditor override key %r (%s): %s",
+                k, _value_meta(v), type(exc).__name__,
+            )
+            rejected.append({"key": k, "reason": "invalid_value"})
+            continue
+        clean[k] = v
+    if not clean:
+        return None, rejected
+    try:
+        return AuditorConfig(**clean), rejected
+    except Exception as exc:  # noqa: BLE001 — should be unreachable
+        logger.exception(
+            "[MCP] Failed to assemble AuditorConfig from per-key-validated "
+            "overrides (keys=%s); falling back to defaults",
+            sorted(clean.keys()),
+        )
+        for k in clean:
+            rejected.append({"key": k, "reason": "assembly_error"})
+        return None, rejected
+
+
+def _findings_envelope(result: "PipelineResult") -> list[dict[str, Any]] | None:
+    """Project the final-cycle ``AuditResult`` + engine failures into a
+    flat ``findings[]`` list using the core ``findings_from_sources``
+    adapter. Returns ``None`` when no audit was run (skip_audit path).
+    """
+    fb = result.feedback_result
+    if fb is None:
+        return None
+    final_audit = fb.history[-1].audit_result if fb.history else None
+    findings = findings_from_sources(
+        final_audit, list(fb.engine_threshold_failures or []),
+    )
+    return [f.model_dump() for f in findings]
+
+
+def _audit_trace_envelope(
+    result: "PipelineResult",
+) -> list[dict[str, Any]] | None:
+    """Per-iteration compact trace so external clients can explain
+    *why* a draft was accepted/retried. Round-9 F11: engine failures
+    are now sourced **per cycle** from ``snap.engine_threshold_failures``
+    (populated by the feedback loop) instead of being attached only
+    to the terminal row. Falls back to the result-level final-cycle
+    failures when an older snapshot is missing the per-cycle list.
+    """
+    fb = result.feedback_result
+    if fb is None or not fb.history:
+        return None
+    trace: list[dict[str, Any]] = []
+    last_idx = len(fb.history) - 1
+    fallback_final = list(fb.engine_threshold_failures or [])
+    for idx, snap in enumerate(fb.history):
+        per_cycle = list(getattr(snap, "engine_threshold_failures", []) or [])
+        if not per_cycle and idx == last_idx:
+            # Belt-and-braces: snapshots produced before the F11
+            # patch don't carry per-cycle engine failures. For the
+            # final row, fall back to the result-level field so the
+            # trace stays consistent with ``engine_threshold_failures``
+            # surfaced at the response root.
+            per_cycle = fallback_final
+        findings = findings_from_sources(snap.audit_result, per_cycle)
+        trace.append({
+            "iteration": snap.iteration,
+            "passed": snap.audit_result.passed,
+            "failed_open": snap.audit_result.failed_open,
+            "violation_count": len(snap.audit_result.violations),
+            "engine_failure_count": len(per_cycle),
+            "severity_score": _finding_severity_score(findings),
+            "summary": snap.audit_result.audit_summary or "",
+        })
+    return trace
+
+
+def _scene_metadata_envelope(
+    result: "PipelineResult",
+) -> dict[str, Any] | None:
+    """Surface scene-level POV + rendering metadata so callers can see
+    which POV the renderer locked to (mirror of the brief's pov_lock
+    for single-POV; final-beat POV for rotating; possibly None for
+    ensemble) and which rendering mode produced the prose.
+
+    For multi-POV directives the brief's ``additional_pov_locks`` /
+    ``pov_policy`` are dug out of the recorded generation step in
+    ``result.history`` when available; otherwise we report the
+    single-POV defaults so clients can write uniform code.
+    """
+    scene = result.scene
+    if scene is None:
+        return None
+    meta: dict[str, Any] = {
+        "pov_entity": scene.pov_entity,
+        "rendering_mode": scene.rendering_mode,
+        "additional_pov_locks": [],
+        "pov_policy": "single",
+    }
+    for step in result.history.steps:
+        if step.get("step") != "generation":
+            continue
+        brief = step.get("brief") or {}
+        rendering = brief.get("rendering") if isinstance(brief, dict) else None
+        if not isinstance(rendering, dict):
+            continue
+        addl = rendering.get("additional_pov_locks") or []
+        policy = rendering.get("pov_policy") or "single"
+        if addl:
+            meta["additional_pov_locks"] = list(addl)
+        meta["pov_policy"] = policy
+        break
+    return meta
 
 
 # ── Project resolution ────────────────────────────────────────────
@@ -208,6 +407,8 @@ def run_and_save(
     *,
     skip_audit: bool = True,
     skip_reextraction: bool | None = None,
+    auditor_overrides: dict[str, Any] | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Run pipeline, save new version, return response dict.
 
@@ -226,6 +427,30 @@ def run_and_save(
     left MCP ``narrate`` (observation mode) saving prose against a
     stale topology too.
     """
+    # Round-9 C7: short-circuit on idempotency_key. Client-supplied
+    # retries (transport blip, MCP reconnect, user double-clicks the
+    # "narrate" button) replay the previously cached envelope instead
+    # of producing a duplicate version row and burning another
+    # generation budget. Misses fall through to the normal pipeline
+    # path and the response is cached at the end of the function.
+    if idempotency_key:
+        try:
+            cached = get_mcp_idempotent_response(
+                project_id=project_id,
+                ancestor_id=ancestor_row_id,
+                idempotency_key=idempotency_key,
+            )
+        except Exception:  # noqa: BLE001 — cache lookup must never block
+            logger.exception(
+                "[MCP] Idempotency cache lookup failed for "
+                "project=%s ancestor=%s; treating as a miss",
+                project_id, ancestor_row_id,
+            )
+            cached = None
+        if cached is not None:
+            cached.setdefault("idempotent_replay", True)
+            return cached
+
     # Derive re-extraction policy from query type when caller didn't
     # explicitly set it. Keep the explicit override path so callers
     # that need the old fast behaviour can still opt in.
@@ -260,9 +485,13 @@ def run_and_save(
         world_id=seed_world_id,  # type: ignore[arg-type]
         branch_label=seed_branch_label,
     )
+    auditor_cfg_override, rejected_overrides = _build_auditor_config_override(
+        auditor_overrides,
+    )
     cfg = PipelineConfig(
         skip_audit=skip_audit,
         skip_reextraction=skip_reextraction,
+        auditor_config=auditor_cfg_override,
     )
 
     # Activate per-user model overrides (default model, per-stage
@@ -544,6 +773,28 @@ def run_and_save(
     if result.world_model:
         response["world_model_version"] = result.world_model.version
 
+    # Round-8 audit (MCP-P1-02 / P1-01 / P2-03): unified findings,
+    # per-iteration audit_trace, and scene POV/rendering metadata.
+    # See ``_findings_envelope`` / ``_audit_trace_envelope`` /
+    # ``_scene_metadata_envelope`` for rationale.
+    findings_block = _findings_envelope(result)
+    if findings_block is not None:
+        response["findings"] = findings_block
+    audit_trace = _audit_trace_envelope(result)
+    if audit_trace is not None:
+        response["audit_trace"] = audit_trace
+    scene_meta = _scene_metadata_envelope(result)
+    if scene_meta is not None:
+        response["scene_metadata"] = scene_meta
+
+    # Round-9 C5: per-key auditor-override validation telemetry. When
+    # any override key was dropped (disallowed key, null value, or
+    # invalid per-field value) surface a structured list so the
+    # caller can see *which* keys didn't take effect and why, instead
+    # of silently falling back to defaults.
+    if rejected_overrides:
+        response["rejected_auditor_overrides"] = rejected_overrides
+
     # Plain-English summary for the user (LLMs / chat surfaces can read this
     # directly instead of trying to assemble one from the structured fields).
     response["lay_summary"] = humanize_pipeline_result(
@@ -551,5 +802,26 @@ def run_and_save(
         requested_effect=requested_effect,
         requested_intensity=requested_intensity,
     )
+
+    # Round-9 C7: persist this response under the caller's
+    # idempotency_key so a client-side retry replays the same envelope
+    # without re-running the pipeline (or producing a duplicate
+    # version row). Cache write is best-effort — failures only
+    # disable future replay, not the current response.
+    if idempotency_key:
+        try:
+            save_mcp_idempotent_response(
+                project_id=project_id,
+                ancestor_id=ancestor_row_id,
+                idempotency_key=idempotency_key,
+                response=response,
+                version_row_id=response.get("version_row_id"),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[MCP] Failed to persist idempotency cache for "
+                "project=%s ancestor=%s (response still returned)",
+                project_id, ancestor_row_id,
+            )
 
     return response
