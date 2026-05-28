@@ -234,6 +234,37 @@ class ObjectMutation(BaseModel):
     triggered_by: Optional[str] = None
 
 
+class EdgeMutation(BaseModel):
+    """Record of a topological-edge surgery applied via Pearl Rung-2.
+
+    Covers ``DoCausalEdge`` / ``DoSpatialEdge`` / ``DoChannel`` — three
+    surgery families that rewrite edges (or edge-like channel attrs)
+    rather than node-level magnitudes. Previously these surgeries only
+    bumped ``_edge_do_targets_applied`` and mutated the sandbox/world
+    silently; callers had no structured per-edge diff to render or
+    audit. The collector lets the renderer say "severed PASSAGE_X→Y"
+    instead of merely "intervention_inert=False, mutations=[]".
+
+    ``edge_type`` namespaces the action vocabulary:
+
+      * ``causal``   — ``action`` ∈ {"add", "sever"}
+      * ``spatial``  — ``action`` ∈ {"add", "sever", "lock", "unlock"}
+      * ``channel``  — ``action`` ∈ {"activate", "deactivate", "retune"}
+
+    ``details`` carries per-action context (e.g. ``causality_type``
+    filter on a sever, ``barrier_item_id`` on a lock, removed-edge
+    count, intelligibility-axis diff) without forcing a discriminated
+    union per family.
+    """
+    edge_type: Literal["causal", "spatial", "channel"]
+    action: str
+    source_id: Optional[str] = None
+    target_id: Optional[str] = None
+    channel_id: Optional[str] = None
+    fabula_time: int
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
 class NoisyOrProbability(BaseModel):
     """Per-trait noisy-OR aggregate plus its per-edge components.
 
@@ -301,6 +332,17 @@ class CausalPhysicsResult(BaseModel):
             "owner / properties). The pipeline adapter folds each into "
             "an ``ObjectUpdate`` on the chunk topology, which becomes "
             "an ``ObjectStateSnapshot`` on the canonical timeline."
+        ),
+    )
+    edge_mutations: List[EdgeMutation] = Field(
+        default_factory=list,
+        description=(
+            "Pearl Rung-2 surgeries that rewrite topological edges "
+            "(DoCausalEdge / DoSpatialEdge / DoChannel). Lets the "
+            "renderer surface per-edge diffs (e.g. \"severed "
+            "PASSAGE_X→Y\", \"locked DOOR with KEY_Y\", \"channel "
+            "CHN_Z terminated\") instead of relying solely on the "
+            "``_edge_do_targets_applied`` counter."
         ),
     )
     hidden_deltas: Dict[str, Dict[str, float]] = Field(
@@ -551,6 +593,11 @@ class CausalPhysicsEngine:
         self._concern_mutations: List[ConcernMutation] = []
         self._world_trait_mutations: List[WorldTraitMutation] = []
         self._object_mutations: List[ObjectMutation] = []
+        # Pearl Rung-2 topological-edge surgeries (DoCausalEdge /
+        # DoSpatialEdge / DoChannel) collected for caller-visible
+        # rendering. Distinct from ``_edge_do_targets_applied`` which
+        # is a flat counter used by the vacuity gate.
+        self._edge_mutations: List[EdgeMutation] = []
         # Noisy-OR per-trait records, populated only when
         # ``CausalPhysicsSettings.propagation_mode == "noisy_or"``.
         self._noisy_or_records: List[NoisyOrProbability] = []
@@ -890,7 +937,58 @@ class CausalPhysicsEngine:
         ``do(ENT_X.traits.fear=0.9)`` should leave ``loyalty`` and ``hope``
         free to evolve in response to other causal forces.
         """
+        # Phase 5b audit (Issue C) — snapshot the *pre-mutation* value of
+        # every directly-clamped trait BEFORE we hand off to the
+        # instantiator so we can emit a structured ``TraitMutation`` for
+        # each direct clamp after the surgery lands. Previously, direct
+        # trait clamps pinned ``_intervened_traits`` but never produced
+        # a mutation row — when downstream propagation was blocked
+        # (cyclic SCC, inertia), the result surfaced ``mutations=[]``
+        # and looked inert despite the trait actually moving.
+        _direct_trait_snapshot: List[tuple] = []
+        for target_path, new_value in interventions.items():
+            if "." not in target_path:
+                continue
+            node_id, sub_path = target_path.split(".", 1)
+            sub = sub_path.strip()
+            if not sub.startswith("traits."):
+                continue
+            parts = sub.split(".")
+            if len(parts) < 2 or not parts[1]:
+                continue
+            trait_name = parts[1]
+            if not self.sandbox.has_node(node_id):
+                continue
+            try:
+                _new_f = float(new_value)
+            except (TypeError, ValueError):
+                continue
+            traits = (self.sandbox.nodes[node_id].get("traits") or {})
+            cur = traits.get(trait_name) or {}
+            try:
+                _old_f = float(cur.get("value")) if isinstance(cur, dict) and cur.get("value") is not None else None
+            except (TypeError, ValueError):
+                _old_f = None
+            _direct_trait_snapshot.append((node_id, trait_name, _old_f, _new_f))
+
         AMWNInstantiator.execute_interventions(self.sandbox, interventions)
+
+        # Emit one TraitMutation per direct clamp. ``inertia=0`` and
+        # ``impact=0`` reflect the surgical bypass (we did not consume
+        # any propagation budget); the observable diff lives in
+        # ``old_value`` / ``new_value``.
+        for node_id, trait_name, _old_f, _new_f in _direct_trait_snapshot:
+            # Skip no-op clamps so the rendered diff list stays clean.
+            if _old_f is not None and _old_f == _new_f:
+                continue
+            self._mutations.append(TraitMutation(
+                node_id=node_id,
+                trait=trait_name,
+                old_value=(_old_f if _old_f is not None else float("nan")),
+                new_value=_new_f,
+                impact=0.0,
+                inertia=0.0,
+            ))
 
         # First pass: collect every per-trait pin the user explicitly
         # named. We need this set up-front so a co-occurring wildcard
@@ -1117,6 +1215,7 @@ class CausalPhysicsEngine:
         # on the legacy pass.
         reportage_only: Dict[str, Any] = {}
         proposition_world_trait_keys: set = set()
+        channel_keys: set = set()
         for t in do_targets:
             if isinstance(t, DoProposition):
                 k = f"{t.proposition_id}.truth"
@@ -1134,7 +1233,9 @@ class CausalPhysicsEngine:
                 # canonical write happens in ``_apply_do_channel``;
                 # this just exposes the surgery on the legacy envelope.
                 if t.active is not None:
-                    reportage_only[f"{t.channel_id}.active"] = bool(t.active)
+                    k = f"{t.channel_id}.active"
+                    reportage_only[k] = bool(t.active)
+                    channel_keys.add(k)
             elif isinstance(t, DoNarrativeObject):
                 if t.new_location_id is not None:
                     reportage_only[f"{t.object_id}.location_id"] = t.new_location_id
@@ -1150,9 +1251,20 @@ class CausalPhysicsEngine:
             # Proposition / world-trait typed handlers do the canonical
             # write; mark them applied so the legacy ``_intervene_state``
             # fallback doesn't redundantly clamp the same value.
-            if proposition_world_trait_keys:
+            #
+            # Phase 5b audit (Issue A) — also mark DoChannel mirror keys
+            # applied. The typed ``_apply_do_channel`` is authoritative
+            # for channel state; running the channel key through the
+            # legacy ``execute_interventions`` either redundantly sets
+            # an "active" attr on the sandbox node OR (when the channel
+            # is outside the ego graph) records a spurious
+            # ``unknown_node`` entry into ``skipped_interventions``,
+            # which downstream surfaces as a false-positive
+            # "intervention was skipped" report.
+            applied_keys = proposition_world_trait_keys | channel_keys
+            if applied_keys:
                 existing_applied = getattr(self, "_legacy_applied_keys", set()) or set()
-                self._legacy_applied_keys = existing_applied | proposition_world_trait_keys
+                self._legacy_applied_keys = existing_applied | applied_keys
 
         for t in do_targets:
             if isinstance(t, DoProposition):
@@ -1941,6 +2053,7 @@ class CausalPhysicsEngine:
         # World-state mirror so ego-graph re-extraction picks up the change.
         canonical = self.world_state.channels or {}
         ch = canonical.get(target.channel_id)
+        _channel_applied = False
         if ch is not None:
             if target.active is True:
                 ch.terminated_at_fabula = None
@@ -1951,6 +2064,7 @@ class CausalPhysicsEngine:
                 merged.update({k: float(v) for k, v in target.intelligibility.items()})
                 ch.intelligibility = merged
             self._edge_do_targets_applied += 1
+            _channel_applied = True
         else:
             # Round-8 audit fix — every other Do-handler warns when the
             # canonical mirror cannot be applied; channel used to fail
@@ -1963,6 +2077,28 @@ class CausalPhysicsEngine:
             # Sandbox-only success still counts as work for vacuity gating.
             if self.sandbox.has_node(target.channel_id):
                 self._edge_do_targets_applied += 1
+                _channel_applied = True
+        if _channel_applied:
+            if target.active is False:
+                _action = "deactivate"
+            elif target.active is True:
+                _action = "activate"
+            else:
+                _action = "retune"
+            self._edge_mutations.append(EdgeMutation(
+                edge_type="channel",
+                action=_action,
+                channel_id=target.channel_id,
+                fabula_time=ft,
+                details={
+                    "active": target.active,
+                    "intelligibility": (
+                        {k: float(v) for k, v in target.intelligibility.items()}
+                        if target.intelligibility else None
+                    ),
+                    "canonical_mirror": ch is not None,
+                },
+            ))
         
         # MODERATE-FIX (M-004): Channel termination cascades to invalidate beliefs.
         # When channel is severed (active=False), prune beliefs acquired via that channel
@@ -2253,6 +2389,7 @@ class CausalPhysicsEngine:
             attrs = sb[target.source_entity_id][target.target_entity_id][edge_key]
             metrics = attrs.setdefault("metrics", {})
             entry = metrics.get(target.metric) or {}
+            old_value = entry.get("value") if entry else None
             entry["value"] = float(target.value)
             entry["observed"] = True
             entry["last_updated_fabula"] = ft
@@ -2340,6 +2477,31 @@ class CausalPhysicsEngine:
             (target.source_entity_id, target.target_entity_id, target.metric)
         )
         self._edge_do_targets_applied += 1
+        # Phase 5b deep audit (DoRelationship Issue C-analogue): emit a
+        # SocialMutation record for the direct clamp so the pipeline
+        # adapter can fold a snapshot onto the canonical
+        # ``RelationshipEdge.metrics`` timeline and the engine-inert
+        # guard sees a registered surgery. Without this, a typed
+        # relationship clamp wrote canonical+sandbox state but
+        # ``result.social_mutations`` stayed empty, leaving downstream
+        # consumers blind to the surgery and the inert check unable
+        # to distinguish "no-op" from "ran but didn't propagate".
+        try:
+            old_f = float(old_value) if old_value is not None else float("nan")
+        except (TypeError, ValueError):
+            old_f = float("nan")
+        new_f = float(target.value)
+        if math.isnan(old_f) or abs(new_f - old_f) > 1e-12:
+            self._social_mutations.append(SocialMutation(
+                source_entity_id=target.source_entity_id,
+                target_entity_id=target.target_entity_id,
+                metric=str(target.metric),
+                old_value=old_f,
+                new_value=new_f,
+                impact=0.0,
+                inertia=float(target.inertia) if target.inertia is not None else 0.0,
+                triggered_by="DO_OPERATOR",
+            ))
 
     def _apply_do_causal_edge(self, target: Any) -> None:
         """Add or sever a :class:`CausalEdge`.
@@ -2397,6 +2559,17 @@ class CausalPhysicsEngine:
             # successful surgery (round-4 audit).
             if removed_count > 0:
                 self._edge_do_targets_applied += 1
+                self._edge_mutations.append(EdgeMutation(
+                    edge_type="causal",
+                    action="sever",
+                    source_id=target.source_id,
+                    target_id=target.target_id,
+                    fabula_time=ft,
+                    details={
+                        "removed_count": removed_count,
+                        "causality_type_filter": wanted_ct,
+                    },
+                ))
             return
         # action == "add"
         if not target.causality_type or not target.mechanism:
@@ -2524,6 +2697,19 @@ class CausalPhysicsEngine:
         topology.append(edge)
         self.world_state.causal_topology = topology
         self._edge_do_targets_applied += 1
+        self._edge_mutations.append(EdgeMutation(
+            edge_type="causal",
+            action="add",
+            source_id=target.source_id,
+            target_id=target.target_id,
+            fabula_time=ft,
+            details={
+                "causality_type": target.causality_type,
+                "mechanism": target.mechanism,
+                "causal_force": float(target.causal_force),
+                "trait_target": target.trait_target,
+            },
+        ))
 
     def _apply_do_spatial_edge(self, target: Any) -> None:
         """Add, sever, or lock-toggle a :class:`SpatialEdge`."""
@@ -2601,6 +2787,18 @@ class CausalPhysicsEngine:
                         sb.remove_edge(target.target_id, target.source_id, key=k)
             if matched or _rev_removed or _topo_removed:
                 self._edge_do_targets_applied += 1
+                self._edge_mutations.append(EdgeMutation(
+                    edge_type="spatial",
+                    action="sever",
+                    source_id=target.source_id,
+                    target_id=target.target_id,
+                    fabula_time=ft,
+                    details={
+                        "sandbox_removed": matched,
+                        "reverse_removed": _rev_removed,
+                        "topology_tombstoned": _topo_removed,
+                    },
+                ))
             return
 
         if target.action in ("lock", "unlock"):
@@ -2620,6 +2818,19 @@ class CausalPhysicsEngine:
                     canonical_hit = True
             if matched_keys or canonical_hit:
                 self._edge_do_targets_applied += 1
+                self._edge_mutations.append(EdgeMutation(
+                    edge_type="spatial",
+                    action=target.action,
+                    source_id=target.source_id,
+                    target_id=target.target_id,
+                    fabula_time=ft,
+                    details={
+                        "is_locked": new_locked,
+                        "barrier_item_id": target.barrier_item_id,
+                        "sandbox_edges_touched": len(matched_keys),
+                        "canonical_hit": canonical_hit,
+                    },
+                ))
             return
 
         # action == "add"
@@ -2681,6 +2892,18 @@ class CausalPhysicsEngine:
         topology.append(edge)
         self.world_state.spatial_topology = topology
         self._edge_do_targets_applied += 1
+        self._edge_mutations.append(EdgeMutation(
+            edge_type="spatial",
+            action="add",
+            source_id=target.source_id,
+            target_id=target.target_id,
+            fabula_time=ft,
+            details={
+                "connection_type": edge.connection_type,
+                "bidirectional": bool(edge.bidirectional),
+                "barrier_item_id": edge.barrier_item_id,
+            },
+        ))
 
     def _apply_do_object(self, target: Any) -> None:
         """Clamp a :class:`NarrativeObject`'s position / ownership / properties.
@@ -4484,6 +4707,17 @@ class CausalPhysicsEngine:
                 and not self._concern_mutations
                 and not self._world_trait_mutations
                 and not self._object_mutations
+                and not self._edge_mutations
+                # A direct trait/node clamp via apply_do_operator pins
+                # ``_intervened_traits`` / ``_intervened_nodes`` but
+                # does NOT record a TraitMutation (mutation rows are
+                # only emitted for downstream propagation, see
+                # _propagate_*). If propagation is blocked (cyclic
+                # SCC, inertia, etc.) but the clamp itself landed,
+                # the world DID move — surfacing ``intervention_inert``
+                # would be UX-misleading. Treat a non-empty trait
+                # pin-set as observable movement.
+                and not self._intervened_traits
             )
             _cycle_blocked = [
                 b for b in self._blocked if b.reason == "cycle"
@@ -4568,6 +4802,7 @@ class CausalPhysicsEngine:
             concern_mutations=self._concern_mutations,
             world_trait_mutations=self._world_trait_mutations,
             object_mutations=self._object_mutations,
+            edge_mutations=self._edge_mutations,
             hidden_deltas=self._hidden_deltas,
             rule3_pruned_interventions=ctf_report.rule3_pruned,
             rule3_pruning_mode=rule3_mode,
@@ -4692,6 +4927,42 @@ class CausalPhysicsEngine:
             # ``execute_distribution`` and recurse forever.
             sub._in_mc_sample = True
             sub._sample_noisy_or = True
+            # Replicate the parent engine's typed do-surgery state so the
+            # sub-engine's ``CausalPhysicsResult`` faithfully reports the
+            # proposition / belief / concern / world-trait / object
+            # mutations that ``apply_do_targets()`` committed on the
+            # parent BEFORE this Monte-Carlo sweep began. The structural
+            # effects of those typed surgeries already live on
+            # ``sample_sandbox`` / ``sample_world_state`` (via the deep
+            # copies above) — but the mutation *records*, the intervened
+            # node set, and the ``_legacy_applied_keys`` guard live on
+            # the parent engine and would otherwise be lost: the sub-
+            # engine only sees the legacy ``interventions`` dict, which
+            # does not understand ``PROP_*.truth`` / belief / concern
+            # keys, so its typed lists would stay empty and the final
+            # result would falsely report ``intervention_inert=True``.
+            # We also replicate ``_mutations`` / ``_social_mutations``
+            # (legacy trait & relationship clamps that ``DoTrait`` /
+            # ``DoRelationship`` already wrote on the parent),
+            # ``_intervened_traits`` (so per-sample propagation respects
+            # parent trait pins), and ``_last_legacy_interventions`` (so
+            # provenance invalidation sees the full surgery surface).
+            sub._proposition_mutations = list(self._proposition_mutations)
+            sub._belief_mutations = list(self._belief_mutations)
+            sub._concern_mutations = list(self._concern_mutations)
+            sub._world_trait_mutations = list(self._world_trait_mutations)
+            sub._object_mutations = list(self._object_mutations)
+            sub._edge_mutations = list(self._edge_mutations)
+            sub._mutations = list(self._mutations)
+            sub._social_mutations = list(self._social_mutations)
+            sub._intervened_nodes = set(self._intervened_nodes)
+            sub._intervened_traits = set(self._intervened_traits)
+            sub._legacy_applied_keys = set(
+                getattr(self, "_legacy_applied_keys", set()) or set()
+            )
+            sub._last_legacy_interventions = dict(
+                getattr(self, "_last_legacy_interventions", {}) or {}
+            )
             # Flip the module-level contextvar so per-step physics logs
             # (abduction, do-surgery, propagate, social, result) demote
             # to DEBUG for this sample. Reset in finally so we don't leak

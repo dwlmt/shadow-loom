@@ -430,11 +430,20 @@ def extract_ego_graph_from_memory(
     if shadow_path_seed_ids:
         seeds: Set[str] = set(shadow_path_seed_ids) | focus_id_set
         ancestors = _causal_ancestors(world_state, seeds, temporal_anchor)
-        if ancestors:
+        # Always include the surgery-seed event nodes themselves, in
+        # addition to their causal ancestors. ``_causal_ancestors``
+        # deliberately skips the seed set (it only returns strict
+        # ancestors), so a ``DoEvent(event_id='EVT_X')`` whose target
+        # falls outside the focus's recent-memory window would never
+        # land in the sandbox — the typed do-handler would then fail
+        # plausibility with "did not bind to any sandbox node" even
+        # though the event exists in the parent world.
+        nodes_to_consider = ancestors | set(shadow_path_seed_ids or set())
+        if nodes_to_consider:
             existing_evt_ids = {e["id"] for e in recent_memory}
             event_by_id = {e.id: e for e in world_state.events}
             ancestor_events_added = 0
-            for nid in ancestors:
+            for nid in nodes_to_consider:
                 if nid in existing_evt_ids:
                     continue
                 evt = event_by_id.get(nid)

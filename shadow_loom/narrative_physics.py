@@ -68,7 +68,15 @@ def _check_intervention_plausibility(
         | set(ws.locations.keys())
         | set(getattr(ws, "world_traits", {}).keys())
         | set(getattr(ws, "channels", {}).keys())
+        | {p.proposition_id for p in (getattr(ws, "propositions", None) or [])}
     )
+    # Per-entity motivational nodes (concerns) also need to register
+    # as valid intervention targets so DoConcern surgeries are not
+    # bounced by the plausibility gate. (Beliefs use composite
+    # (holder, target) keys handled by the legacy-lift bridge, not
+    # bare node ids.)
+    for _ent in (getattr(ws, "entities", {}) or {}).values():
+        valid_ids |= {c.concern_id for c in (getattr(_ent, "concerns", None) or [])}
 
     unresolved: List[Dict[str, str]] = []
     non_spawn_total = 0
@@ -129,7 +137,8 @@ def _check_engine_vacuity(
             or physics_result.proposition_mutations
             or physics_result.belief_mutations
             or physics_result.concern_mutations
-            or physics_result.world_trait_mutations):
+            or physics_result.world_trait_mutations
+            or getattr(physics_result, "edge_mutations", None)):
         return None
     if rung == 3 and physics_result.hidden_deltas:
         return None
@@ -251,9 +260,32 @@ def _typed_target_payload(
     pm = list(getattr(physics_result, "proposition_mutations", None) or [])
     bm = list(getattr(physics_result, "belief_mutations", None) or [])
     cm = list(getattr(physics_result, "concern_mutations", None) or [])
+    om = list(getattr(physics_result, "object_mutations", None) or [])
+    wtm = list(getattr(physics_result, "world_trait_mutations", None) or [])
+    em = list(getattr(physics_result, "edge_mutations", None) or [])
     out["proposition_mutations"] = [m.model_dump() for m in pm]
     out["belief_mutations"] = [m.model_dump() for m in bm]
     out["concern_mutations"] = [m.model_dump() for m in cm]
+    out["object_mutations"] = [m.model_dump() for m in om]
+    out["world_trait_mutations"] = [m.model_dump() for m in wtm]
+    out["edge_mutations"] = [m.model_dump() for m in em]
+    out["affected_objects"] = sorted({
+        getattr(m, "object_id", None) for m in om
+        if getattr(m, "object_id", None)
+    })
+    out["affected_world_traits"] = sorted({
+        getattr(m, "world_trait_id", None) for m in wtm
+        if getattr(m, "world_trait_id", None)
+    })
+    # Edge surgeries surface as a flat list of "edge_type:action" pairs
+    # so a renderer can quickly enumerate topological changes without
+    # iterating the structured ``edge_mutations`` list.
+    out["affected_edges"] = sorted({
+        f"{m.edge_type}:{m.action}:"
+        f"{getattr(m, 'source_id', None) or getattr(m, 'channel_id', None) or '?'}"
+        f"→{getattr(m, 'target_id', None) or ''}"
+        for m in em
+    })
 
     out["affected_propositions"] = sorted({
         getattr(m, "proposition_id", None) for m in pm
