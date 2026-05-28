@@ -212,9 +212,10 @@ class GeneratedScene(BaseModel):
         default_factory=IntroducedElements,
         description=(
             "Structured declaration of any new world elements (entities, "
-            "locations, objects, world traits, propositions, concerns) "
-            "that this rendering invented and that did not exist in the "
-            "input ``WorldStateV1``. Empty when the prose only refers to "
+            "locations, objects, world traits, propositions, concerns, "
+            "events, communication channels) that this rendering "
+            "invented and that did not exist in the input "
+            "``WorldStateV1``. Empty when the prose only refers to "
             "elements present in the SCENE CONTEXT block. The "
             "NarrativeAuditor cross-checks every proper noun in the "
             "prose against ``WorldStateV1`` \u222a this payload; the merge "
@@ -524,9 +525,16 @@ def _resolve_do_target_gloss(
             return f"{who}'s {trait}" if who and trait else None
         if kind == "world_trait":
             wt_id = getattr(do_target, "world_trait_id", None)
-            for wt in (getattr(world_state, "global_traits", None) or []):
-                if getattr(wt, "trait_id", None) == wt_id or getattr(wt, "id", None) == wt_id:
+            if wt_id:
+                # Canonical: world_traits is a Dict[str, GlobalTrait]
+                wt_map = getattr(world_state, "world_traits", None) or {}
+                wt = wt_map.get(wt_id)
+                if wt is not None:
                     return (getattr(wt, "description", None) or "").strip() or None
+                # Legacy fallback: pre-rename global_traits list (if any).
+                for wt in (getattr(world_state, "global_traits", None) or []):
+                    if getattr(wt, "trait_id", None) == wt_id or getattr(wt, "id", None) == wt_id:
+                        return (getattr(wt, "description", None) or "").strip() or None
             return None
     except Exception:  # noqa: BLE001 — gloss is best-effort
         return None
@@ -1044,9 +1052,13 @@ def _format_do_target_causal_context(
                         + ", ".join(f"{_ent_name(k)}={v:.2f}" for k, v in intel.items())
                     )
                 # Utterances / events flowing through this channel.
+                # Audit R16-4: EventNode links to its carrier channel via
+                # ``via_channel_id`` (see models.py EventNode); a stale
+                # ``channel_id`` lookup here made this block always empty
+                # so DoChannel renderers received no utterance context.
                 ch_rows: List[str] = []
                 for ev in events_list:
-                    if getattr(ev, "channel_id", None) == chn_id:
+                    if getattr(ev, "via_channel_id", None) == chn_id:
                         ch_rows.append(_evt_line(ev.id, indent="      "))
                 if ch_rows:
                     lines.append("    utterances on this channel:")
@@ -1654,6 +1666,230 @@ def _format_concern_mutation_lines(
     return out
 
 
+def _format_object_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render ObjectMutation dicts as ``OBJ_X: loc=LOC_A\u2192LOC_B owner=ENT_Y at fabula_t=120``.
+
+    Object surgeries (DoNarrativeObject / DoObjectDelete) clamp the
+    location, owner, and ``properties`` map of a NarrativeObject. Each
+    bullet describes the structured diff so the renderer can ground
+    the change in a concrete on-page beat (the prop moved here, the
+    owner now holds it, properties X/Y were set/unset) rather than
+    treating the surgery as opaque.
+    """
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        oid = m.get("object_id", "?")
+        ft = m.get("fabula_time")
+        parts: List[str] = []
+        if m.get("set_location_null"):
+            parts.append("loc=\u2205")
+        elif m.get("new_location_id"):
+            parts.append(f"loc\u2192{m['new_location_id']}")
+        if m.get("set_owner_null"):
+            parts.append("owner=\u2205")
+        elif m.get("new_owner_id"):
+            parts.append(f"owner\u2192{m['new_owner_id']}")
+        pset = m.get("properties_set") or {}
+        if pset:
+            parts.append(
+                "props_set={"
+                + ", ".join(f"{k}={v!r}" for k, v in list(pset.items())[:4])
+                + ("}" if len(pset) <= 4 else f", \u2026+{len(pset)-4}}}")
+            )
+        punset = m.get("properties_unset") or []
+        if punset:
+            parts.append(
+                "props_unset=[" + ", ".join(punset[:4])
+                + ("]" if len(punset) <= 4 else f", \u2026+{len(punset)-4}]")
+            )
+        if not parts:
+            parts.append("(no-op clamp)")
+        line = f"  {oid}: " + " ".join(parts)
+        if ft is not None:
+            line += f" at fabula_t={ft}"
+        trig = m.get("triggered_by")
+        if trig:
+            line += f"  [from {trig}]"
+        out.append(line)
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more object cascades")
+    return out
+
+
+def _format_world_trait_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render WorldTraitMutation dicts as ``WORLD_war_intensity: 0.40\u21920.85 at fabula_t=120 (inertia=0.20)``."""
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        wid = m.get("world_trait_id", "?")
+        old = m.get("old_value")
+        new = m.get("new_value")
+        ft = m.get("fabula_time")
+        inertia = m.get("inertia")
+        try:
+            old_s = f"{float(old):.2f}" if old is not None else "(new)"
+            new_s = f"{float(new):.2f}"
+        except (TypeError, ValueError):
+            old_s, new_s = str(old), str(new)
+        line = f"  {wid}: {old_s}\u2192{new_s}"
+        if ft is not None:
+            line += f" at fabula_t={ft}"
+        if inertia is not None:
+            try:
+                line += f" (inertia={float(inertia):.2f})"
+            except (TypeError, ValueError):
+                pass
+        dom_add = m.get("affected_domains_add") or []
+        dom_rem = m.get("affected_domains_remove") or []
+        if dom_add:
+            line += f"  +domains={dom_add[:3]}"
+        if dom_rem:
+            line += f"  -domains={dom_rem[:3]}"
+        trig = m.get("triggered_by")
+        if trig:
+            line += f"  [from {trig}]"
+        out.append(line)
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more world-trait cascades")
+    return out
+
+
+def _format_edge_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render EdgeMutation dicts as ``[causal] sever ENT_A\u2192ENT_B at fabula_t=120`` / ``[channel] deactivate CHN_K``."""
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        etype = m.get("edge_type", "?")
+        action = m.get("action", "?")
+        src = m.get("source_id")
+        tgt = m.get("target_id")
+        chn = m.get("channel_id")
+        ft = m.get("fabula_time")
+        if etype == "channel":
+            endpoint = chn or "?"
+        elif src and tgt:
+            endpoint = f"{src}\u2192{tgt}"
+        else:
+            endpoint = src or tgt or chn or "?"
+        line = f"  [{etype}] {action} {endpoint}"
+        if ft is not None:
+            line += f" at fabula_t={ft}"
+        details = m.get("details") or {}
+        if details:
+            shown = ", ".join(f"{k}={v!r}" for k, v in list(details.items())[:3])
+            line += f"  ({shown}" + ("" if len(details) <= 3 else f", \u2026+{len(details)-3}") + ")"
+        out.append(line)
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more edge cascades")
+    return out
+
+
+def _format_entity_delete_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render EntityDeleteMutation dicts as ``ENT_X excised at fabula_t=120 (social=3, causal=2, beliefs=4, events=5)``."""
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        eid = m.get("entity_id", "?")
+        ft = m.get("fabula_time")
+        soc = m.get("cascaded_social_edges_removed", 0)
+        cau = m.get("cascaded_causal_edges_removed", 0)
+        bel = m.get("cascaded_beliefs_removed", 0)
+        evt = m.get("cascaded_events_scrubbed", 0)
+        line = f"  {eid} excised"
+        if ft is not None:
+            line += f" at fabula_t={ft}"
+        line += f" (social={soc}, causal={cau}, beliefs={bel}, events={evt})"
+        trig = m.get("triggered_by")
+        if trig:
+            line += f"  [triggered_by={trig}]"
+        out.append(line)
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more entity deletions")
+    return out
+
+
+def _format_object_delete_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render ObjectDeleteMutation dicts as ``OBJ_X excised at fabula_t=120 (social=0, causal=2, beliefs=1, events=3)``."""
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        oid = m.get("object_id", "?")
+        ft = m.get("fabula_time")
+        soc = m.get("cascaded_social_edges_removed", 0)
+        cau = m.get("cascaded_causal_edges_removed", 0)
+        bel = m.get("cascaded_beliefs_removed", 0)
+        evt = m.get("cascaded_events_scrubbed", 0)
+        line = f"  {oid} excised"
+        if ft is not None:
+            line += f" at fabula_t={ft}"
+        line += f" (social={soc}, causal={cau}, beliefs={bel}, events={evt})"
+        trig = m.get("triggered_by")
+        if trig:
+            line += f"  [triggered_by={trig}]"
+        out.append(line)
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more object deletions")
+    return out
+
+
+def _format_event_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render EventMutation dicts as ``EVT_X relocated LOC_A\u2192LOC_B at fabula_t=120 (3 actor snapshots, 1 dead skipped)`` / ``EVT_Y time-shifted 10\u219215 (4 snapshots, 2 edges restamped)``."""
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        eid = m.get("event_id", "?")
+        kind = m.get("kind", "?")
+        ft = m.get("fabula_time")
+        if kind == "relocation":
+            old_loc = m.get("old_at_location_id") or "?"
+            new_loc = m.get("new_at_location_id") or "?"
+            cas = m.get("cascaded_actor_snapshots", 0)
+            skipped = m.get("skipped_dead_actors") or []
+            line = f"  {eid} relocated {old_loc}\u2192{new_loc}"
+            if ft is not None:
+                line += f" at fabula_t={ft}"
+            line += f" ({cas} actor snapshot(s)"
+            if skipped:
+                line += f", {len(skipped)} dead skipped"
+            line += ")"
+        elif kind == "time_shift":
+            old_ft = m.get("old_fabula_time")
+            new_ft = m.get("new_fabula_time")
+            snap = m.get("cascaded_snapshot_restamps", 0)
+            edge = m.get("cascaded_edge_restamps", 0)
+            line = f"  {eid} time-shifted {old_ft}\u2192{new_ft} ({snap} snapshot(s), {edge} edge/metric restamp(s))"
+        else:
+            line = f"  {eid} {kind}"
+            if ft is not None:
+                line += f" at fabula_t={ft}"
+        trig = m.get("triggered_by")
+        if trig:
+            line += f"  [triggered_by={trig}]"
+        out.append(line)
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more event mutations")
+    return out
+
+
 def _format_blocked_propagation_lines(
     blocked: Optional[List[Dict[str, Any]]],
 ) -> List[str]:
@@ -1686,6 +1922,12 @@ def _build_downstream_cascade_payload(
     proposition_mutations: Optional[List[Dict[str, Any]]] = None,
     belief_mutations: Optional[List[Dict[str, Any]]] = None,
     concern_mutations: Optional[List[Dict[str, Any]]] = None,
+    object_mutations: Optional[List[Dict[str, Any]]] = None,
+    world_trait_mutations: Optional[List[Dict[str, Any]]] = None,
+    edge_mutations: Optional[List[Dict[str, Any]]] = None,
+    entity_delete_mutations: Optional[List[Dict[str, Any]]] = None,
+    object_delete_mutations: Optional[List[Dict[str, Any]]] = None,
+    event_mutations: Optional[List[Dict[str, Any]]] = None,
     blocked: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, List[str]]:
     """Bundle of pre-formatted cascade lines for InterventionBranch / CounterfactualBranch / ThreatProximity."""
@@ -1695,6 +1937,12 @@ def _build_downstream_cascade_payload(
         "proposition_cascade_detail": _format_proposition_mutation_lines(proposition_mutations),
         "belief_cascade_detail": _format_belief_mutation_lines(belief_mutations),
         "concern_cascade_detail": _format_concern_mutation_lines(concern_mutations),
+        "object_cascade_detail": _format_object_mutation_lines(object_mutations),
+        "world_trait_cascade_detail": _format_world_trait_mutation_lines(world_trait_mutations),
+        "edge_cascade_detail": _format_edge_mutation_lines(edge_mutations),
+        "entity_delete_cascade_detail": _format_entity_delete_mutation_lines(entity_delete_mutations),
+        "object_delete_cascade_detail": _format_object_delete_mutation_lines(object_delete_mutations),
+        "event_cascade_detail": _format_event_mutation_lines(event_mutations),
         "blocked_propagations_detail": _format_blocked_propagation_lines(blocked),
     }
 
@@ -1720,6 +1968,16 @@ def _emit_downstream_cascade_lines(branch: Any, lines: List[str]) -> None:
          "  BELIEF CASCADES (per-holder confidence shifts):"),
         ("concern_cascade_detail",
          "  CONCERN CASCADES (utility salience / polarity / active shifts):"),
+        ("object_cascade_detail",
+         "  OBJECT CASCADES (prop location / owner / property clamps \u2014 dramatise the physical move or unset):"),
+        ("world_trait_cascade_detail",
+         "  WORLD-TRAIT CASCADES (ambient force magnitudes shifted \u2014 ground in atmosphere / weather / institutional mood):"),
+        ("edge_cascade_detail",
+         "  EDGE CASCADES (causal / spatial / channel topology surgeries \u2014 sever / lock / activate shifts the rules the scene operates under):"),
+        ("entity_delete_cascade_detail",
+         "  ENTITY DELETION CASCADES (existence-counterfactual excisions \u2014 character was never present; everything that depended on them must be re-grounded):"),
+        ("object_delete_cascade_detail",
+         "  OBJECT DELETION CASCADES (existence-counterfactual excisions \u2014 prop was never present; ownership / location / channel hooks must not be referenced):"),
         ("blocked_propagations_detail",
          "  BLOCKED PROPAGATIONS (resistance prevented full cascade \u2014 honour the BLOCKED PROPAGATIONS (HARD) constraint block's directive: stage one concrete resistance beat per entry when the list is short, treat as stable when the list is long; do NOT depict any listed (node, trait) as having reached the new value):"),
     ]
@@ -2838,6 +3096,7 @@ def _normalise_omniscient_to_ego_shape(
     *,
     recent_event_limit: int = 20,
     branch_world_id: Optional[str] = None,
+    pov_entity_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Convert a full ``WorldStateV1.model_dump()`` into the ego-graph
     payload shape consumed by :func:`format_scene_context_for_prompt`.
@@ -2926,12 +3185,22 @@ def _normalise_omniscient_to_ego_shape(
     utterances = [e for e in bounded if e.get("event_type") == "utterance"]
 
     return {
-        # Treat every entity as "focus" in the omniscient view so the
-        # formatter renders trait/belief blocks rather than the
-        # condensed co-present line. Empty present_entities avoids
-        # double-listing.
-        "focus_entities": ent_list,
-        "present_entities": [],
+        # R19-M8: when a POV roster is supplied, route only those
+        # entities to ``focus_entities`` (the formatter renders full
+        # trait/belief/concern interiority for focus) and ALL the
+        # rest to ``present_entities`` (condensed co-present line).
+        # This prevents the omniscient view from leaking every
+        # character's beliefs/concerns into a POV-bound prompt.
+        # When no POV roster is given, retain the legacy
+        # "everyone-is-focus" omniscient behaviour.
+        "focus_entities": (
+            [e for e in ent_list if e.get("id") in set(pov_entity_ids)]
+            if pov_entity_ids else ent_list
+        ),
+        "present_entities": (
+            [e for e in ent_list if e.get("id") not in set(pov_entity_ids)]
+            if pov_entity_ids else []
+        ),
         "current_locations": loc_list,
         "present_objects": obj_list,
         "relevant_relationships": list(ctx.get("social_topology") or []),
@@ -3123,10 +3392,25 @@ def format_scene_context_for_prompt(
     _utt_chars = utterance_chars if utterance_chars is not None else _s.scene_context_utterance_chars
 
     ctx = _normalise_sandbox_to_ego_shape(ctx)
+    # R19-M8: thread POV roster through so omniscient normalisation
+    # can scope ``focus_entities`` when the caller has pinned a POV
+    # (the ctx dict carries ``pov_entity_id`` / ``pov_entity_ids``
+    # for ego / ensemble queries respectively).
+    _pov_ids: List[str] = []
+    if isinstance(ctx, dict):
+        single = ctx.get("pov_entity_id")
+        if isinstance(single, str) and single:
+            _pov_ids.append(single)
+        roster = ctx.get("pov_entity_ids")
+        if isinstance(roster, list):
+            for rid in roster:
+                if isinstance(rid, str) and rid:
+                    _pov_ids.append(rid)
     ctx = _normalise_omniscient_to_ego_shape(
         ctx,
         recent_event_limit=_recent_events,
         branch_world_id=ctx.get("branch_world_id") if isinstance(ctx, dict) else None,
+        pov_entity_ids=_pov_ids or None,
     )
 
     # ------------------------------------------------------------
@@ -3364,10 +3648,31 @@ def format_scene_context_for_prompt(
                 f", intelligibility={{{', '.join(low_intel)}}}"
                 if low_intel else ""
             )
+            # R19-M10: surface the channel's availability window so
+            # the renderer cannot route dialogue through a severed
+            # or not-yet-established channel. Use \u221e for the
+            # open-ended terminus.
+            est = ch.get("established_at_fabula")
+            term = ch.get("terminated_at_fabula")
+            win_blob = ""
+            if est is not None or term is not None:
+                win_blob = (
+                    f", window=[{est if est is not None else '?'}.."
+                    f"{term if term is not None else '\u221e'}]"
+                )
             sections.append(
-                f"  - {cname} ({cid}) — {medium}, {direction}, "
-                f"participants={parts}{intel_blob}"
+                f"  - {cname} ({cid}) \u2014 {medium}, {direction}, "
+                f"participants={parts}{intel_blob}{win_blob}"
             )
+        # R19-M10: explicit hard constraint so the renderer cannot
+        # route dialogue through a channel whose window has already
+        # closed at the scene's fabula_time. This is a renderer-side
+        # guard; auditor also flags violations.
+        sections.append(
+            "  (Hard constraint: never route new dialogue through a "
+            "channel whose window has closed at the scene's "
+            "fabula_time.)"
+        )
 
     # ------------------------------------------------------------
     # Recent events — surface actors / targets / type / timing so the
@@ -5011,10 +5316,21 @@ def build_intervention_brief(
     affected_propositions: Optional[List[str]] = None,
     affected_beliefs: Optional[List[str]] = None,
     affected_concerns: Optional[List[str]] = None,
+    affected_objects: Optional[List[str]] = None,
+    affected_world_traits: Optional[List[str]] = None,
+    affected_edges: Optional[List[str]] = None,
+    affected_entity_deletes: Optional[List[str]] = None,
+    affected_object_deletes: Optional[List[str]] = None,
     social_mutations: Optional[List[Dict[str, Any]]] = None,
     proposition_mutations: Optional[List[Dict[str, Any]]] = None,
     belief_mutations: Optional[List[Dict[str, Any]]] = None,
     concern_mutations: Optional[List[Dict[str, Any]]] = None,
+    object_mutations: Optional[List[Dict[str, Any]]] = None,
+    world_trait_mutations: Optional[List[Dict[str, Any]]] = None,
+    edge_mutations: Optional[List[Dict[str, Any]]] = None,
+    entity_delete_mutations: Optional[List[Dict[str, Any]]] = None,
+    object_delete_mutations: Optional[List[Dict[str, Any]]] = None,
+    event_mutations: Optional[List[Dict[str, Any]]] = None,
     causal_chain: Optional[List[str]] = None,
     *,
     preceding_prose: Optional[str] = None,
@@ -5426,6 +5742,11 @@ def build_intervention_brief(
             affected_concern_descriptions=_resolve_affected_descriptions(
                 world_state, list(affected_concerns or []), "concern",
             ),
+            affected_objects=list(affected_objects or []),
+            affected_world_traits=list(affected_world_traits or []),
+            affected_edges=list(affected_edges or []),
+            affected_entity_deletes=list(affected_entity_deletes or []),
+            affected_object_deletes=list(affected_object_deletes or []),
             causal_chain=list(causal_chain or []),
             causal_chain_descriptions=_resolve_affected_descriptions(
                 world_state, list(causal_chain or []), "event",
@@ -5436,6 +5757,12 @@ def build_intervention_brief(
                 proposition_mutations=proposition_mutations,
                 belief_mutations=belief_mutations,
                 concern_mutations=concern_mutations,
+                object_mutations=object_mutations,
+                world_trait_mutations=world_trait_mutations,
+                edge_mutations=edge_mutations,
+                entity_delete_mutations=entity_delete_mutations,
+                object_delete_mutations=object_delete_mutations,
+                event_mutations=event_mutations,
                 blocked=blocked,
             ),
         ) if (
@@ -5474,12 +5801,23 @@ def build_counterfactual_brief(
     affected_propositions: Optional[List[str]] = None,
     affected_beliefs: Optional[List[str]] = None,
     affected_concerns: Optional[List[str]] = None,
+    affected_objects: Optional[List[str]] = None,
+    affected_world_traits: Optional[List[str]] = None,
+    affected_edges: Optional[List[str]] = None,
+    affected_entity_deletes: Optional[List[str]] = None,
+    affected_object_deletes: Optional[List[str]] = None,
     historical_do_targets: Optional[List[Dict[str, Any]]] = None,
     mutations: Optional[List[Dict[str, Any]]] = None,
     social_mutations: Optional[List[Dict[str, Any]]] = None,
     proposition_mutations: Optional[List[Dict[str, Any]]] = None,
     belief_mutations: Optional[List[Dict[str, Any]]] = None,
     concern_mutations: Optional[List[Dict[str, Any]]] = None,
+    object_mutations: Optional[List[Dict[str, Any]]] = None,
+    world_trait_mutations: Optional[List[Dict[str, Any]]] = None,
+    edge_mutations: Optional[List[Dict[str, Any]]] = None,
+    entity_delete_mutations: Optional[List[Dict[str, Any]]] = None,
+    object_delete_mutations: Optional[List[Dict[str, Any]]] = None,
+    event_mutations: Optional[List[Dict[str, Any]]] = None,
     blocked: Optional[List[Dict[str, Any]]] = None,
     causal_chain: Optional[List[str]] = None,
     *,
@@ -5658,6 +5996,11 @@ def build_counterfactual_brief(
         affected_concern_descriptions=_resolve_affected_descriptions(
             world_state, list(affected_concerns or []), "concern",
         ),
+        affected_objects=list(affected_objects or []),
+        affected_world_traits=list(affected_world_traits or []),
+        affected_edges=list(affected_edges or []),
+        affected_entity_deletes=list(affected_entity_deletes or []),
+        affected_object_deletes=list(affected_object_deletes or []),
         causal_chain=list(causal_chain or []),
         causal_chain_descriptions=_resolve_affected_descriptions(
             world_state, list(causal_chain or []), "event",
@@ -5668,12 +6011,17 @@ def build_counterfactual_brief(
             proposition_mutations=proposition_mutations,
             belief_mutations=belief_mutations,
             concern_mutations=concern_mutations,
+            object_mutations=object_mutations,
+            world_trait_mutations=world_trait_mutations,
+            edge_mutations=edge_mutations,
+            entity_delete_mutations=entity_delete_mutations,
+            object_delete_mutations=object_delete_mutations,
+            event_mutations=event_mutations,
             blocked=blocked,
         ),
     )
 
     constraints = [
-        *_user_intent_constraints(query.original_query),
         ConstraintBlock(
             constraint_type="narrative",
             priority="hard",
@@ -6148,6 +6496,11 @@ def render_from_query(
             affected_propositions=physics_result.get("affected_propositions"),
             affected_beliefs=physics_result.get("affected_beliefs"),
             affected_concerns=physics_result.get("affected_concerns"),
+            affected_objects=physics_result.get("affected_objects"),
+            affected_world_traits=physics_result.get("affected_world_traits"),
+            affected_edges=physics_result.get("affected_edges"),
+            affected_entity_deletes=physics_result.get("affected_entity_deletes"),
+            affected_object_deletes=physics_result.get("affected_object_deletes"),
             # Phase-10 downstream cascade payload — engine-emitted
             # SocialMutation / Proposition/Belief/Concern mutations.
             # Without these, the InterventionBranch in the brief shows
@@ -6158,6 +6511,12 @@ def render_from_query(
             proposition_mutations=physics_result.get("proposition_mutations"),
             belief_mutations=physics_result.get("belief_mutations"),
             concern_mutations=physics_result.get("concern_mutations"),
+            object_mutations=physics_result.get("object_mutations"),
+            world_trait_mutations=physics_result.get("world_trait_mutations"),
+            edge_mutations=physics_result.get("edge_mutations"),
+            entity_delete_mutations=physics_result.get("entity_delete_mutations"),
+            object_delete_mutations=physics_result.get("object_delete_mutations"),
+            event_mutations=physics_result.get("event_mutations"),
             causal_chain=physics_result.get("causal_chain"),
             preceding_prose=preceding_prose,
             branch_world_id=branch_world_id,
@@ -6186,6 +6545,11 @@ def render_from_query(
             affected_propositions=physics_result.get("affected_propositions"),
             affected_beliefs=physics_result.get("affected_beliefs"),
             affected_concerns=physics_result.get("affected_concerns"),
+            affected_objects=physics_result.get("affected_objects"),
+            affected_world_traits=physics_result.get("affected_world_traits"),
+            affected_edges=physics_result.get("affected_edges"),
+            affected_entity_deletes=physics_result.get("affected_entity_deletes"),
+            affected_object_deletes=physics_result.get("affected_object_deletes"),
             historical_do_targets=physics_result.get("historical_do_targets"),
             # Phase-10 downstream cascade payload.
             mutations=physics_result.get("mutations"),
@@ -6193,6 +6557,12 @@ def render_from_query(
             proposition_mutations=physics_result.get("proposition_mutations"),
             belief_mutations=physics_result.get("belief_mutations"),
             concern_mutations=physics_result.get("concern_mutations"),
+            object_mutations=physics_result.get("object_mutations"),
+            world_trait_mutations=physics_result.get("world_trait_mutations"),
+            edge_mutations=physics_result.get("edge_mutations"),
+            entity_delete_mutations=physics_result.get("entity_delete_mutations"),
+            object_delete_mutations=physics_result.get("object_delete_mutations"),
+            event_mutations=physics_result.get("event_mutations"),
             blocked=physics_result.get("blocked"),
             causal_chain=physics_result.get("causal_chain"),
             preceding_prose=preceding_prose,

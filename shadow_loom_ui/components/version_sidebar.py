@@ -697,13 +697,19 @@ def _do_promote(
         return
 
     dialog.close()
+    # R19-L4: split persistence-success from reload-success so the
+    # user doesn't see a "Promoted" toast while the session is still
+    # stuck on the old factual head. We notify persistence success
+    # below and add a second reload notification after
+    # ``load_db_version`` completes.
     ui.notify(
-        f"Promoted shadow v{current['version']} \u2192 factual v{promoted.version}",
+        f"Promoted shadow v{current['version']} \u2192 factual v{promoted.version} (persisted)",
         type="positive",
     )
 
     # Hop the UI onto the new factual head so the user sees the result.
     from shadow_loom.models import WorldStateV1
+    _reload_ok = False
     try:
         ws = WorldStateV1.model_validate_json(promoted.world_state_json)
         state.load_db_version(
@@ -718,8 +724,22 @@ def _do_promote(
                 logger.exception(
                     "Failed to update active-version pointer after promote"
                 )
+        _reload_ok = True
     except Exception:
         logger.exception("Failed to load promoted version")
+
+    # R19-L4: only signal "active" after the session reload succeeded.
+    if _reload_ok:
+        ui.notify(
+            f"Session now active on factual v{promoted.version}",
+            type="positive",
+        )
+    else:
+        ui.notify(
+            "Promoted but session reload failed \u2014 reload the page to "
+            "see the new factual head.",
+            type="warning",
+        )
 
     _render_versions(state, container)
 

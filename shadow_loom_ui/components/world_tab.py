@@ -806,9 +806,15 @@ def build_world_tab(state: AppState) -> None:
                         else:
                             chosen = []
                         render_comparison_view(ws, entity_ids=chosen)
-                except Exception as e:
+                except Exception:
+                    # R20-H12: do not surface raw exception text in the
+                    # UI \u2014 it can leak filesystem paths, SQL fragments or
+                    # internal IDs. The full traceback is captured in
+                    # logs via ``logger.exception`` for triage.
                     logger.exception("Graph rendering failed")
-                    ui.label(f"Render error: {e}").classes("text-negative")
+                    ui.label(
+                        "Render error \u2014 see server logs for details."
+                    ).classes("text-negative")
 
         # Initial render + subscriptions
         _refresh()

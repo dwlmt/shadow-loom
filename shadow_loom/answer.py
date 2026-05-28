@@ -485,9 +485,15 @@ def _compress_world_state(
             wid_tag = ""
             if branch_world_id == "shadow":
                 wid_tag = f" [{u.get('world_id', 'factual')}]"
+            # R19-M9: surface the channel an utterance routed over
+            # so the answer agent can reason about channel reach /
+            # severance instead of inferring face-to-face by
+            # default.
+            via_ch = u.get("via_channel_id")
+            ch_tag = f" via=`{via_ch}`" if via_ch else ""
             lines.append(
                 f"- T={ft} `{uid}`{wid_tag} {speaker} → [{addressees}]"
-                f"{tv_str}: {content}"
+                f"{tv_str}{ch_tag}: {content}"
             )
 
     world_traits = physics_state.get("world_traits", {}) or {}
@@ -517,7 +523,18 @@ def _compress_world_state(
             wid_tag = ""
             if branch_world_id == "shadow":
                 wid_tag = f" [{ch.get('world_id', 'factual')}]"
-            lines.append(f"- `{cid}` {medium}{wid_tag} participants=[{parts}]")
+            # R19-M9: include the channel's availability window so
+            # the answer agent doesn't cite a channel as evidence
+            # outside its established/terminated fabula range.
+            est = ch.get("established_at_fabula")
+            term = ch.get("terminated_at_fabula")
+            win_tag = ""
+            if est is not None or term is not None:
+                win_tag = (
+                    f" window=[{est if est is not None else '?'}."
+                    f".{term if term is not None else '∞'}]"
+                )
+            lines.append(f"- `{cid}` {medium}{wid_tag}{win_tag} participants=[{parts}]")
 
     # Propositions — the catalogue of structured factual claims.
     # ``truth_at_fabula`` is the physics commit log: the answer LLM
@@ -740,28 +757,52 @@ You will be given:
   3. Phase-7 RUNG-2 SURGERY METADATA when the parser produced typed
      ``do_targets``. The metadata names the *kind* of surgery and the
      concrete payload — DoEvent / DoProposition / DoBelief / DoConcern
-     / DoTrait — and lists the propositions, beliefs, and concerns
-     whose values shifted relative to the factual world.
+     / DoTrait / DoNarrativeObject / DoWorldTrait / DoChannel /
+     DoRelationship / DoCausalEdge / DoSpatialEdge / DoEntityDelete /
+     DoObjectDelete — and lists the propositions, beliefs, concerns,
+     objects, world-traits, edges, and excisions whose values shifted
+     relative to the factual world.
 
 Rules:
   • Answer ONLY from the supplied (post-do) world state. The factual
     mainline is background contrast; do NOT default to it.
   • Match the surgery's epistemic / ontic register:
-      - DoProposition  → "Under the clamp that PROP X is true, …" (ontic).
-      - DoBelief       → "From holder H's clamped belief …" (epistemic;
+      - DoProposition       → "Under the clamp that PROP X is true, …" (ontic).
+      - DoBelief            → "From holder H's clamped belief …" (epistemic;
         the world may be unchanged but H's beliefs were forced).
-      - DoConcern      → "With holder H's concern C clamped to
+      - DoConcern           → "With holder H's concern C clamped to
         salience S, …" (motivational; reweighs disposition, not facts).
-      - DoTrait        → "With H's trait T clamped to V, …".
-      - DoEvent        → "Under do(E={occurred|prevented}), …". When
+      - DoTrait             → "With H's trait T clamped to V, …".
+      - DoEvent             → "Under do(E={occurred|prevented}), …". When
         ``new_at_location_id`` is set, render as "Under do(E moved
         to LOC X), …" — the event still happens but at a
-        different location, dragging its actors with it.
+        different location, dragging its actors with it. When
+        ``new_fabula_time`` is set, render as "Under do(E shifted
+        to t=N), …".
+      - DoNarrativeObject   → "With OBJ X clamped to {location|owner|
+        property}, …" (object relocation / ownership / properties).
+      - DoWorldTrait        → "Under the ambient clamp WORLD_T = V, …"
+        (storm-intensity, regime-grip, season — the global force layer).
+      - DoCausalEdge        → "With the causal link E_A→E_B {severed|
+        added}, …" (re-write the storyworld's mechanism, not its
+        propositions).
+      - DoSpatialEdge       → "With LOC_A→LOC_B {severed|locked|
+        unlocked}, …" (topology re-write — a closed passage, a
+        new shortcut, a locked door).
+      - DoChannel           → "With channel CHN_K {activated|
+        deactivated|retuned}, …" (epistemic carrier severed / opened).
+      - DoRelationship      → "With H↔T's {affinity|power|fear} clamped
+        to V, …".
+      - DoEntityDelete      → "As if ENT_X had never existed, …"
+        (existence excision — cascades remove their social/belief/
+        causal footprint; surface the excision as the mechanism).
+      - DoObjectDelete      → "As if OBJ_X had never existed, …".
   • When the surgery is vacuous (Rule 3 pruned target_node_ids) say so
     plainly and lower confidence; do NOT invent downstream ripples.
-  • When typed AFFECTED PROPOSITIONS / BELIEFS / CONCERNS are listed,
-    foreground them in the answer rather than leading with low-stake
-    surface state changes.
+  • When typed AFFECTED PROPOSITIONS / BELIEFS / CONCERNS / OBJECTS /
+    WORLD TRAITS / EDGES / EVENTS / ENTITY DELETIONS / OBJECT
+    DELETIONS are listed, foreground them in the answer rather than
+    leading with low-stake surface state changes.
   • Never name the rung level or the words "do-operator" in the
     rendered prose. Use natural conditional language ("Suppose…",
     "If we force…", "Under that clamp,…").
@@ -785,8 +826,9 @@ You will be given:
      diff actual vs counterfactual.
   4. Phase-7 RUNG-3 SURGERY METADATA when the parser produced typed
      ``historical_do_targets``. The metadata names the *kind* of
-     historical surgery and lists the propositions, beliefs, and
-     concerns that flipped between actual and counterfactual.
+     historical surgery and lists the propositions, beliefs, concerns,
+     objects, world-traits, edges, and excisions that flipped between
+     actual and counterfactual.
   5. A NARRATIVE FORM tag when one was inferred (tragic / comic /
      ironic / neutral) — apply the matching closing register.
 
@@ -794,25 +836,39 @@ Rules:
   • Answer ONLY from the counterfactual world state for what *would*
     happen; cite the factual mainline only when contrasting.
   • Match the surgery's epistemic / ontic register:
-      - DoProposition  → "Had it been the case that PROP X = T, …".
-      - DoBelief       → "Had H believed otherwise about PROP X, …"
+      - DoProposition       → "Had it been the case that PROP X = T, …".
+      - DoBelief            → "Had H believed otherwise about PROP X, …"
         (epistemic — Romeo not believing Juliet dead, etc.).
-      - DoConcern      → "Without H's concern C, …" (motivational —
+      - DoConcern           → "Without H's concern C, …" (motivational —
         Roese commission/omission frame).
-      - DoTrait        → "Had H been less/more T, …".
-      - DoEvent        → "Had E not occurred (or had it gone
+      - DoTrait             → "Had H been less/more T, …".
+      - DoEvent             → "Had E not occurred (or had it gone
         differently), …". When ``new_at_location_id`` is set,
-        render as "Had E happened at LOC X instead, …" — the
-        relocated event drags its actors to that location at
-        ``fabula_time``.
+        render as "Had E happened at LOC X instead, …". When
+        ``new_fabula_time`` is set, render as "Had E happened at
+        t=N instead, …".
+      - DoNarrativeObject   → "Had OBJ X been at LOC Y / owned by H
+        instead, …".
+      - DoWorldTrait        → "Had the ambient WORLD_T been V instead, …"
+        (storm calmed, regime weakened, winter delayed).
+      - DoCausalEdge        → "Had E_A not led to E_B, …" / "Had E_A
+        caused E_B, …" (mechanism counterfactual).
+      - DoSpatialEdge       → "Had LOC_A been reachable from LOC_B, …"
+        / "Had the passage been locked, …".
+      - DoChannel           → "Had channel CHN_K been open/severed, …".
+      - DoRelationship      → "Had H↔T's {affinity|power|fear} been V, …".
+      - DoEntityDelete      → "Had ENT_X never existed, …" (the
+        excision is the lever; cascade-reasoning is the mechanism).
+      - DoObjectDelete      → "Had OBJ_X never existed, …".
   • Apply the narrative-form hedge:
       - tragic   → close with an "and yet" register; foreground regret.
       - comic    → close with an "and so" register; foreground relief.
       - ironic   → "as if to mock" — same magnitude, rearranged
         polarities.
       - neutral  → "though it would have made no difference".
-  • Surface the AFFECTED PROPOSITIONS / BELIEFS / CONCERNS as the
-    causal mechanism of the counterfactual outcome.
+  • Surface the AFFECTED PROPOSITIONS / BELIEFS / CONCERNS / OBJECTS /
+    WORLD TRAITS / EDGES / EVENTS / ENTITY DELETIONS / OBJECT
+    DELETIONS as the causal mechanism of the counterfactual outcome.
   • If the abduction did not yield enough to answer, say so plainly,
     lower confidence to <=0.3, and add a caveat.
   • Never name the rung level or "abduction" / "do-operator" in the
@@ -867,6 +923,12 @@ def answer_question(
     affected_propositions: Optional[List[str]] = None,
     affected_beliefs: Optional[List[str]] = None,
     affected_concerns: Optional[List[str]] = None,
+    affected_objects: Optional[List[str]] = None,
+    affected_world_traits: Optional[List[str]] = None,
+    affected_edges: Optional[List[str]] = None,
+    affected_entity_deletes: Optional[List[str]] = None,
+    affected_object_deletes: Optional[List[str]] = None,
+    affected_events: Optional[List[str]] = None,
     tragedy_form: Optional[str] = None,
     # Phase-10: downstream consequence cascades. The intervention /
     # counterfactual Q&A path historically only saw affected-id lists,
@@ -879,6 +941,17 @@ def answer_question(
     proposition_mutations: Optional[List[Dict[str, Any]]] = None,
     belief_mutations: Optional[List[Dict[str, Any]]] = None,
     concern_mutations: Optional[List[Dict[str, Any]]] = None,
+    # Round-5 audit: object / world-trait / edge mutation streams
+    # produced by ``_typed_target_payload`` were silently dropped at
+    # the Q&A renderer hand-off. Accept them so prop relocations,
+    # ambient-force shifts, and topology surgeries reach the answer
+    # prompt instead of vanishing between physics and renderer.
+    object_mutations: Optional[List[Dict[str, Any]]] = None,
+    world_trait_mutations: Optional[List[Dict[str, Any]]] = None,
+    edge_mutations: Optional[List[Dict[str, Any]]] = None,
+    entity_delete_mutations: Optional[List[Dict[str, Any]]] = None,
+    object_delete_mutations: Optional[List[Dict[str, Any]]] = None,
+    event_mutations: Optional[List[Dict[str, Any]]] = None,
     blocked: Optional[List[Dict[str, Any]]] = None,
     causal_chain: Optional[List[str]] = None,
 ) -> AnswerCard:
@@ -942,6 +1015,12 @@ def answer_question(
             _format_proposition_mutation_lines,
             _format_belief_mutation_lines,
             _format_concern_mutation_lines,
+            _format_object_mutation_lines,
+            _format_world_trait_mutation_lines,
+            _format_edge_mutation_lines,
+            _format_entity_delete_mutation_lines,
+            _format_object_delete_mutation_lines,
+            _format_event_mutation_lines,
             _format_blocked_propagation_lines,
             _format_do_target_causal_context,
         )
@@ -993,6 +1072,36 @@ def answer_question(
                 "AFFECTED CONCERNS (satisfaction or salience shifted): "
                 + _annotate_ids(affected_concerns, _concern_descs)
             )
+        if affected_objects:
+            user_msg_parts.append(
+                "AFFECTED OBJECTS (relocated / owner-changed / property-set): "
+                + ", ".join(affected_objects[:20])
+            )
+        if affected_world_traits:
+            user_msg_parts.append(
+                "AFFECTED WORLD TRAITS (ambient-force values clamped): "
+                + ", ".join(affected_world_traits[:20])
+            )
+        if affected_edges:
+            user_msg_parts.append(
+                "AFFECTED EDGES (topology rewrites \u2014 edge_type:action:source\u2192target): "
+                + ", ".join(affected_edges[:20])
+            )
+        if affected_entity_deletes:
+            user_msg_parts.append(
+                "AFFECTED ENTITY DELETIONS (existence-counterfactual excisions): "
+                + ", ".join(affected_entity_deletes[:20])
+            )
+        if affected_object_deletes:
+            user_msg_parts.append(
+                "AFFECTED OBJECT DELETIONS (existence-counterfactual excisions): "
+                + ", ".join(affected_object_deletes[:20])
+            )
+        if affected_events:
+            user_msg_parts.append(
+                "AFFECTED EVENTS (relocated / time-shifted \u2014 event_id:kind): "
+                + ", ".join(affected_events[:20])
+            )
         if tragedy_form:
             user_msg_parts.append(
                 f"NARRATIVE FORM: {tragedy_form} \u2014 apply the matching "
@@ -1014,6 +1123,18 @@ def answer_question(
              _format_belief_mutation_lines(belief_mutations)),
             ("CONCERN CASCADES",
              _format_concern_mutation_lines(concern_mutations)),
+            ("OBJECT CASCADES",
+             _format_object_mutation_lines(object_mutations)),
+            ("WORLD-TRAIT CASCADES",
+             _format_world_trait_mutation_lines(world_trait_mutations)),
+            ("EDGE CASCADES",
+             _format_edge_mutation_lines(edge_mutations)),
+            ("ENTITY DELETION CASCADES",
+             _format_entity_delete_mutation_lines(entity_delete_mutations)),
+            ("OBJECT DELETION CASCADES",
+             _format_object_delete_mutation_lines(object_delete_mutations)),
+            ("EVENT CASCADES",
+             _format_event_mutation_lines(event_mutations)),
             ("BLOCKED PROPAGATIONS",
              _format_blocked_propagation_lines(blocked)),
         ]
@@ -1203,19 +1324,68 @@ def answer_question(
                                 if id_key in entry and entry[id_key]:
                                     known_ids.add(str(entry[id_key]))
             unsupported = [eid for eid in evidence if str(eid) not in known_ids]
-            if unsupported and known_ids:
-                # Only filter when we actually know the id space (avoid
-                # accidentally dropping all evidence when the projection
-                # is empty or in an unrecognised shape).
-                supported = [eid for eid in evidence if str(eid) in known_ids]
+            # R19-H8: when answering on a shadow branch, subtract any
+            # ids the branch has tombstoned. ``physics_state`` may
+            # have been built from a partially-projected world (R19-H14
+            # is still extending ``projected_for_branch`` to events /
+            # channels / topologies) so canonical-list-derived ids
+            # can survive into ``known_ids`` even when the shadow has
+            # already deleted them. Treat tombstoned ids as
+            # ungrounded so cited evidence cannot point at things
+            # the branch claims no longer exist.
+            if (
+                world_state is not None
+                and branch_world_id == "shadow"
+                and branch_label
+            ):
+                tombstoned: set = set()
+                for sidecar_name in (
+                    "shadow_removed_entity_ids",
+                    "shadow_removed_object_ids",
+                    "shadow_removed_channel_ids",
+                    "shadow_removed_event_ids",
+                    "shadow_removed_location_ids",
+                ):
+                    sidecar = getattr(world_state, sidecar_name, None) or {}
+                    for rid in (sidecar.get(branch_label) or []):
+                        tombstoned.add(str(rid))
+                if tombstoned:
+                    known_ids -= tombstoned
+                    # Recompute ``unsupported`` so the caveat / drop
+                    # logic below sees the post-tombstone view.
+                    unsupported = [
+                        eid for eid in evidence if str(eid) not in known_ids
+                    ]
+            # R19-H7: previously the "Only filter when we actually
+            # know the id space" guard caused the hallucination
+            # filter to **bypass entirely** whenever the projection
+            # was empty or in an unrecognised shape. That meant a
+            # model could fabricate arbitrary EVT/ENT ids on a
+            # degenerate physics_state and ``require_proof`` would
+            # accept them. We now treat *no known ids* as
+            # *no grounded ids* and drop every evidence id, so the
+            # downstream ``require_proof`` gate fails hard instead
+            # of trusting fabricated provenance.
+            if unsupported:
+                if known_ids:
+                    supported = [eid for eid in evidence if str(eid) in known_ids]
+                else:
+                    supported = []
                 caveats = list(card.caveats or [])
-                caveats.append(
-                    "Some evidence node ids returned by the answer agent "
-                    "did not resolve in the projected world state and "
-                    "were dropped: "
-                    + ", ".join(str(u) for u in unsupported[:8])
-                    + ("…" if len(unsupported) > 8 else "")
-                )
+                if known_ids:
+                    caveats.append(
+                        "Some evidence node ids returned by the answer agent "
+                        "did not resolve in the projected world state and "
+                        "were dropped: "
+                        + ", ".join(str(u) for u in unsupported[:8])
+                        + ("…" if len(unsupported) > 8 else "")
+                    )
+                else:
+                    caveats.append(
+                        "Projected world state exposed no resolvable ids; "
+                        "all evidence ids returned by the answer agent "
+                        "were treated as ungrounded and dropped."
+                    )
                 # Down-rank confidence proportional to how many ids
                 # were unsupported.
                 hallucination_ratio = (

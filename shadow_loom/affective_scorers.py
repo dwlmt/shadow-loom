@@ -67,7 +67,7 @@ def compute_affective_scorers(
     world_state: WorldStateV1,
     *,
     fabula_time: Optional[int] = None,
-    recent_window: int = 2000,
+    recent_window: Optional[int] = None,
 ) -> Dict[str, float]:
     if world_state is None:
         return {
@@ -75,8 +75,87 @@ def compute_affective_scorers(
             "surprise": 0.0, "tension": 0.0,
         }
 
+    # R19-L7: pull previously-hardcoded tunables from
+    # DirectiveAssemblySettings so deployments can tune
+    # recent-window / surprise normalisation / confidence cutoff via
+    # env vars (``DIRECTIVE_ASSEMBLY_SCORER_*``) instead of forking
+    # this module.
+    try:
+        from shadow_loom.settings import get_settings as _get_settings
+        _da = _get_settings().directive_assembly
+        _recent_window = int(recent_window if recent_window is not None
+                             else _da.scorer_recent_window)
+        _surprise_norm = float(_da.scorer_surprise_flip_norm)
+        _min_conf = float(_da.scorer_min_belief_confidence)
+    except Exception:
+        _recent_window = int(recent_window if recent_window is not None
+                             else 2000)
+        _surprise_norm = 5.0
+        _min_conf = 0.6
+
     propositions = list(world_state.propositions or [])
     entities = list((world_state.entities or {}).values())
+
+    # R19-H15 / R19-M12: when ``fabula_time`` is supplied, beliefs
+    # and concerns must be replayed through their state_timelines so
+    # the scorer reads the entity's epistemic state *as of* that
+    # moment, not the union of every historical snapshot. Without
+    # this, R18-12 belief invalidations and concern activation
+    # windows are silently ignored \u2014 closed concerns still
+    # raise suspense, retracted beliefs still raise dramatic irony.
+    from shadow_loom.models import (
+        reconstruct_entity_at as _reconstruct_entity_at,
+        reconstruct_concern_at as _reconstruct_concern_at,
+    )
+
+    def _effective_beliefs(ent):
+        if fabula_time is None:
+            return list(getattr(ent, "beliefs", None) or [])
+        try:
+            reconstructed = _reconstruct_entity_at(ent, int(fabula_time))
+        except Exception:
+            return list(getattr(ent, "beliefs", None) or [])
+        # Wrap each dict so callers can still use attribute access
+        # via ``getattr(b, 'confidence', ...)`` / ``b.get(...)``.
+        return list(reconstructed.get("beliefs", []) or [])
+
+    def _effective_concerns(ent):
+        """Return active concerns at ``fabula_time`` with replayed salience.
+
+        Inactive concerns (closed activation window) are dropped so
+        suspense / ambivalence don't accumulate signal from concerns
+        the world has already resolved.
+        """
+        raw = list(getattr(ent, "concerns", None) or [])
+        if fabula_time is None:
+            return raw
+        out = []
+        ft = int(fabula_time)
+        for c in raw:
+            try:
+                replayed = _reconstruct_concern_at(c, ft)
+            except Exception:
+                out.append(c)
+                continue
+            if not replayed.get("active", True):
+                continue
+            # Build a lightweight view object so existing
+            # ``getattr(c, "salience", ...)`` / ``counter_concern_ids``
+            # access keeps working without rewriting the loops below.
+            class _ConcernView:
+                pass
+            view = _ConcernView()
+            view.concern_id = getattr(c, "concern_id", None)
+            view.proposition_id = getattr(c, "proposition_id", None)
+            view.salience = replayed.get("salience", getattr(c, "salience", 0.0))
+            view.polarity = replayed.get("polarity", getattr(c, "polarity", None))
+            view.counter_concern_ids = replayed.get(
+                "counter_concern_ids",
+                getattr(c, "counter_concern_ids", None) or [],
+            )
+            view.kind = replayed.get("kind", getattr(c, "kind", None))
+            out.append(view)
+        return out
 
     # ---- mystery ----
     undecided_stakes = []
@@ -102,15 +181,21 @@ def compute_affective_scorers(
     n_high_conf = 0
     n_contradicting = 0
     for ent in entities:
-        for b in (ent.beliefs or []):
-            pid = getattr(b, "proposition_id", None)
+        for b in _effective_beliefs(ent):
+            # Replayed beliefs are dicts; raw beliefs are Belief models.
+            if isinstance(b, dict):
+                pid = b.get("proposition_id")
+                conf_raw = b.get("confidence", 0.0)
+            else:
+                pid = getattr(b, "proposition_id", None)
+                conf_raw = getattr(b, "confidence", 0.0)
             if not pid or pid not in prop_truth:
                 continue
             truth = prop_truth[pid]
             if truth is None:
                 continue
-            conf = float(getattr(b, "confidence", 0.0) or 0.0)
-            if conf < 0.6:
+            conf = float(conf_raw or 0.0)
+            if conf < _min_conf:
                 continue
             n_high_conf += 1
             if truth is False:
@@ -120,7 +205,7 @@ def compute_affective_scorers(
     # ---- suspense ----
     open_concerns = []
     for ent in entities:
-        for c in (ent.concerns or []):
+        for c in _effective_concerns(ent):
             pid = getattr(c, "proposition_id", None)
             if pid and prop_truth.get(pid) is None:
                 inten = float(getattr(c, "salience", 0.0) or 0.0)
@@ -130,7 +215,7 @@ def compute_affective_scorers(
     # ---- surprise ----
     flips = 0
     if fabula_time is not None:
-        lo = int(fabula_time) - int(recent_window)
+        lo = int(fabula_time) - int(_recent_window)
         hi = int(fabula_time)
         for prop in propositions:
             truth = getattr(prop, "truth_at_fabula", None) or {}
@@ -146,7 +231,7 @@ def compute_affective_scorers(
             for i in range(1, len(ticks)):
                 if ticks[i][1] != ticks[i - 1][1]:
                     flips += 1
-    surprise = min(flips / 5.0, 1.0)
+    surprise = min(flips / _surprise_norm, 1.0)
 
     # ---- tension ----
     fears = []
@@ -169,7 +254,7 @@ def compute_affective_scorers(
     # highly-salient pair dominates a noisy long tail.
     ambivalence_signals = []
     for ent in entities:
-        concerns = list(getattr(ent, "concerns", None) or [])
+        concerns = list(_effective_concerns(ent))
         if not concerns:
             continue
         by_id = {getattr(c, "concern_id", None): c for c in concerns}

@@ -1130,6 +1130,11 @@ class AppState:
         # quarantined worlds into session state so the UI can show
         # the user what the patch produced; the quarantine only
         # affects persistence (source label + active-pointer move).
+        # Capture branch identity BEFORE load_world_state — that
+        # call replaces ``versioned_model.history`` with a fresh
+        # synthetic factual head via ``from_world_state``, which
+        # would otherwise demote a shadow patch to factual.
+        _branch_world_id, _branch_label = self.head_branch()
         self.load_world_state(new_ws)
 
         # Persist a new DB version so the patch is durable.
@@ -1152,7 +1157,7 @@ class AppState:
                 # ``save_version`` default ``world_id='factual'`` —
                 # mirror of the MCP-side fix in
                 # ``shadow_loom_mcp/server.py::patch_world_state``.
-                _branch_world_id, _branch_label = self.head_branch()
+                # (Captured above before ``load_world_state``.)
                 ver = save_version(
                     project_id=proj_id,
                     world_state_json=ws_json,
@@ -1162,6 +1167,7 @@ class AppState:
                     user_id=self.user_id,
                     world_id=_branch_world_id,
                     branch_label=_branch_label,
+                    actor_id=self.user_id,
                 )
                 # Quarantined patches do not become the active version;
                 # the user / agent stays anchored on the parent so the
@@ -1286,6 +1292,7 @@ class AppState:
                 user_id=save_user_id,
                 world_id=branch_world_id,
                 branch_label=branch_label,
+                actor_id=save_user_id,
             )
             # Only mutate session state if the user is still on the same
             # project as when the query started.
@@ -1416,6 +1423,17 @@ class AppState:
         would require deserialising every ancestor's
         ``world_state_json`` and the rollback UI uses the DB version
         list directly anyway).
+
+        **R19-L1 (documented invariant):** Because only the current
+        snapshot is materialised, in-process ``rollback`` to an
+        intermediate ``WorldModelVersion`` will *not* find a matching
+        ``WorldSnapshot`` and will raise ``KeyError``. The supported
+        rollback UX after a DB rehydrate is to pick an ancestor row
+        from the version sidebar and re-load via ``load_db_version``,
+        which goes through the DB and rebuilds the snapshot chain
+        deterministically. Callers that need in-process rollback
+        across all rehydrated history must first reload every ancestor
+        ``world_state_json`` (expensive, not performed by default).
         """
         # Local import keeps the module import graph identical to
         # before this change (state.py historically only imported
@@ -1474,7 +1492,21 @@ class AppState:
         version_row_id: int | None = None,
         raw_text: str | None = None,
     ) -> None:
-        """Load a full project into state (convenience method)."""
+        """Load a full project into state (convenience method).
+
+        **R19-L2 (documented invariant — lineage-only history):** The
+        rehydrated ``versioned_model.history`` reflects only the
+        *direct ancestor chain* of ``version_row_id`` (one parent per
+        row, via ``ancestor_id``). Sibling shadow descendants of any
+        ancestor — e.g. parallel ``what-if`` branches off the same
+        factual row — are **not** included; the in-process
+        ``versioned_model`` is therefore a single-path view, not a
+        full DAG snapshot. The full version tree remains accessible
+        via ``db.get_version_tree(project_id)`` and is used by the
+        version sidebar to render sibling branches. Callers needing
+        DAG awareness in-process should query the DB directly rather
+        than walking ``versioned_model.history``.
+        """
         self.project_id = project_id
         self.project_name = project_name
         self.current_version_row_id = version_row_id

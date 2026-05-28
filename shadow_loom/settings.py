@@ -962,6 +962,36 @@ class DirectiveAssemblySettings(BaseSettings):
         ),
     )
 
+    # ── R19-L7: scorer tunables previously hardcoded in
+    # ``shadow_loom/affective_scorers.py``. Surfaced here so the four
+    # structural-affect scorers respect the same config plane as the
+    # mystery / irony / suspense / surprise parameters above.
+    scorer_recent_window: int = Field(
+        default=2000,
+        description=(
+            "Fabula-time window (in ticks) used by suspense/surprise "
+            "scorers to bound 'recent' propositions when fabula_time "
+            "is supplied. Should be calibrated against world fabula "
+            "cadence; 2000 ticks ~= one act in the example corpus."
+        ),
+    )
+    scorer_surprise_flip_norm: float = Field(
+        default=5.0,
+        description=(
+            "Normalisation denominator for surprise flip count: "
+            "``min(flips / surprise_flip_norm, 1.0)``. Lower values "
+            "saturate the scorer faster."
+        ),
+    )
+    scorer_min_belief_confidence: float = Field(
+        default=0.6,
+        description=(
+            "Minimum belief.confidence required for a belief to "
+            "count toward dramatic irony / suspense knowledge-asymmetry "
+            "calculations. Filters out tentative / speculative beliefs."
+        ),
+    )
+
 
 # =====================================================================
 # MCP Server

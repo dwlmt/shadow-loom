@@ -37,6 +37,16 @@ import pytest
 def _isolate_test_env_vars():
     sentinels = ("DATABASE_URL", "MCP_ALLOW_OPEN_MODE", "SHADOW_LOOM_SECRET_KEY")
     saved: dict[str, str | None] = {k: os.environ.get(k) for k in sentinels}
+    # Audit R18-20: strict-by-default persistence validation in
+    # ``save_version`` raises ValueError on any pydantic mismatch.
+    # The test suite has many fixtures that intentionally pass
+    # minimal stubs (``world_state_json="{}"``) for branch/pointer/
+    # delete cascades that don't care about the full schema.
+    # Soften to warn-mode for the test session so those legacy
+    # fixtures keep working; tests that specifically verify the
+    # strict path can override with monkeypatch.setenv.
+    saved_strict = os.environ.get("SHADOW_LOOM_STRICT_PERSIST")
+    os.environ["SHADOW_LOOM_STRICT_PERSIST"] = "0"
     try:
         yield
     finally:
@@ -45,6 +55,10 @@ def _isolate_test_env_vars():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        if saved_strict is None:
+            os.environ.pop("SHADOW_LOOM_STRICT_PERSIST", None)
+        else:
+            os.environ["SHADOW_LOOM_STRICT_PERSIST"] = saved_strict
 
 
 @pytest.fixture(autouse=True)

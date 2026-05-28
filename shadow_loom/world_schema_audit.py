@@ -46,6 +46,8 @@ def audit_world_schema(world_state: WorldStateV1) -> List[str]:
     channel_ids = set(channels.keys())
     proposition_ids = {p.proposition_id for p in propositions}
     event_ids = {e.id for e in events}
+    # R19-H11: build event index for holder-presence belief audit.
+    events_by_id: Dict[str, Any] = {e.id: e for e in events}
     world_trait_ids = set((world_state.world_traits or {}).keys())
 
     # ---------------- Location plausibility ----------------
@@ -214,6 +216,24 @@ def audit_world_schema(world_state: WorldStateV1) -> List[str]:
     # Relationships: a metric last_updated_fabula before the edge's
     # established_at_fabula is logically impossible.
     for re in (world_state.social_topology or []):
+        # Audit R17-11: surface dangling RelationshipEdge endpoints.
+        # The dyadic endpoints must resolve to real entities or the
+        # edge silently survives the merge as a no-op (POV filters
+        # skip unknown participants), masking extraction bugs.
+        src_id = getattr(re, "source_entity_id", None)
+        tgt_id = getattr(re, "target_entity_id", None)
+        if src_id and src_id not in entity_ids:
+            issues.append(
+                f"[schema\u00b7dangling] RelationshipEdge "
+                f"source_entity_id={src_id!r} \u2192 target={tgt_id!r} "
+                f"references an unknown entity."
+            )
+        if tgt_id and tgt_id not in entity_ids:
+            issues.append(
+                f"[schema\u00b7dangling] RelationshipEdge "
+                f"target_entity_id={tgt_id!r} (source={src_id!r}) "
+                f"references an unknown entity."
+            )
         est = getattr(re, "established_at_fabula", None)
         if est is None:
             continue
@@ -228,6 +248,84 @@ def audit_world_schema(world_state: WorldStateV1) -> List[str]:
                     f"axis={axis} last_updated={lu} predates "
                     f"established={est}."
                 )
+
+    # ---------------- Channel / speaker enforcement (R17-8) ----
+    # Utterances routed via a channel must satisfy the channel's
+    # participant invariants. Without this guard a speaker not on the
+    # channel is silently allowed (POV layer accepts it) and a simplex
+    # channel can carry utterances in the wrong direction, breaking
+    # the asymmetric-information assumptions downstream consumers rely
+    # on (broadcaster vs. listener-only channels).
+    channels_by_id = world_state.channels or {}
+    for evt in events:
+        if getattr(evt, "event_type", None) != "utterance":
+            continue
+        cid = getattr(evt, "via_channel_id", None)
+        if not cid:
+            continue
+        ch = channels_by_id.get(cid)
+        if ch is None:
+            issues.append(
+                f"[schema\u00b7channel] EVT {evt.id} via_channel_id="
+                f"{cid!r} references an unknown channel."
+            )
+            continue
+        spk = getattr(evt, "speaker_id", None)
+        participants = list(getattr(ch, "participant_ids", None) or [])
+        if spk and spk not in participants:
+            issues.append(
+                f"[schema\u00b7channel] EVT {evt.id} speaker_id="
+                f"{spk!r} is not a participant of channel {cid!r} "
+                f"(participants={participants})."
+            )
+        # Audit R18-17: every explicit addressee on a channel-routed
+        # utterance must also be a channel participant. A non-member
+        # addressee silently passes the existing speaker check but
+        # then fails any downstream perceivability gate, leaving the
+        # belief acquisition contract under-specified.
+        for aid in (getattr(evt, "addressee_ids", None) or []):
+            if aid not in participants:
+                issues.append(
+                    f"[schema\u00b7channel] EVT {evt.id} addressee_id="
+                    f"{aid!r} is not a participant of channel "
+                    f"{cid!r} (participants={participants})."
+                )
+        # Audit R18-16: the utterance's ``fabula_time`` must fall
+        # inside the channel's availability window. Pre-fix an
+        # utterance authored at ft=14000 on a channel terminated at
+        # ft=13000 would happily route through ingestion, leaving
+        # downstream POV / belief-acquisition layers to silently
+        # discard it.
+        eft = getattr(evt, "fabula_time", None)
+        est = getattr(ch, "established_at_fabula", None)
+        term = getattr(ch, "terminated_at_fabula", None)
+        if eft is not None and est is not None and int(eft) < int(est):
+            issues.append(
+                f"[schema\u00b7channel] EVT {evt.id} fabula_time="
+                f"{eft} predates channel {cid!r} "
+                f"established_at_fabula={est}."
+            )
+        if eft is not None and term is not None and int(eft) > int(term):
+            issues.append(
+                f"[schema\u00b7channel] EVT {evt.id} fabula_time="
+                f"{eft} is after channel {cid!r} "
+                f"terminated_at_fabula={term}."
+            )
+        # NOTE (R17-8 directionality): a stricter ``simplex`` check
+        # \u2014 require ``speaker_id == participants[0]`` \u2014 was
+        # prototyped here but disabled. The example worlds legitimately
+        # use simplex channels for two patterns the current schema
+        # cannot disambiguate:
+        #   (a) object-mediated broadcast (telescreen, dossier,
+        #       benefactor-pipeline): ``participants[0]`` is the
+        #       physical medium / source of authority, while the
+        #       actual speech event is performed by a human operator.
+        #   (b) proxy / herald utterances: a lawyer (Jaggers)
+        #       announces a benefactor's (Magwitch's) settlement; a
+        #       servant (Alis) voices a master's (Tamlin's) curse.
+        # Encoding either pattern as a hard violation would require an
+        # ``on_behalf_of_id`` field. Until that exists, only the
+        # membership invariant above is enforced.
 
     # ---------------- Mutation-social duplicates (P2-1) ----
     # Multiple mutation_social edges between the same dyad on the
@@ -303,6 +401,27 @@ def audit_world_schema(world_state: WorldStateV1) -> List[str]:
                     f"[schema\u00b7dangling] ENT {eid} belief "
                     f"acquired_via_event_id={ev!r} is unknown."
                 )
+            # R19-H11: holder must be a participant in the cited event
+            # (actor or addressee). Exemption: ``revelation`` events
+            # canonically broadcast to all present observers, so the
+            # holder need not appear in the explicit actor/addressee
+            # lists.
+            if ev and ev in events_by_id:
+                evt = events_by_id[ev]
+                event_type = getattr(evt, "event_type", None)
+                if event_type != "revelation":
+                    actor_ids = set(getattr(evt, "actor_ids", None) or [])
+                    addressee_ids = set(
+                        getattr(evt, "addressee_ids", None) or []
+                    )
+                    participants = actor_ids | addressee_ids
+                    if participants and eid not in participants:
+                        issues.append(
+                            f"[schema\u00b7provenance] ENT {eid} belief "
+                            f"cites acquired_via_event_id={ev!r} but is "
+                            f"not in that event's actor_ids \u222a "
+                            f"addressee_ids (fabricated provenance)."
+                        )
 
     # ---------------- AUDIT round-2 P1: counter_concern symmetry
     # If concern A lists B in counter_concern_ids, B should reciprocally
@@ -347,6 +466,151 @@ def audit_world_schema(world_state: WorldStateV1) -> List[str]:
                 f"target={getattr(ce, 'target_id', None)} "
                 f"rel_counterpart_id={rc!r} is unknown."
             )
+
+    # Audit R18-18: every ``location_id`` written on an
+    # EntityStateSnapshot / ObjectStateSnapshot timeline must
+    # resolve to a registered location. Pre-fix a typoed
+    # ``LOC_ROOM_101a`` would silently advance the entity into a
+    # phantom location, breaking spatial-adjacency queries and POV
+    # location pruning downstream.
+    location_ids = set((world_state.locations or {}).keys())
+    for ent in (world_state.entities or {}).values():
+        for snap in (getattr(ent, "state_timeline", None) or []):
+            loc = getattr(snap, "location_id", None)
+            if loc and loc not in location_ids:
+                issues.append(
+                    f"[schema\u00b7dangling] EntityStateSnapshot "
+                    f"on {ent.id} at ft="
+                    f"{getattr(snap, 'fabula_time', None)} "
+                    f"location_id={loc!r} is unknown."
+                )
+    for obj in (world_state.objects or {}).values():
+        for snap in (getattr(obj, "state_timeline", None) or []):
+            loc = getattr(snap, "location_id", None)
+            if loc and loc not in location_ids:
+                issues.append(
+                    f"[schema\u00b7dangling] ObjectStateSnapshot "
+                    f"on {obj.id} at ft="
+                    f"{getattr(snap, 'fabula_time', None)} "
+                    f"location_id={loc!r} is unknown."
+                )
+
+    # ---------------- R19-M1: utterance addressee co-presence ----
+    # When an utterance has no ``via_channel_id`` (no channel layer
+    # mediating reach) and an ``at_location_id``, every addressee
+    # must be in that location at the event's fabula_time \u2014 a
+    # speaker cannot hand a face-to-face line to an addressee who
+    # is in another room. (Channel-mediated utterances are exempt;
+    # the channel reach audit handles those.)
+    #
+    # **Opt-in (post-implementation):** the example worlds use the
+    # convention "addressee_ids of an utterance event imply on-stage
+    # co-presence at at_location_id" \u2014 they do NOT update each
+    # character's spatial state_timeline per scene, so the static
+    # ``location_id`` on Entity reflects residence/origin, not
+    # current scene. Firing the check by default would surface
+    # ~100 false positives across the corpus. The check is therefore
+    # opt-in via ``SHADOW_LOOM_STRICT_COPRESENCE=1``; ingested
+    # worlds that DO track per-scene spatial mutations should enable
+    # it to catch genuine "speaker addresses absent character" bugs.
+    import os as _os
+    if _os.environ.get("SHADOW_LOOM_STRICT_COPRESENCE", "0").strip() in ("1", "true", "yes"):
+        try:
+            from shadow_loom.models import reconstruct_entity_at as _recon_ent
+        except Exception:
+            _recon_ent = None  # type: ignore
+        if _recon_ent is not None:
+            for evt in events:
+                if getattr(evt, "event_type", None) != "utterance":
+                    continue
+                if getattr(evt, "via_channel_id", None):
+                    continue
+                at_loc = getattr(evt, "at_location_id", None)
+                if not at_loc or at_loc not in location_ids:
+                    continue
+                ft = getattr(evt, "fabula_time", None)
+                if ft is None:
+                    continue
+                for aid in (getattr(evt, "addressee_ids", None) or []):
+                    ent = entities.get(aid)
+                    if ent is None:
+                        continue
+                    timeline = list(getattr(ent, "state_timeline", None) or [])
+                    has_explicit_pin = False
+                    pinned_loc = None
+                    pinned_ft = -1
+                    for snap in timeline:
+                        snap_ft = getattr(snap, "fabula_time", None)
+                        snap_loc = getattr(snap, "location_id", None)
+                        if snap_ft is None or snap_loc is None:
+                            continue
+                        try:
+                            snap_ft_i = int(snap_ft)
+                        except (TypeError, ValueError):
+                            continue
+                        if snap_ft_i <= int(ft) and snap_ft_i >= pinned_ft:
+                            has_explicit_pin = True
+                            pinned_loc = snap_loc
+                            pinned_ft = snap_ft_i
+                    if not has_explicit_pin:
+                        continue
+                    if pinned_loc and pinned_loc != at_loc:
+                        issues.append(
+                            f"[schema\u00b7copresence] EVT {evt.id} utterance "
+                            f"at_location_id={at_loc!r} addressee={aid!r} is "
+                            f"located at {pinned_loc!r} at ft={ft} (no "
+                            f"via_channel_id to mediate the gap)."
+                        )
+
+    # ---------------- R19-M2 / M3 / M4: concern integrity ---------
+    removed_entity_set: set = set()
+    for rids in (getattr(world_state, "shadow_removed_entity_ids", None) or {}).values():
+        for rid in rids or []:
+            removed_entity_set.add(rid)
+    for eid, ent in (world_state.entities or {}).items():
+        for c in (getattr(ent, "concerns", None) or []):
+            cid = getattr(c, "concern_id", None)
+            # R19-M2: activation_fabula_window inversion check.
+            win = getattr(c, "activation_fabula_window", None)
+            if win and len(win) == 2:
+                try:
+                    lo, hi = int(win[0]), int(win[1])
+                    if lo > hi:
+                        issues.append(
+                            f"[schema\u00b7temporal] Concern {cid!r} on "
+                            f"ENT {eid} activation_fabula_window=[{lo},"
+                            f"{hi}] is inverted (lo > hi); reconstruct_"
+                            f"concern_at will treat the concern as "
+                            f"never-active."
+                        )
+                except (TypeError, ValueError):
+                    pass
+            # R19-M3: concern held by entity that has been
+            # tombstoned on some shadow branch \u2014 audit surfaces
+            # orphaned counter-concern targets that survived the
+            # delete.
+            if eid in removed_entity_set:
+                issues.append(
+                    f"[schema\u00b7tombstone] Concern {cid!r} held by "
+                    f"ENT {eid} which is tombstoned on a shadow "
+                    f"branch; downstream affect scores may still see "
+                    f"it via the factual baseline."
+                )
+            # R19-M4: ConcernSnapshot.fabula_time monotonicity.
+            prev_ft = None
+            for snap in (getattr(c, "state_timeline", None) or []):
+                ft = getattr(snap, "fabula_time", None)
+                if ft is None:
+                    continue
+                if prev_ft is not None and ft < prev_ft:
+                    issues.append(
+                        f"[schema\u00b7temporal] Concern {cid!r} on ENT "
+                        f"{eid} state_timeline is non-monotonic "
+                        f"(snapshot at ft={ft} follows ft={prev_ft}); "
+                        f"reconstruct_concern_at replay order may be "
+                        f"corrupted."
+                    )
+                prev_ft = ft
 
     return issues
 

@@ -265,6 +265,70 @@ class EdgeMutation(BaseModel):
     details: Dict[str, Any] = Field(default_factory=dict)
 
 
+class EntityDeleteMutation(BaseModel):
+    """Record of a :class:`DoEntityDelete` existence counterfactual.
+
+    Pearl Rung-3 surgery excising an Entity ("never existed"). The
+    surgery cascades through social topology, beliefs, causal edges,
+    and event participation. Previously the cascade landed without a
+    structured record, so the renderer / auditor / MCP envelope never
+    knew the deletion had happened. Surfacing it lets prose dramatise
+    the absence (\"as if Banquo had never lived\") and lets the auditor
+    flag prose that mentions the excised entity as a miracle step.
+    """
+    entity_id: str
+    fabula_time: int
+    cascaded_social_edges_removed: int = 0
+    cascaded_causal_edges_removed: int = 0
+    cascaded_beliefs_removed: int = 0
+    cascaded_events_scrubbed: int = 0
+    triggered_by: Optional[str] = None
+
+
+class ObjectDeleteMutation(BaseModel):
+    """Record of a :class:`DoObjectDelete` existence counterfactual.
+
+    Mirror of :class:`EntityDeleteMutation` for narrative objects.
+    """
+    object_id: str
+    fabula_time: int
+    cascaded_causal_edges_removed: int = 0
+    cascaded_beliefs_removed: int = 0
+    cascaded_events_scrubbed: int = 0
+    triggered_by: Optional[str] = None
+
+
+class EventMutation(BaseModel):
+    """Record of a :class:`DoEvent` Pearl Rung-2 / Rung-3 surgery
+    (relocation and/or fabula-time shift).
+
+    Mirrors the other typed-mutation records so the renderer / auditor /
+    MCP envelope / UI rails can surface event-level edits with the same
+    structural fidelity as proposition / belief / object surgeries.
+
+    ``kind`` discriminates between the two DoEvent actions; a single
+    DoEvent that BOTH relocates and time-shifts emits two records
+    (one per kind) so consumers can describe each effect independently.
+
+      * ``relocation`` — fields: ``old_at_location_id`` / ``new_at_location_id``,
+        ``cascaded_actor_snapshots``, ``skipped_dead_actors``.
+      * ``time_shift`` — fields: ``old_fabula_time`` / ``new_fabula_time``,
+        ``cascaded_snapshot_restamps``, ``cascaded_edge_restamps``.
+    """
+    event_id: str
+    kind: Literal["relocation", "time_shift"]
+    fabula_time: int
+    old_at_location_id: Optional[str] = None
+    new_at_location_id: Optional[str] = None
+    old_fabula_time: Optional[int] = None
+    new_fabula_time: Optional[int] = None
+    cascaded_actor_snapshots: int = 0
+    skipped_dead_actors: List[str] = Field(default_factory=list)
+    cascaded_snapshot_restamps: int = 0
+    cascaded_edge_restamps: int = 0
+    triggered_by: Optional[str] = None
+
+
 class NoisyOrProbability(BaseModel):
     """Per-trait noisy-OR aggregate plus its per-edge components.
 
@@ -343,6 +407,29 @@ class CausalPhysicsResult(BaseModel):
             "PASSAGE_X→Y\", \"locked DOOR with KEY_Y\", \"channel "
             "CHN_Z terminated\") instead of relying solely on the "
             "``_edge_do_targets_applied`` counter."
+        ),
+    )
+    entity_delete_mutations: List[EntityDeleteMutation] = Field(
+        default_factory=list,
+        description=(
+            "Pearl Rung-3 entity-excision surgeries (DoEntityDelete). "
+            "Each record captures cascade counts for social edges, "
+            "causal edges, beliefs, and event participation scrubs."
+        ),
+    )
+    object_delete_mutations: List[ObjectDeleteMutation] = Field(
+        default_factory=list,
+        description=(
+            "Pearl Rung-3 object-excision surgeries (DoObjectDelete). "
+            "Mirror of ``entity_delete_mutations`` for props."
+        ),
+    )
+    event_mutations: List[EventMutation] = Field(
+        default_factory=list,
+        description=(
+            "Pearl Rung-2/3 DoEvent surgeries (event relocation and "
+            "event time-shift). A single DoEvent that both relocates "
+            "and time-shifts emits two records — one per kind."
         ),
     )
     hidden_deltas: Dict[str, Dict[str, float]] = Field(
@@ -598,6 +685,18 @@ class CausalPhysicsEngine:
         # rendering. Distinct from ``_edge_do_targets_applied`` which
         # is a flat counter used by the vacuity gate.
         self._edge_mutations: List[EdgeMutation] = []
+        # Pearl Rung-3 existence-counterfactual collectors. Populated by
+        # ``_apply_do_entity_delete`` / ``_apply_do_object_delete``.
+        # Previously these surgeries cascaded silently — the renderer
+        # / auditor / MCP envelope only saw a mutated ``world_state``
+        # without a structured record.
+        self._entity_delete_mutations: List[EntityDeleteMutation] = []
+        self._object_delete_mutations: List[ObjectDeleteMutation] = []
+        # Pearl Rung-2/3 DoEvent surgeries (relocation + time-shift).
+        # Populated by ``_apply_do_event_relocation`` and
+        # ``_apply_do_event_time_shift``; round-tripped into
+        # ``CausalPhysicsResult.event_mutations``.
+        self._event_mutations: List[EventMutation] = []
         # Noisy-OR per-trait records, populated only when
         # ``CausalPhysicsSettings.propagation_mode == "noisy_or"``.
         self._noisy_or_records: List[NoisyOrProbability] = []
@@ -637,7 +736,12 @@ class CausalPhysicsEngine:
     # ------------------------------------------------------------------
     # Rung 3 — Abduction
     # ------------------------------------------------------------------
-    def abduction_update(self, evidence_node_ids: List[str]) -> None:
+    def abduction_update(
+        self,
+        evidence_node_ids: List[str],
+        *,
+        pov_entity_id: Optional[str] = None,
+    ) -> None:
         """
         Back-propagate present-day evidence into the historical sandbox.
 
@@ -646,14 +750,50 @@ class CausalPhysicsEngine:
 
         For event evidence: propagates through causal edges weighted by
         evidence_strength.
+
+        R19-M7: when ``pov_entity_id`` is given, trait /
+        relationship blends are skipped for evidence entities that
+        share NO recorded event with the POV (no actor / addressee /
+        referent overlap). The POV cannot infer hidden traits about
+        a character they never witnessed; without this gate the
+        abduction loop silently rewrites the historical state of
+        off-screen characters using present-day evidence the POV
+        had no access to.
         """
         if not evidence_node_ids:
             return
+
+        # R19-M7: precompute the POV's event-overlap entity set.
+        pov_overlap_ids: Optional[set] = None
+        if pov_entity_id:
+            pov_overlap_ids = set()
+            for evt in (self.world_state.events or []):
+                actors = set(getattr(evt, "actor_ids", None) or [])
+                addressees = set(getattr(evt, "addressee_ids", None) or [])
+                referents = set(getattr(evt, "referent_ids", None) or [])
+                participants = actors | addressees | referents
+                if pov_entity_id in participants:
+                    pov_overlap_ids |= participants
+            pov_overlap_ids.discard(pov_entity_id)
 
         for eid in evidence_node_ids:
             # Skip WORLD_ nodes — they are structural, not observable evidence.
             if eid.startswith("WORLD_"):
                 logger.debug("[CausalPhysics·Abduction] Skipping WORLD_ node: %s", eid)
+                continue
+            # R19-M7: POV gate \u2014 skip trait / relationship blend
+            # entirely for entities the POV never co-appeared with in
+            # any event.
+            if (
+                pov_overlap_ids is not None
+                and eid in self.world_state.entities
+                and eid not in pov_overlap_ids
+            ):
+                logger.debug(
+                    "[CausalPhysics\u00b7Abduction] Skipping %s: no event "
+                    "overlap with POV=%s (R19-M7 gate).",
+                    eid, pov_entity_id,
+                )
                 continue
             # Case 1 — Evidence is an Entity
             if eid in self.world_state.entities and self.sandbox.has_node(eid):
@@ -1266,7 +1406,37 @@ class CausalPhysicsEngine:
                 existing_applied = getattr(self, "_legacy_applied_keys", set()) or set()
                 self._legacy_applied_keys = existing_applied | applied_keys
 
-        for t in do_targets:
+        # Audit R18-25: normalise dispatch order so a same-batch
+        # call cannot create a belief routed through a channel that
+        # an earlier-in-the-batch DoChannel just severed (or vice
+        # versa: a belief written by a DoEvent that a later same-
+        # batch DoEntityDelete then orphans). Tier contract:
+        #   (0) structural creates / mutations (objects, channels,
+        #       relationships, causal / spatial edges)
+        #   (1) destructive operations (entity/object delete, channel
+        #       sever)
+        #   (2) dependent epistemic / propositional writes (belief,
+        #       concern, world-trait, proposition)
+        # Within each tier the caller-supplied order is preserved so
+        # deterministic same-tier sequences keep behaving as authored.
+        def _tier(target: Any) -> int:
+            if isinstance(target, (DoNarrativeObject, DoRelationship,
+                                   DoCausalEdge, DoSpatialEdge)):
+                return 0
+            if isinstance(target, (DoEntityDelete, DoObjectDelete)):
+                return 1
+            if isinstance(target, DoChannel):
+                return 1 if getattr(target, "active", None) is False else 0
+            return 2
+
+        do_targets_ordered = [
+            t for _, t in sorted(
+                enumerate(do_targets),
+                key=lambda iv: (_tier(iv[1]), iv[0]),
+            )
+        ]
+
+        for t in do_targets_ordered:
             if isinstance(t, DoProposition):
                 self._apply_do_proposition(t)
             elif isinstance(t, DoBelief):
@@ -1648,7 +1818,8 @@ class CausalPhysicsEngine:
         # provenance chain integrity.
         if target.acquired_via_channel_id:
             channel_exists = any(
-                ch.channel_id == target.acquired_via_channel_id
+                getattr(ch, "id", getattr(ch, "channel_id", None))
+                == target.acquired_via_channel_id
                 for ch in (self.world_state.channels or {}).values()
             )
             if not channel_exists:
@@ -1666,9 +1837,36 @@ class CausalPhysicsEngine:
                 target.holder_id, target.target_id,
             )
             return
+        # Audit R18-11: validate the proposition referent before
+        # mutating. Beliefs about *entities* may legitimately target
+        # not-yet-registered nodes (off-stage referents, future
+        # introductions); only the proposition link is strict because
+        # propositions are first-class DB entries and a typoed
+        # ``PROP_X`` always indicates a bug.
+        if target.proposition_id:
+            if not any(
+                getattr(p, "proposition_id", None) == target.proposition_id
+                for p in (self.world_state.propositions or [])
+            ):
+                logger.warning(
+                    "[CausalPhysics·do_belief] proposition_id=%s is "
+                    "not registered; refusing to attach belief on "
+                    "holder=%s.",
+                    target.proposition_id, target.holder_id,
+                )
+                return
         ndata = self.sandbox.nodes[target.holder_id]
         if ndata.get("node_type") != "Entity":
             return
+        # Audit R17-6: derive the fabula tick from the trigger event
+        # so newly-created beliefs carry ``established_at_fabula`` and
+        # downstream reconstruction can order epistemic state correctly.
+        trigger_ft: int = 0
+        if triggered_by and triggered_by != "DO_OPERATOR":
+            for _e in (self.world_state.events or []):
+                if getattr(_e, "id", None) == triggered_by:
+                    trigger_ft = int(getattr(_e, "fabula_time", 0) or 0)
+                    break
         beliefs = ndata.setdefault("beliefs", [])
         # Locate by (target_id, proposition_id) — proposition_id wins when
         # both sides supply one.
@@ -1694,12 +1892,25 @@ class CausalPhysicsEngine:
                 "evidence_strength": 1.0,
                 "proposition_id": target.proposition_id,
                 "acquired_via_event_id": triggered_by,
+                # Audit R18-10: persist the validated channel
+                # provenance so a later DoChannel sever can prune
+                # this belief (was dropped on the floor here and at
+                # the canonical mirror below).
+                "acquired_via_channel_id": target.acquired_via_channel_id,
+                # Audit R17-6: timestamp the dict-shape belief so
+                # reconstruct_entity_at orders sandbox-mirrored
+                # beliefs alongside canonical ones.
+                "established_at_fabula": trigger_ft,
             }
             beliefs.append(existing)
         else:
             old_conf = float(existing.get("confidence", 0.0))
             existing["confidence"] = float(target.confidence)
             existing["acquired_via_event_id"] = triggered_by
+            if target.acquired_via_channel_id:
+                # Audit R18-10: update channel provenance on existing
+                # belief if the surgery specifies a (different) one.
+                existing["acquired_via_channel_id"] = target.acquired_via_channel_id
             if target.perceived_state and not existing.get("perceived_state"):
                 existing["perceived_state"] = target.perceived_state
             if target.proposition_id and not existing.get("proposition_id"):
@@ -1740,6 +1951,11 @@ class CausalPhysicsEngine:
                 if pid_match or tid_match:
                     cb.confidence = float(target.confidence)
                     cb.acquired_via_event_id = triggered_by
+                    # Audit R18-10: mirror channel provenance onto
+                    # the canonical Belief so the later sever can
+                    # detect this belief on the prune walk.
+                    if target.acquired_via_channel_id:
+                        cb.acquired_via_channel_id = target.acquired_via_channel_id
                     mirrored = True
                     break
             if not mirrored:
@@ -1752,6 +1968,15 @@ class CausalPhysicsEngine:
                         evidence_strength="moderate",
                         proposition_id=target.proposition_id,
                         acquired_via_event_id=triggered_by,
+                        # Audit R18-10: carry channel provenance into
+                        # the canonical Belief so DoChannel severance
+                        # can prune this belief later.
+                        acquired_via_channel_id=target.acquired_via_channel_id,
+                        # Audit R17-6: stamp the canonical belief so
+                        # reconstruct_entity_at can sort epistemic
+                        # state by ``established_at_fabula`` instead
+                        # of falling back to insertion order.
+                        established_at_fabula=trigger_ft,
                     ))
                 except Exception:
                     logger.exception(
@@ -1991,6 +2216,37 @@ class CausalPhysicsEngine:
                 if target.affected_domains_remove:
                     cdomains = [d for d in cdomains if d not in set(target.affected_domains_remove)]
                 canonical_wt.affected_domains = cdomains
+                # Round-12 audit: world-trait do-surgery used to mutate
+                # only the canonical magnitude/domains but never
+                # append a WorldTraitSnapshot, while DoNarrativeObject
+                # writes ObjectStateSnapshot to canonical state_timeline.
+                # That asymmetry left ``reconstruct_*_at`` replay blind
+                # to the clamp. Append a snapshot here so engine
+                # writes-canonical is uniform across object &
+                # world-trait paths.
+                try:
+                    from shadow_loom.models import WorldTraitSnapshot
+                    canonical_wt.state_timeline = list(
+                        getattr(canonical_wt, "state_timeline", None) or []
+                    )
+                    canonical_wt.state_timeline.append(WorldTraitSnapshot(
+                        fabula_time=ft,
+                        triggered_by=getattr(target, "triggered_by", None),
+                        magnitude=TraitVector(
+                            value=new_value,
+                            inertia=(
+                                float(target.inertia)
+                                if target.inertia is not None
+                                else (mag.get("inertia") or 0.3)
+                            ),
+                        ),
+                    ))
+                    canonical_wt.state_timeline.sort(key=lambda s: s.fabula_time)
+                except Exception:
+                    logger.exception(
+                        "[CausalPhysics\u00b7do_world_trait] Snapshot append failed for %s.",
+                        wt_id,
+                    )
             except Exception:
                 logger.exception(
                     "[CausalPhysics·do_world_trait] Canonical mirror failed for %s.",
@@ -2056,6 +2312,20 @@ class CausalPhysicsEngine:
         _channel_applied = False
         if ch is not None:
             if target.active is True:
+                # Audit R18-26: re-enabling a previously terminated
+                # channel used to just clear ``terminated_at_fabula``,
+                # which retroactively re-opened the channel for the
+                # entire gap (POV reads at ft \u2208 [old_term, ft_now)
+                # would see the channel as available again). The flat
+                # schema cannot express multi-segment availability,
+                # so we approximate the new segment by bumping
+                # ``established_at_fabula`` forward to the reopen
+                # time. Downstream readers (channel-aware POV,
+                # belief-acquisition gate) then see the channel as
+                # closed during the gap and open from ft_now onward.
+                prior_term = ch.terminated_at_fabula
+                if prior_term is not None and prior_term <= ft:
+                    ch.established_at_fabula = ft
                 ch.terminated_at_fabula = None
             elif target.active is False:
                 ch.terminated_at_fabula = ft
@@ -2200,6 +2470,16 @@ class CausalPhysicsEngine:
             "skipped %d dead actor(s).",
             target.event_id, old_loc, new_loc, ft, cascaded, len(skipped_dead),
         )
+        self._event_mutations.append(EventMutation(
+            event_id=target.event_id,
+            kind="relocation",
+            fabula_time=ft,
+            old_at_location_id=old_loc,
+            new_at_location_id=new_loc,
+            cascaded_actor_snapshots=cascaded,
+            skipped_dead_actors=list(skipped_dead),
+            triggered_by=getattr(target, "triggered_by", None),
+        ))
 
     def _apply_do_event_time_shift(self, target: Any) -> None:
         """Rewrite an event's ``fabula_time`` and re-stamp every
@@ -2255,6 +2535,20 @@ class CausalPhysicsEngine:
             for snap in timeline:
                 if getattr(snap, "triggered_by", None) == target.event_id:
                     snap.fabula_time = new_ft
+                    # Audit R17-7: a snapshot triggered by the shifted
+                    # event carries epistemic deltas
+                    # (``beliefs_added``) that were stamped with the
+                    # old tick. Re-stamp them in lockstep so the
+                    # per-belief ``established_at_fabula`` stays
+                    # coherent with the snapshot's ``fabula_time``;
+                    # otherwise reconstruct_entity_at orders the
+                    # belief at the old tick while the snapshot lives
+                    # at the new one.
+                    for _b in (getattr(snap, "beliefs_added", None) or []):
+                        try:
+                            _b.established_at_fabula = new_ft
+                        except Exception:
+                            pass
                     n += 1
             if n:
                 timeline.sort(key=lambda s: s.fabula_time)
@@ -2269,10 +2563,22 @@ class CausalPhysicsEngine:
             cascaded += _restamp_timeline(obj, "state_timeline")
         for prop in (self.world_state.propositions or []):
             cascaded += _restamp_timeline(prop, "state_timeline")
-        for trait in (getattr(self.world_state, "world_traits", None) or []):
+        world_traits = getattr(self.world_state, "world_traits", None) or {}
+        for trait in (
+            world_traits.values()
+            if isinstance(world_traits, dict)
+            else (world_traits or [])
+        ):
             cascaded += _restamp_timeline(trait, "state_timeline")
-        for concern in (getattr(self.world_state, "concerns", None) or []):
-            cascaded += _restamp_timeline(concern, "state_timeline")
+        # Concerns hang off Entity, not WorldStateV1 \u2014 iterate every
+        # entity's concern list so their state-timelines are restamped
+        # alongside trait/object/world-trait/proposition timelines.
+        # (Previous loop iterated ``world_state.concerns`` which does
+        # not exist, so concern snapshots silently kept the stale tick
+        # after a DoEventTimeShift.)
+        for ent in (entities.values() if isinstance(entities, dict) else (entities or [])):
+            for concern in (getattr(ent, "concerns", None) or []):
+                cascaded += _restamp_timeline(concern, "state_timeline")
 
         # Re-stamp CausalEdge.fabula_time on outgoing edges of the
         # shifted event so the causal_topology stays ordered.
@@ -2316,6 +2622,16 @@ class CausalPhysicsEngine:
             target.event_id, old_ft, new_ft,
             cascaded, edges_restamped, metrics_restamped,
         )
+        self._event_mutations.append(EventMutation(
+            event_id=target.event_id,
+            kind="time_shift",
+            fabula_time=new_ft,
+            old_fabula_time=old_ft,
+            new_fabula_time=new_ft,
+            cascaded_snapshot_restamps=cascaded,
+            cascaded_edge_restamps=edges_restamped + metrics_restamped,
+            triggered_by=getattr(target, "triggered_by", None),
+        ))
 
     def _apply_do_relationship(self, target: Any) -> None:
         """Clamp a single per-axis :class:`RelationshipMetric`.
@@ -2997,6 +3313,16 @@ class CausalPhysicsEngine:
                     props[k] = str(v)
                 canonical.properties = props
 
+        # Fail-closed: if neither the sandbox graph nor the canonical
+        # NarrativeObject knows this id, no mutation actually landed
+        # \u2014 emitting an ObjectMutation would surface a phantom
+        # cascade entry and suppress the vacuity guard. Skip the
+        # append (the sandbox-missing logger.warning above is the
+        # single signal).
+        in_sandbox = target.object_id in self.sandbox.nodes
+        if canonical is None and not in_sandbox:
+            return
+
         self._object_mutations.append(ObjectMutation(
             object_id=target.object_id,
             fabula_time=ft,
@@ -3079,8 +3405,11 @@ class CausalPhysicsEngine:
             if r.source_entity_id != eid and r.target_entity_id != eid
         ]
         # Beliefs targeting the deleted entity in survivors.
+        _beliefs_removed = 0
         for other in entities.values():
+            before_b = len(other.beliefs or [])
             other.beliefs = [b for b in (other.beliefs or []) if b.target_id != eid]
+            _beliefs_removed += before_b - len(other.beliefs)
         # Concerns owned by the entity (concerns live on entities;
         # popping the entity already dropped its concerns, but if any
         # downstream container holds dangling refs we'd cascade here).
@@ -3091,24 +3420,32 @@ class CausalPhysicsEngine:
             if ce.source_id != eid and ce.target_id != eid
         ]
         # Events: scrub from actor_ids / speaker_id.
+        _events_scrubbed = 0
         for evt in (ws.events or []):
+            touched = False
             if eid in (evt.actor_ids or []):
                 evt.actor_ids = [a for a in evt.actor_ids if a != eid]
+                touched = True
             if getattr(evt, "speaker_id", None) == eid:
                 evt.speaker_id = None
-            for fld in ("target_id", "addressee_id"):
-                if getattr(evt, fld, None) == eid:
-                    setattr(evt, fld, None)
+                touched = True
+            for fld in ("target_ids", "addressee_ids"):
+                lst = getattr(evt, fld, None)
+                if lst and eid in lst:
+                    setattr(evt, fld, [x for x in lst if x != eid])
+                    touched = True
+            if touched:
+                _events_scrubbed += 1
         # Propositions: scrub referent ids.
         for p in (ws.propositions or []):
             refs = getattr(p, "referent_ids", None)
             if refs and eid in refs:
                 p.referent_ids = [r for r in refs if r != eid]
-        # Channels: scrub participants.
+        # Channels: scrub participant_ids (Channel.participant_ids).
         for ch in (ws.channels or {}).values():
-            parts = getattr(ch, "participants", None)
+            parts = getattr(ch, "participant_ids", None)
             if parts and eid in parts:
-                ch.participants = [p for p in parts if p != eid]
+                ch.participant_ids = [p for p in parts if p != eid]
         # Sandbox mirror.
         if self.sandbox.has_node(eid):
             self.sandbox.remove_node(eid)
@@ -3119,6 +3456,18 @@ class CausalPhysicsEngine:
             before_c - len(ws.causal_topology),
         )
         self._intervened_nodes.add(eid)
+        # Structured record so the renderer / auditor / MCP envelope
+        # can see the excision and ground prose against the cascade
+        # rather than treat the entity as a phantom-mention candidate.
+        self._entity_delete_mutations.append(EntityDeleteMutation(
+            entity_id=eid,
+            fabula_time=getattr(target, "fabula_time", None) or self._default_fabula_time(),
+            cascaded_social_edges_removed=before_s - len(ws.social_topology),
+            cascaded_causal_edges_removed=before_c - len(ws.causal_topology),
+            cascaded_beliefs_removed=_beliefs_removed,
+            cascaded_events_scrubbed=_events_scrubbed,
+            triggered_by=getattr(target, "triggered_by", None),
+        ))
 
     def _apply_do_object_delete(self, target: Any) -> None:
         """Excise a :class:`NarrativeObject` from the world ("never existed").
@@ -3152,19 +3501,26 @@ class CausalPhysicsEngine:
             )
             return
         del objects[oid]
-        # Channels: scrub participant lists.
+        # Channels: scrub participant_ids (Channel.participant_ids).
         for ch in (ws.channels or {}).values():
-            participants = getattr(ch, "participants", None)
+            participants = getattr(ch, "participant_ids", None)
             if participants and oid in participants:
-                ch.participants = [p for p in participants if p != oid]
+                ch.participant_ids = [p for p in participants if p != oid]
         # Events: scrub object_ids if the field exists.
+        _events_scrubbed = 0
         for evt in (ws.events or []):
+            touched = False
             obj_ids = getattr(evt, "object_ids", None)
             if obj_ids and oid in obj_ids:
                 evt.object_ids = [o for o in obj_ids if o != oid]
-            for fld in ("target_id",):
-                if getattr(evt, fld, None) == oid:
-                    setattr(evt, fld, None)
+                touched = True
+            for fld in ("target_ids",):
+                lst = getattr(evt, fld, None)
+                if lst and oid in lst:
+                    setattr(evt, fld, [x for x in lst if x != oid])
+                    touched = True
+            if touched:
+                _events_scrubbed += 1
         # Propositions: scrub referent ids.
         for p in (ws.propositions or []):
             refs = getattr(p, "referent_ids", None)
@@ -3177,8 +3533,11 @@ class CausalPhysicsEngine:
             if ce.source_id != oid and ce.target_id != oid
         ]
         # Beliefs targeting the object.
+        _beliefs_removed = 0
         for ent in (ws.entities or {}).values():
+            before_b = len(ent.beliefs or [])
             ent.beliefs = [b for b in (ent.beliefs or []) if b.target_id != oid]
+            _beliefs_removed += before_b - len(ent.beliefs)
         # Sandbox mirror.
         if self.sandbox.has_node(oid):
             self.sandbox.remove_node(oid)
@@ -3187,6 +3546,15 @@ class CausalPhysicsEngine:
             oid, before_c - len(ws.causal_topology),
         )
         self._intervened_nodes.add(oid)
+        # Structured record (mirror of EntityDeleteMutation).
+        self._object_delete_mutations.append(ObjectDeleteMutation(
+            object_id=oid,
+            fabula_time=getattr(target, "fabula_time", None) or self._default_fabula_time(),
+            cascaded_causal_edges_removed=before_c - len(ws.causal_topology),
+            cascaded_beliefs_removed=_beliefs_removed,
+            cascaded_events_scrubbed=_events_scrubbed,
+            triggered_by=getattr(target, "triggered_by", None),
+        ))
 
     def _default_fabula_time(self) -> int:
         """Best-effort fabula_time anchor when a DoTarget omits one.
@@ -3274,6 +3642,13 @@ class CausalPhysicsEngine:
                 if prop == "status" and isinstance(value, str) and value in DESTRUCTIVE_STATUS:
                     removed_channels.add(node_id)
                 elif prop == "participant_ids" and isinstance(value, list) and len(value) == 0:
+                    removed_channels.add(node_id)
+                # Audit R18-12: typed ``DoChannel`` mirrors deactivation
+                # as ``CHN_X.active = False`` (see ``_typed_target_payload``
+                # at L1335). Without this branch the canonical
+                # severance never reaches ``disabled_channel_ids`` and
+                # belief-provenance pruning silently no-ops.
+                elif prop == "active" and value is False:
                     removed_channels.add(node_id)
         return removed_events, removed_channels
 
@@ -4803,6 +5178,9 @@ class CausalPhysicsEngine:
             world_trait_mutations=self._world_trait_mutations,
             object_mutations=self._object_mutations,
             edge_mutations=self._edge_mutations,
+            entity_delete_mutations=self._entity_delete_mutations,
+            object_delete_mutations=self._object_delete_mutations,
+            event_mutations=self._event_mutations,
             hidden_deltas=self._hidden_deltas,
             rule3_pruned_interventions=ctf_report.rule3_pruned,
             rule3_pruning_mode=rule3_mode,
@@ -4953,10 +5331,13 @@ class CausalPhysicsEngine:
             sub._world_trait_mutations = list(self._world_trait_mutations)
             sub._object_mutations = list(self._object_mutations)
             sub._edge_mutations = list(self._edge_mutations)
+            sub._entity_delete_mutations = list(self._entity_delete_mutations)
+            sub._object_delete_mutations = list(self._object_delete_mutations)
             sub._mutations = list(self._mutations)
             sub._social_mutations = list(self._social_mutations)
             sub._intervened_nodes = set(self._intervened_nodes)
             sub._intervened_traits = set(self._intervened_traits)
+            sub._intervened_relationships = set(self._intervened_relationships)
             sub._legacy_applied_keys = set(
                 getattr(self, "_legacy_applied_keys", set()) or set()
             )

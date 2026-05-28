@@ -418,6 +418,49 @@ class CounterfactualBranch(BaseModel):
             "E.g. \"Ken\u2019s fear that Mrs Coady is alive\"."
         ),
     )
+    # --- Object / world-trait / edge surgery side-effects (Round-6) ---
+    # The Rung-3 surgery may also relocate props, clamp ambient world
+    # traits, or sever/add topology edges. These id lists are produced
+    # by ``narrative_physics._typed_target_payload`` from the engine's
+    # ObjectMutation / WorldTraitMutation / EdgeMutation logs. The
+    # auditor iterates them alongside the proposition/belief/concern
+    # lists so prose that silently drops a prop relocation or topology
+    # rewrite is flagged as a miracle step.
+    affected_objects: List[str] = Field(
+        default_factory=list,
+        description=(
+            "OBJ_ ids whose location / owner / properties were "
+            "mutated between factual and counterfactual sandbox."
+        ),
+    )
+    affected_world_traits: List[str] = Field(
+        default_factory=list,
+        description=(
+            "WORLD_ ids whose ambient-force value changed between "
+            "factual and counterfactual sandbox."
+        ),
+    )
+    affected_edges: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Topology edges (``edge_type:action:source\u2192target``) "
+            "added or severed between factual and counterfactual."
+        ),
+    )
+    affected_entity_deletes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "ENT_ ids excised by a DoEntityDelete existence-"
+            "counterfactual on this branch."
+        ),
+    )
+    affected_object_deletes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "OBJ_ ids excised by a DoObjectDelete existence-"
+            "counterfactual on this branch."
+        ),
+    )
     # --- Downstream consequence cascades (Phase-10: rich brief) ---
     # The Rung-3 surgery propagates through the AMWN. The engine
     # records what mutated (TraitMutation / SocialMutation /
@@ -459,6 +502,54 @@ class CounterfactualBranch(BaseModel):
         description=(
             "ConcernMutation detail lines (holder, concern, field, "
             "old\u2192new value)."
+        ),
+    )
+    object_cascade_detail: List[str] = Field(
+        default_factory=list,
+        description=(
+            "ObjectMutation detail lines (object id, new_location_id, "
+            "new_owner_id, properties_set / properties_unset diff). "
+            "Surfaces DoNarrativeObject / DoObjectDelete propagation so "
+            "the renderer dramatises prop relocations / ownership shifts "
+            "rather than dropping them."
+        ),
+    )
+    world_trait_cascade_detail: List[str] = Field(
+        default_factory=list,
+        description=(
+            "WorldTraitMutation detail lines (world_trait_id, old\u2192new "
+            "magnitude, affected_domains add/remove). Surfaces "
+            "DoWorldTrait clamps so the renderer can ground ambient "
+            "force shifts in atmosphere or institutional mood."
+        ),
+    )
+    edge_cascade_detail: List[str] = Field(
+        default_factory=list,
+        description=(
+            "EdgeMutation detail lines (edge_type, action, endpoints). "
+            "Covers DoCausalEdge / DoSpatialEdge / DoChannel surgeries "
+            "so topology rewrites are legible to the renderer / auditor "
+            "rather than landing silently as a sandbox delta."
+        ),
+    )
+    entity_delete_cascade_detail: List[str] = Field(
+        default_factory=list,
+        description=(
+            "EntityDeleteMutation detail lines (entity_id, fabula_time, "
+            "social/causal edges removed, beliefs removed, events "
+            "scrubbed). Surfaces DoEntityDelete existence-counterfactual "
+            "excisions so the renderer treats the character as never "
+            "having been present and the auditor can flag any residual "
+            "reference."
+        ),
+    )
+    object_delete_cascade_detail: List[str] = Field(
+        default_factory=list,
+        description=(
+            "ObjectDeleteMutation detail lines (object_id, fabula_time, "
+            "cascade counts). Surfaces DoObjectDelete existence-"
+            "counterfactual excisions so the renderer treats the prop "
+            "as never having been present."
         ),
     )
     blocked_propagations_detail: List[str] = Field(
@@ -608,6 +699,13 @@ class ThreatProximity(BaseModel):
             "``affected_concerns`` (same order)."
         ),
     )
+    # --- Object / world-trait / edge surgery side-effects (Round-6) ---
+    # See :class:`CounterfactualBranch` for semantics.
+    affected_objects: List[str] = Field(default_factory=list)
+    affected_world_traits: List[str] = Field(default_factory=list)
+    affected_edges: List[str] = Field(default_factory=list)
+    affected_entity_deletes: List[str] = Field(default_factory=list)
+    affected_object_deletes: List[str] = Field(default_factory=list)
     # --- Downstream consequence cascades (Phase-10: rich brief) ---
     # See :class:`CounterfactualBranch` for field semantics; mirrored
     # here so an affective directive carrying Rung-2 surgery context
@@ -617,6 +715,11 @@ class ThreatProximity(BaseModel):
     proposition_cascade_detail: List[str] = Field(default_factory=list)
     belief_cascade_detail: List[str] = Field(default_factory=list)
     concern_cascade_detail: List[str] = Field(default_factory=list)
+    object_cascade_detail: List[str] = Field(default_factory=list)
+    world_trait_cascade_detail: List[str] = Field(default_factory=list)
+    edge_cascade_detail: List[str] = Field(default_factory=list)
+    entity_delete_cascade_detail: List[str] = Field(default_factory=list)
+    object_delete_cascade_detail: List[str] = Field(default_factory=list)
     blocked_propagations_detail: List[str] = Field(default_factory=list)
     causal_chain: List[str] = Field(default_factory=list)
     causal_chain_descriptions: List[str] = Field(
@@ -722,16 +825,23 @@ class InterventionBranch(BaseModel):
             "``affected_concerns`` (same order)."
         ),
     )
-    # --- Downstream consequence cascades (Phase-10: rich brief) ---
-    # Mirror of the Rung-3 fields on :class:`CounterfactualBranch` so
-    # the Rung-2 sandbox brief surfaces the engine's actual cascade,
-    # not just the surgery target. See that class for field-by-field
-    # semantics.
+    # --- Object / world-trait / edge surgery side-effects (Round-6) ---
+    # See :class:`CounterfactualBranch` for semantics.
+    affected_objects: List[str] = Field(default_factory=list)
+    affected_world_traits: List[str] = Field(default_factory=list)
+    affected_edges: List[str] = Field(default_factory=list)
+    affected_entity_deletes: List[str] = Field(default_factory=list)
+    affected_object_deletes: List[str] = Field(default_factory=list)
     downstream_trait_changes: List[str] = Field(default_factory=list)
     downstream_relationship_changes: List[str] = Field(default_factory=list)
     proposition_cascade_detail: List[str] = Field(default_factory=list)
     belief_cascade_detail: List[str] = Field(default_factory=list)
     concern_cascade_detail: List[str] = Field(default_factory=list)
+    object_cascade_detail: List[str] = Field(default_factory=list)
+    world_trait_cascade_detail: List[str] = Field(default_factory=list)
+    edge_cascade_detail: List[str] = Field(default_factory=list)
+    entity_delete_cascade_detail: List[str] = Field(default_factory=list)
+    object_delete_cascade_detail: List[str] = Field(default_factory=list)
     blocked_propagations_detail: List[str] = Field(default_factory=list)
     causal_chain: List[str] = Field(default_factory=list)
     causal_chain_descriptions: List[str] = Field(

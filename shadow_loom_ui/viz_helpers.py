@@ -3579,7 +3579,7 @@ def snapshot_world_at_syuzhet(ws: WorldStateV1, s: int) -> WorldStateV1:
     knowledge (suspense, reveals, dramatic irony) get a reading-time
     cursor.
     """
-    cache_key = (id(ws), -1 - s)  # negative key namespace for syuzhet snapshots
+    cache_key = (id(ws), _SNAPSHOT_REVISION, -1 - s)  # R19-L3: revision-keyed; negative t namespace = syuzhet
     cached = _SNAPSHOT_CACHE.get(cache_key)
     if cached is not None:
         return cached

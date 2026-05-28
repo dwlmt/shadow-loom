@@ -211,6 +211,14 @@ VIOLATION_EXPLANATIONS: Dict[str, str] = {
         "collapse downstream suspense. Leave the payoff for the "
         "future scene that the engine has scheduled."
     ),
+    "world_trait_timeline_disorder": (
+        "A GlobalTrait's state_timeline is not monotonically ordered "
+        "by fabula_time. The engine relies on monotonic snapshots to "
+        "reconstruct ambient forces at any anchor; disorder corrupts "
+        "every downstream replay. Sort or rebuild the trait's "
+        "state_timeline so consecutive snapshots have non-decreasing "
+        "fabula_time."
+    ),
 }
 
 
@@ -370,6 +378,22 @@ def extract_reasoning_trace(
         "abduction": [],
         "cascade": [],
         "social_cascade": [],
+        # Round-5 audit: Pearl-rung Q&A surfaces produced by
+        # ``_typed_target_payload`` were dropped here. The UI knew
+        # only about trait & social mutations; proposition / belief /
+        # concern / object / world-trait / edge surgery cascades were
+        # invisible in the reasoning trace even though the engine had
+        # already collected them. Add dedicated rails so each typed
+        # mutation class renders as its own panel.
+        "proposition_cascade": [],
+        "belief_cascade": [],
+        "concern_cascade": [],
+        "object_cascade": [],
+        "world_trait_cascade": [],
+        "edge_cascade": [],
+        "entity_delete_cascade": [],
+        "object_delete_cascade": [],
+        "event_cascade": [],
         "blocked": [],
         # ctf-calculus pre-flight surface (Correa & Bareinboim 2025)
         "rule3_pruned_interventions": [],
@@ -390,6 +414,18 @@ def extract_reasoning_trace(
         out["rung"] = 2
     elif qtype == "counterfactual":
         out["rung"] = 3
+    elif qtype in (
+        "observation", "general", "interrogate", "interrogation",
+        "directive", "manual_edit", "evaluate",
+    ):
+        # Round-14 audit: Pearl Rung-1 surfaces (pure observation / Q&A /
+        # interrogation / directive) used to leave ``rung`` as ``None``,
+        # so the rendered chip read as "rung-?" and downstream auditors
+        # could not distinguish a Rung-1 observation from a misclassified
+        # query. Stamp Rung-1 explicitly so the reasoning trace and
+        # cascade-summariser carry the full P(y) ⇒ P(y|do) ⇒
+        # P(y_x|x',y) ladder uniformly.
+        out["rung"] = 1
 
     label = _label_fn_for(ws)
 
@@ -473,6 +509,147 @@ def extract_reasoning_trace(
             "impact": float(sm.get("impact", 0.0) or 0.0),
             "inertia": float(sm.get("inertia", 0.0) or 0.0),
             "trigger": sm.get("triggered_by", ""),
+        })
+
+    # ── proposition / belief / concern / object / world-trait / edge cascades ─
+    # Engine collectors (PropositionMutation, BeliefMutation,
+    # ConcernMutation, ObjectMutation, WorldTraitMutation, EdgeMutation)
+    # land on physics_result via ``_typed_target_payload``. Surface
+    # each as its own rail so the UI panel can describe the surgery's
+    # actual propagation across the affect / object / world-trait /
+    # topology layers, not just trait + social.
+    for pm in physics_result.get("proposition_mutations") or []:
+        if not isinstance(pm, dict):
+            continue
+        out["proposition_cascade"].append({
+            "proposition_id": pm.get("proposition_id", ""),
+            "label": label(pm.get("proposition_id", "")),
+            "old_truth": pm.get("old_truth"),
+            "new_truth": pm.get("new_truth"),
+            "fabula_time": pm.get("fabula_time"),
+            "cascaded_belief_count": int(pm.get("cascaded_belief_count", 0) or 0),
+            "trigger": pm.get("triggered_by", ""),
+        })
+
+    for bm in physics_result.get("belief_mutations") or []:
+        if not isinstance(bm, dict):
+            continue
+        out["belief_cascade"].append({
+            "holder": bm.get("holder_id", ""),
+            "holder_label": label(bm.get("holder_id", "")),
+            "target": bm.get("target_id", ""),
+            "target_label": label(bm.get("target_id", "")),
+            "proposition_id": bm.get("proposition_id"),
+            "old_confidence": bm.get("old_confidence"),
+            "new_confidence": bm.get("new_confidence"),
+            "created": bool(bm.get("created", False)),
+            "trigger": bm.get("triggered_by", ""),
+        })
+
+    for cm in physics_result.get("concern_mutations") or []:
+        if not isinstance(cm, dict):
+            continue
+        out["concern_cascade"].append({
+            "holder": cm.get("holder_id", ""),
+            "holder_label": label(cm.get("holder_id", "")),
+            "concern_id": cm.get("concern_id", ""),
+            "field": cm.get("field", ""),
+            "old_value": cm.get("old_value"),
+            "new_value": cm.get("new_value"),
+            "trigger": cm.get("triggered_by", ""),
+        })
+
+    for om in physics_result.get("object_mutations") or []:
+        if not isinstance(om, dict):
+            continue
+        out["object_cascade"].append({
+            "object_id": om.get("object_id", ""),
+            "label": label(om.get("object_id", "")),
+            "new_location_id": om.get("new_location_id"),
+            "new_owner_id": om.get("new_owner_id"),
+            "set_location_null": bool(om.get("set_location_null", False)),
+            "set_owner_null": bool(om.get("set_owner_null", False)),
+            "properties_set": dict(om.get("properties_set") or {}),
+            "properties_unset": list(om.get("properties_unset") or []),
+            "fabula_time": om.get("fabula_time"),
+            "trigger": om.get("triggered_by", ""),
+        })
+
+    for wtm in physics_result.get("world_trait_mutations") or []:
+        if not isinstance(wtm, dict):
+            continue
+        out["world_trait_cascade"].append({
+            "world_trait_id": wtm.get("world_trait_id", ""),
+            "label": label(wtm.get("world_trait_id", "")),
+            "old_value": wtm.get("old_value"),
+            "new_value": wtm.get("new_value"),
+            "inertia": wtm.get("inertia"),
+            "fabula_time": wtm.get("fabula_time"),
+            "affected_domains_add": list(wtm.get("affected_domains_add") or []),
+            "affected_domains_remove": list(wtm.get("affected_domains_remove") or []),
+            "trigger": wtm.get("triggered_by", ""),
+        })
+
+    for em in physics_result.get("edge_mutations") or []:
+        if not isinstance(em, dict):
+            continue
+        out["edge_cascade"].append({
+            "edge_type": em.get("edge_type", ""),
+            "action": em.get("action", ""),
+            "source_id": em.get("source_id"),
+            "source_label": label(em.get("source_id", "")) if em.get("source_id") else "",
+            "target_id": em.get("target_id"),
+            "target_label": label(em.get("target_id", "")) if em.get("target_id") else "",
+            "channel_id": em.get("channel_id"),
+            "fabula_time": em.get("fabula_time"),
+            "details": dict(em.get("details") or {}),
+        })
+
+    for edm in physics_result.get("entity_delete_mutations") or []:
+        if not isinstance(edm, dict):
+            continue
+        out["entity_delete_cascade"].append({
+            "entity_id": edm.get("entity_id", ""),
+            "label": label(edm.get("entity_id", "")),
+            "fabula_time": edm.get("fabula_time"),
+            "cascaded_social_edges_removed": int(edm.get("cascaded_social_edges_removed", 0) or 0),
+            "cascaded_causal_edges_removed": int(edm.get("cascaded_causal_edges_removed", 0) or 0),
+            "cascaded_beliefs_removed": int(edm.get("cascaded_beliefs_removed", 0) or 0),
+            "cascaded_events_scrubbed": int(edm.get("cascaded_events_scrubbed", 0) or 0),
+            "trigger": edm.get("triggered_by", ""),
+        })
+
+    for odm in physics_result.get("object_delete_mutations") or []:
+        if not isinstance(odm, dict):
+            continue
+        out["object_delete_cascade"].append({
+            "object_id": odm.get("object_id", ""),
+            "label": label(odm.get("object_id", "")),
+            "fabula_time": odm.get("fabula_time"),
+            "cascaded_social_edges_removed": int(odm.get("cascaded_social_edges_removed", 0) or 0),
+            "cascaded_causal_edges_removed": int(odm.get("cascaded_causal_edges_removed", 0) or 0),
+            "cascaded_beliefs_removed": int(odm.get("cascaded_beliefs_removed", 0) or 0),
+            "cascaded_events_scrubbed": int(odm.get("cascaded_events_scrubbed", 0) or 0),
+            "trigger": odm.get("triggered_by", ""),
+        })
+
+    for evm in physics_result.get("event_mutations") or []:
+        if not isinstance(evm, dict):
+            continue
+        out["event_cascade"].append({
+            "event_id": evm.get("event_id", ""),
+            "label": label(evm.get("event_id", "")),
+            "kind": evm.get("kind", ""),
+            "fabula_time": evm.get("fabula_time"),
+            "old_at_location_id": evm.get("old_at_location_id"),
+            "new_at_location_id": evm.get("new_at_location_id"),
+            "old_fabula_time": evm.get("old_fabula_time"),
+            "new_fabula_time": evm.get("new_fabula_time"),
+            "cascaded_actor_snapshots": int(evm.get("cascaded_actor_snapshots", 0) or 0),
+            "skipped_dead_actors": list(evm.get("skipped_dead_actors") or []),
+            "cascaded_snapshot_restamps": int(evm.get("cascaded_snapshot_restamps", 0) or 0),
+            "cascaded_edge_restamps": int(evm.get("cascaded_edge_restamps", 0) or 0),
+            "trigger": evm.get("triggered_by", ""),
         })
 
     for b in physics_result.get("blocked") or []:
@@ -600,6 +777,22 @@ def reasoning_trace_summary(trace: Dict[str, Any]) -> str:
         parts.append(f"{len(trace['cascade'])} mutations")
     if trace.get("social_cascade"):
         parts.append(f"{len(trace['social_cascade'])} social")
+    if trace.get("proposition_cascade"):
+        parts.append(f"{len(trace['proposition_cascade'])} prop")
+    if trace.get("belief_cascade"):
+        parts.append(f"{len(trace['belief_cascade'])} belief")
+    if trace.get("concern_cascade"):
+        parts.append(f"{len(trace['concern_cascade'])} concern")
+    if trace.get("object_cascade"):
+        parts.append(f"{len(trace['object_cascade'])} object")
+    if trace.get("world_trait_cascade"):
+        parts.append(f"{len(trace['world_trait_cascade'])} world-trait")
+    if trace.get("edge_cascade"):
+        parts.append(f"{len(trace['edge_cascade'])} edge")
+    if trace.get("entity_delete_cascade"):
+        parts.append(f"{len(trace['entity_delete_cascade'])} entity-excise")
+    if trace.get("object_delete_cascade"):
+        parts.append(f"{len(trace['object_delete_cascade'])} object-excise")
     if trace.get("blocked"):
         parts.append(f"{len(trace['blocked'])} blocked")
     if trace.get("rule3_pruned_interventions"):
@@ -982,6 +1175,16 @@ def convergence_trajectory_data(feedback_result: Any) -> List[Dict[str, Any]]:
             1 for v in violations if getattr(v, "severity", "") == "critical"
         )
         engine_failures = engine_failures_final if idx == last_idx else []
+        # R19-M5: prefer per-cycle ``engine_threshold_failures`` when
+        # the AuditCycleSnapshot carries them \u2014 the convergence
+        # chart used to show ``engine_failure_count=0`` for every
+        # intermediate row even when those cycles had recorded
+        # engine threshold breaches.
+        cycle_engine_failures = list(
+            getattr(cycle, "engine_threshold_failures", None) or []
+        )
+        if cycle_engine_failures:
+            engine_failures = cycle_engine_failures
         severity_score = 0.0
         if findings_from_sources is not None and _finding_severity_score is not None:
             try:

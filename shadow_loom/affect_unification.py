@@ -400,7 +400,12 @@ def backfill_belief_propositions_by_referent(world: WorldStateV1) -> int:
     return n
 
 
-def synthesise_audience_entity(world: WorldStateV1) -> Entity:
+def synthesise_audience_entity(
+    world: WorldStateV1,
+    *,
+    branch_world_id: str = "factual",
+    branch_label: Optional[str] = None,
+) -> Entity:
     """Synthesise (or refresh) ``ENT_AUDIENCE`` from the syuzhet stream.
 
     Walks the events in syuzhet order. For each event whose
@@ -425,6 +430,20 @@ def synthesise_audience_entity(world: WorldStateV1) -> Entity:
     if not world.propositions:
         synthesise_propositions(world)
 
+    # R19-H13: project to the requested branch so the audience entity
+    # is rebuilt from the events/propositions visible on that branch
+    # (not the canonical union). Today ``projected_for_branch`` forks
+    # ``entities`` only; once R19-H14 lands and events/channels also
+    # fork, this same call will start delivering branch-scoped events
+    # without any further change here.
+    try:
+        scoped = world.projected_for_branch(
+            branch_world_id=branch_world_id or "factual",
+            branch_label=branch_label,
+        )
+    except Exception:
+        scoped = world
+
     # Register the sentinel "no location" entry the audience entity
     # points at — keeps the broken-link validator satisfied without
     # forcing plot authors to declare it themselves.
@@ -437,7 +456,7 @@ def synthesise_audience_entity(world: WorldStateV1) -> Entity:
     # event's fabula_time (audience learns it at the moment of
     # narration, but the belief is *about* a fabula-time-stamped
     # proposition).
-    by_syuzhet = sorted(world.events, key=lambda e: e.syuzhet_index)
+    by_syuzhet = sorted(scoped.events, key=lambda e: e.syuzhet_index)
     for evt in by_syuzhet:
         prop_id = f"PROP_FROM_{evt.id}"
         confidence: Optional[float]
@@ -466,6 +485,16 @@ def synthesise_audience_entity(world: WorldStateV1) -> Entity:
             inertia=1.0,
             established_at_fabula=evt.fabula_time,
             acquired_via_event_id=evt.id,
+            # R19-H12: audience learns utterance content *through* the
+            # channel the utterance routed over. Recording the channel
+            # provenance lets downstream auditors flag audience
+            # beliefs whose channel was later severed (and lets the
+            # affective scorers reason about channel reach).
+            acquired_via_channel_id=(
+                getattr(evt, "via_channel_id", None)
+                if evt.event_type == "utterance"
+                else None
+            ),
             evidence_strength="strong",
             proposition_id=prop_id,
         )
@@ -492,7 +521,7 @@ def synthesise_audience_entity(world: WorldStateV1) -> Entity:
     # *positively*); the affect agent is free to overlay a
     # ``ConcernSnapshot`` that flips polarity on a given fabula tick.
     # ------------------------------------------------------------------
-    for prop in world.propositions:
+    for prop in scoped.propositions:
         if prop.kind != "outcome":
             continue
         ccn_id = f"CCN_AUDIENCE_{prop.proposition_id[len('PROP_'):]}"

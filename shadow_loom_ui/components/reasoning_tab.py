@@ -178,6 +178,11 @@ def _build_trace_panel(state: AppState) -> None:
         _refresh()
         state.on(StateEvent.PIPELINE_RESULT, _refresh)
         state.on(StateEvent.PROJECT_LOADED, _refresh)
+        # R19-UI: refresh when the user clicks a different version /
+        # branch in the sidebar. ``load_db_version`` clears
+        # ``last_result``, so the trace should re-render to reflect
+        # the new head rather than stale data from the prior run.
+        state.on(StateEvent.VERSION_CHANGED, _refresh)
 
 
 # =====================================================================
@@ -518,3 +523,7 @@ def _build_convergence_panel(state: AppState) -> None:
         _refresh()
         state.on(StateEvent.PIPELINE_RESULT, _refresh)
         state.on(StateEvent.PROJECT_LOADED, _refresh)
+        # R19-UI: refresh on version switch so a different branch's
+        # convergence trajectory is shown (or the empty state, if the
+        # newly-loaded version has no feedback_result).
+        state.on(StateEvent.VERSION_CHANGED, _refresh)

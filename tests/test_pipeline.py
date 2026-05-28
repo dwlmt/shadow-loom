@@ -316,7 +316,21 @@ class TestInterventionPipeline:
         assert result.prose is not None
         assert result.converged is True
         assert result.world_model.version == 1
-        assert len(result.world_model.current.events) > len(ws.events)
+        # R19-UI-(4): intervention now auto-forks shadow, so the new
+        # version's head lives on a shadow branch (factual baseline
+        # is untouched). Shadow extraction lands in the
+        # ``shadow_events[branch_label]`` sidecar rather than being
+        # merged into ``current.events``.
+        head = result.world_model.history[-1]
+        assert head.world_id == "shadow"
+        assert head.branch_label  # non-empty
+        # Sidecar must hold at least one event for the new branch so
+        # downstream readers (projection, interrogation) can see the
+        # post-intervention world.
+        sidecar = result.world_model.current.shadow_events.get(
+            head.branch_label
+        ) or {}
+        assert sidecar, "shadow_events sidecar should be populated"
         assert _deep_snapshot(ws) == snap_before
 
     @patch("shadow_loom.generation._build_generation_agent")

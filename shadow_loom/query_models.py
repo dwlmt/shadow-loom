@@ -1,11 +1,21 @@
 # SPDX-FileCopyrightText: 2026 David Rae Wilmot
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from typing import Any, Optional, Literal, Tuple, Union, Dict, List
 from typing_extensions import Annotated
 
 from shadow_loom.introduced_elements import IntroducedElements
+
+
+# Shared model config for every DoTarget. ``populate_by_name=True`` allows
+# both the canonical field name and any ``AliasChoices`` alias to be used
+# at construction time — the parallel ``new_value`` / ``new_confidence``
+# / ``new_salience`` aliases below smooth over the ergonomic gotcha that
+# DoEvent uses ``new_*`` prefixes (because it distinguishes NEW vs
+# existing event fields) while the rest of the family uses bare
+# ``value`` / ``confidence`` / ``salience``.
+_DO_TARGET_CONFIG = ConfigDict(populate_by_name=True)
 
 
 # ---------------------------------------------------------------------
@@ -57,6 +67,33 @@ class DoEvent(BaseModel):
             "earlier/later?' without removing the event."
         ),
     )
+
+    @model_validator(mode="after")
+    def _imply_occurred_when_relocating(self) -> "DoEvent":
+        """Auto-imply ``occurred=True`` when a relocation/retime is set.
+
+        ``new_at_location_id`` and ``new_fabula_time`` are gated by
+        ``occurred is True`` in the engine (see
+        ``CausalPhysicsEngine.apply_do_targets`` — relocation/time-shift
+        branches both require it). Callers building a ``DoEvent`` as
+        "relocate event X to Y" naturally read it as a positive surgery
+        and routinely forget to flip ``occurred`` (which defaults to
+        False for the much more common "X did not happen" form). When
+        either re-threading field is set AND the caller did not
+        explicitly pass ``occurred``, treat the intent as unambiguous
+        and force ``occurred=True`` so the surgery actually lands
+        instead of silently no-op'ing. An explicit ``occurred=False``
+        is preserved (caller asserting "suppress the shift") — see
+        ``tests/test_do_event_time_shift.py::test_noop_when_new_fabula_time_unset_or_event_did_not_occur``.
+        """
+        has_rethread = (
+            self.new_at_location_id is not None
+            or self.new_fabula_time is not None
+        )
+        occurred_was_explicit = "occurred" in self.model_fields_set
+        if has_rethread and not occurred_was_explicit and self.occurred is False:
+            object.__setattr__(self, "occurred", True)
+        return self
 
 
 class DoProposition(BaseModel):
@@ -117,6 +154,7 @@ class DoBelief(BaseModel):
     because the underlying fact is unchanged — only the holder's
     epistemic state is forced.
     """
+    model_config = _DO_TARGET_CONFIG
     target_kind: Literal["belief"] = "belief"
     holder_id: str = Field(description="ENT_ id of the believer.")
     target_id: str = Field(description="ENT_/EVT_/OBJ_/LOC_/WORLD_ id the belief is about.")
@@ -126,7 +164,8 @@ class DoBelief(BaseModel):
     )
     confidence: float = Field(
         default=1.0, ge=0.0, le=1.0,
-        description="Clamped confidence in the belief.",
+        validation_alias=AliasChoices("confidence", "new_confidence"),
+        description="Clamped certainty in the belief, 0.0 (impossible) to 1.0 (certain).",
     )
     proposition_id: Optional[str] = Field(
         default=None,
@@ -160,6 +199,7 @@ class DoConcern(BaseModel):
     desire for vengeance", "suppose Victor never feared the Creature".
     Any unset field is left at its factual value.
     """
+    model_config = _DO_TARGET_CONFIG
     target_kind: Literal["concern"] = "concern"
     holder_id: str = Field(description="ENT_ id of the concern holder.")
     concern_id: str = Field(description="CCN_ id to clamp.")
@@ -168,6 +208,7 @@ class DoConcern(BaseModel):
     )
     salience: Optional[float] = Field(
         default=None, ge=0.0, le=1.0,
+        validation_alias=AliasChoices("salience", "new_salience"),
         description="Override salience; None leaves it unchanged.",
     )
     active: Optional[bool] = Field(
@@ -184,10 +225,14 @@ class DoTrait(BaseModel):
     """Clamp a single character trait. Equivalent to existing trait
     surgery in ``CausalPhysicsEngine.apply_do_operator`` but exposed as
     a typed payload on the query surface."""
+    model_config = _DO_TARGET_CONFIG
     target_kind: Literal["trait"] = "trait"
     holder_id: str = Field(description="ENT_ id of the trait-bearer.")
     trait_name: str = Field(description="Trait name, e.g. 'ambition' or 'fear'.")
-    value: float = Field(description="Clamped trait value.")
+    value: float = Field(
+        validation_alias=AliasChoices("value", "new_value"),
+        description="Clamped trait value.",
+    )
     inertia: Optional[float] = Field(
         default=None, ge=0.0, le=1.0,
         description="Override inertia; None leaves it unchanged.",
@@ -209,12 +254,14 @@ class DoWorldTrait(BaseModel):
     traits are shared common-cause anchors: every entity in the scene
     sees the shifted ambient force on its next propagation step.
     """
+    model_config = _DO_TARGET_CONFIG
     target_kind: Literal["world_trait"] = "world_trait"
     world_trait_id: str = Field(
         description="WORLD_ id of the global trait whose magnitude is clamped.",
     )
     value: float = Field(
         ge=0.0, le=1.0,
+        validation_alias=AliasChoices("value", "new_value"),
         description="Clamped magnitude.value (0.0 absent, 1.0 maximally present).",
     )
     inertia: Optional[float] = Field(
@@ -308,6 +355,7 @@ class DoRelationship(BaseModel):
     observe the pinned axis). Spawns a fresh edge carrying only the
     clamped metric when the named pair has no existing relationship.
     """
+    model_config = _DO_TARGET_CONFIG
     target_kind: Literal["relationship"] = "relationship"
     source_entity_id: str = Field(description="ENT_ id of the perspective entity.")
     target_entity_id: str = Field(description="ENT_ id of the relationship counterpart.")
@@ -316,6 +364,7 @@ class DoRelationship(BaseModel):
     )
     value: float = Field(
         ge=-1.0, le=1.0,
+        validation_alias=AliasChoices("value", "new_value"),
         description="Clamped metric value (typical range [-1.0, 1.0]).",
     )
     inertia: Optional[float] = Field(

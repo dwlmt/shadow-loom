@@ -264,9 +264,22 @@ class TavilyProvider:
         # runs.
         import concurrent.futures as _cf
 
-        _PER_ATTEMPT_TIMEOUT_S = float(
-            os.environ.get("SHADOW_LOOM_RESEARCH_TIMEOUT_S", "15")
+        _PER_ATTEMPT_TIMEOUT_S_RAW = os.environ.get(
+            "SHADOW_LOOM_RESEARCH_TIMEOUT_S", "15"
         )
+        try:
+            _PER_ATTEMPT_TIMEOUT_S = float(_PER_ATTEMPT_TIMEOUT_S_RAW)
+            if _PER_ATTEMPT_TIMEOUT_S <= 0 or _PER_ATTEMPT_TIMEOUT_S > 600:
+                raise ValueError("out of range")
+        except (TypeError, ValueError):
+            # R20-L24: tolerate bad env vars so a typo does not crash
+            # every research call — fall back to the documented default.
+            logger.warning(
+                "[Research] Invalid SHADOW_LOOM_RESEARCH_TIMEOUT_S=%r; "
+                "falling back to 15s",
+                _PER_ATTEMPT_TIMEOUT_S_RAW,
+            )
+            _PER_ATTEMPT_TIMEOUT_S = 15.0
         _MAX_ATTEMPTS = 3
 
         def _do_search():
@@ -495,7 +508,14 @@ def lookup_and_persist_topic(
             snippets = list(prov.search(topic, max_results=config.research_max_results_per_query,
                                       user_id=user_id, project_id=project_id))
         except Exception as e:
-            return {"error": f"Provider call failed: {e!r}"}
+            # R20-H8: do not leak ``repr(e)`` to clients — it can
+            # contain API key fragments / URL params. Log the
+            # exception (with traceback) server-side and return a
+            # sanitized type name.
+            logger.exception(
+                "[Research] Provider call failed for topic=%r", topic
+            )
+            return {"error": f"Provider call failed: {type(e).__name__}"}
         try:
             save_cached_research(
                 user_id=user_id,
@@ -526,7 +546,11 @@ def lookup_and_persist_topic(
         result = agent.run_sync(user_msg, user_id=user_id, project_id=project_id)
         fact = result.output
     except Exception as e:
-        return {"error": f"Research agent failed: {e!r}"}
+        # R20-H9: sanitize — see R20-H8 above.
+        logger.exception(
+            "[Research] Research agent failed for topic=%r", topic
+        )
+        return {"error": f"Research agent failed: {type(e).__name__}"}
 
     # Round-10 R10-04: allocate the FACT id via the helper and retry
     # on IntegrityError so concurrent MCP research_topic callers cannot

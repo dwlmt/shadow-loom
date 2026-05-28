@@ -235,6 +235,7 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                         source="ingestion",
                         description="Initial ingestion",
                         user_id=state.user_id,
+                        actor_id=state.user_id,
                     )
                     state.load_project(
                         project_id=proj.id,

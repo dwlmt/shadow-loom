@@ -15,6 +15,7 @@ Scopes:
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Optional
 
 from fastmcp import Context
@@ -29,8 +30,18 @@ from shadow_loom.db import (
 logger = logging.getLogger(__name__)
 
 # ── Token cache (token → resolved user info) ─────────────────────
+#
+# Audit R18-27: the cache is read/written from concurrent FastMCP
+# request handlers (uvicorn / asyncio threadpool). The previous
+# bare-dict implementation was free to interleave a token validation
+# write with an invalidation iteration, producing
+# ``RuntimeError: dictionary changed size during iteration`` under
+# load and (more rarely) returning a stale user info after a
+# concurrent revoke. The lock below serialises every multi-step
+# read-modify-write so the cache is observably atomic to callers.
 
 _token_user_cache: dict[str, dict] = {}
+_token_user_cache_lock = threading.Lock()
 
 
 def invalidate_token_cache(*, key_id: int | None = None, user_id: int | None = None) -> int:
@@ -42,18 +53,19 @@ def invalidate_token_cache(*, key_id: int | None = None, user_id: int | None = N
     Pass no arguments to clear the entire cache. Returns the number of
     entries removed.
     """
-    if key_id is None and user_id is None:
-        n = len(_token_user_cache)
-        _token_user_cache.clear()
-        return n
-    to_drop = [
-        tok for tok, info in _token_user_cache.items()
-        if (key_id is not None and info.get("key_id") == key_id)
-        or (user_id is not None and info.get("user_id") == user_id)
-    ]
-    for tok in to_drop:
-        _token_user_cache.pop(tok, None)
-    return len(to_drop)
+    with _token_user_cache_lock:
+        if key_id is None and user_id is None:
+            n = len(_token_user_cache)
+            _token_user_cache.clear()
+            return n
+        to_drop = [
+            tok for tok, info in _token_user_cache.items()
+            if (key_id is not None and info.get("key_id") == key_id)
+            or (user_id is not None and info.get("user_id") == user_id)
+        ]
+        for tok in to_drop:
+            _token_user_cache.pop(tok, None)
+        return len(to_drop)
 
 
 def _validate_bearer_token(token: str) -> bool:
@@ -61,11 +73,12 @@ def _validate_bearer_token(token: str) -> bool:
     key_row = validate_api_key(token)
     if key_row is None:
         return False
-    _token_user_cache[token] = {
-        "user_id": key_row.user_id,
-        "scopes": set(key_row.scopes.split(",")) if key_row.scopes else set(),
-        "key_id": key_row.id,
-    }
+    with _token_user_cache_lock:
+        _token_user_cache[token] = {
+            "user_id": key_row.user_id,
+            "scopes": set(key_row.scopes.split(",")) if key_row.scopes else set(),
+            "key_id": key_row.id,
+        }
     return True
 
 
@@ -86,17 +99,38 @@ def _open_mode_enabled() -> bool:
     pytest session. Going straight to ``os.environ`` keeps the toggle
     honest while still falling back to the cached settings value when
     the env var is unset.
+
+    R20-H6: when ``SHADOW_LOOM_OAUTH__AUTH_REQUIRED=true`` (the
+    documented production flag), refuse to honour open mode even if
+    ``MCP_ALLOW_OPEN_MODE`` is set. This prevents a deployment that
+    forgot to drop the dev env var from silently becoming an
+    anonymous-everything MCP server.
     """
     import os
 
     raw = os.environ.get("MCP_ALLOW_OPEN_MODE")
+    enabled = False
     if raw is not None:
-        return raw.strip().lower() in {"1", "true", "yes", "on"}
-    try:
-        from shadow_loom.settings import get_settings
-        return bool(getattr(get_settings().mcp, "allow_open_mode", False))
-    except Exception:
-        return False
+        enabled = raw.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        try:
+            from shadow_loom.settings import get_settings
+            enabled = bool(getattr(get_settings().mcp, "allow_open_mode", False))
+        except Exception:
+            enabled = False
+    if enabled:
+        # Production override: auth_required forces fail-closed.
+        try:
+            from shadow_loom.settings import get_settings
+            if bool(getattr(get_settings().oauth, "auth_required", False)):
+                logger.warning(
+                    "[MCP·auth] MCP_ALLOW_OPEN_MODE ignored: "
+                    "SHADOW_LOOM_OAUTH__AUTH_REQUIRED=true forces fail-closed."
+                )
+                return False
+        except Exception:
+            pass
+    return enabled
 
 
 def _last_cached_entry() -> Optional[dict]:
@@ -111,20 +145,25 @@ def _last_cached_entry() -> Optional[dict]:
     "single test client" dev pattern still works but ambiguous
     multi-tenant fallback is denied (and logged) instead of being
     silently resolved to the wrong identity.
+
+    R20-H7: read under the cache lock so a concurrent
+    ``invalidate_token`` cannot mutate the dict between the size
+    check and the ``next(iter(...))`` lookup.
     """
-    n = len(_token_user_cache)
-    if n == 0:
-        return None
-    if n > 1:
-        logger.warning(
-            "[MCP·auth] Open-mode fallback refused: %d cached tokens "
-            "in process, cannot choose unambiguously. Resolving as "
-            "no-identity (returns None / empty scopes).",
-            n,
-        )
-        return None
-    last_token = next(iter(_token_user_cache))
-    return _token_user_cache[last_token]
+    with _token_user_cache_lock:
+        n = len(_token_user_cache)
+        if n == 0:
+            return None
+        if n > 1:
+            logger.warning(
+                "[MCP·auth] Open-mode fallback refused: %d cached tokens "
+                "in process, cannot choose unambiguously. Resolving as "
+                "no-identity (returns None / empty scopes).",
+                n,
+            )
+            return None
+        last_token = next(iter(_token_user_cache))
+        return dict(_token_user_cache[last_token])
 
 
 def get_user_id(ctx: Context) -> Optional[int]:
@@ -145,9 +184,12 @@ def get_user_id(ctx: Context) -> Optional[int]:
     if token_info is None:
         return None
     raw_token = getattr(token_info, "claims", {}).get("token")
-    if raw_token and raw_token in _token_user_cache:
-        return _token_user_cache[raw_token]["user_id"]
-    return None
+    if not raw_token:
+        return None
+    # R20-H7: atomic get under the cache lock.
+    with _token_user_cache_lock:
+        entry = _token_user_cache.get(raw_token)
+    return entry["user_id"] if entry else None
 
 
 def get_scopes(ctx: Context) -> set[str]:
@@ -166,9 +208,12 @@ def get_scopes(ctx: Context) -> set[str]:
     if token_info is None:
         return set()
     raw_token = getattr(token_info, "claims", {}).get("token")
-    if raw_token and raw_token in _token_user_cache:
-        return _token_user_cache[raw_token]["scopes"]
-    return set()
+    if not raw_token:
+        return set()
+    # R20-H7: atomic get under the cache lock.
+    with _token_user_cache_lock:
+        entry = _token_user_cache.get(raw_token)
+    return set(entry["scopes"]) if entry else set()
 
 
 # ── Scope enforcement ─────────────────────────────────────────────

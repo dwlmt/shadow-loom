@@ -157,6 +157,19 @@ def _get_session_state() -> AppState:
     Kept in a module-level dict keyed by the browser session id from
     ``app.storage.browser``. Auth info is sourced from ``app.storage.user``
     (which is JSON-safe) on first access.
+
+    **R19-L6 (documented invariant — tab sharing):** This intentionally
+    keys on ``app.storage.browser['id']`` (one entry per browser
+    session) rather than per-tab/per-client. Opening the same project
+    in two tabs therefore points both tabs at the *same* AppState
+    instance; mutations in tab B (e.g. running a new query, swapping
+    project, promoting a branch) propagate to tab A on its next
+    render/refresh. This is by design — concurrent independent
+    workflows in two tabs are NOT supported, and users wanting
+    isolated workspaces should use a private/incognito window
+    (separate browser session id). Switch to per-client keying via
+    ``app.storage.client`` / a Quasar tab id if independent tab
+    workflows ever become a product requirement.
     """
     storage = app.storage.user
     session_id = app.storage.browser.get("id", "")

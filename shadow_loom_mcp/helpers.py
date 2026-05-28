@@ -596,6 +596,7 @@ def run_and_save(
             user_id=user_row_id,
             world_id=branch_world_id,
             branch_label=branch_label,
+            actor_id=user_row_id,
         )
         response["version"] = ver.version
         response["version_row_id"] = ver.id
@@ -730,6 +731,52 @@ def run_and_save(
             response["disabled_channel_ids"] = list(disabled_chans)
         if pruned_beliefs:
             response["pruned_beliefs_count"] = int(pruned_beliefs)
+        # Round-5 audit: typed Pearl-rung cascade-mutation counts.
+        # ``_typed_target_payload`` stamps proposition / belief /
+        # concern / object / world-trait / edge mutation streams onto
+        # ``physics_result``. The envelope previously surfaced only
+        # ``mutations`` (trait cascades). External clients had no way
+        # to see that a DoNarrativeObject or DoWorldTrait surgery had
+        # propagated. Surface compact counts so the client can render
+        # "5 prop, 2 object, 1 edge" rails without re-walking the
+        # raw mutation arrays.
+        _cascade_counts: Dict[str, int] = {}
+        for _k in (
+            "mutations",
+            "social_mutations",
+            "proposition_mutations",
+            "belief_mutations",
+            "concern_mutations",
+            "object_mutations",
+            "world_trait_mutations",
+            "edge_mutations",
+            "entity_delete_mutations",
+            "object_delete_mutations",
+            "event_mutations",
+        ):
+            _v = result.physics_result.get(_k)
+            if _v:
+                _cascade_counts[_k] = len(list(_v))
+        if _cascade_counts:
+            response["cascade_counts"] = _cascade_counts
+        # Round-14 audit (GAP-7): surface the typed do-target lists so
+        # MCP clients can render the surgery roster (which Pearl-rung-2
+        # / rung-3 levers fired) next to the cascade counts. The
+        # cascade-counts tell them "5 proposition mutations propagated"
+        # but withhold the actual ``DoProposition`` / ``DoBelief`` /
+        # ``DoConcern`` payload — that detail used to be reachable
+        # only via the raw transcript. Keeping the surface compact:
+        # we include the typed do-target dicts when they exist on
+        # ``physics_result`` and skip empties so the envelope stays
+        # lean for vanilla Rung-1 queries.
+        _do_t = result.physics_result.get("do_targets")
+        _hist_do_t = result.physics_result.get("historical_do_targets")
+        if _do_t:
+            response["do_targets"] = list(_do_t) if isinstance(_do_t, list) else _do_t
+        if _hist_do_t:
+            response["historical_do_targets"] = (
+                list(_hist_do_t) if isinstance(_hist_do_t, list) else _hist_do_t
+            )
         # Inert-intervention disclosure (round-3 audit fix). Surfaces a
         # no-op Rung-2/3 surgery so external clients can tell the user
         # "the requested change has no representable consequences" rather

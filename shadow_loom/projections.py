@@ -195,13 +195,25 @@ def reconstruct_world_trait_at_causal(
 
 
 def _resolve_names(ws: WorldStateV1, ids: List[str]) -> List[Dict[str, str]]:
-    return [
-        {
-            "id": i,
-            "name": ws.entities[i].name if i in ws.entities else i,
-        }
-        for i in ids
-    ]
+    # Audit R17-12: when two distinct entities share the same display
+    # name (e.g., two "John"s) the projection layer used to emit
+    # indistinguishable rows. Detect collisions within this id list
+    # and suffix a short id fragment so consumers can disambiguate.
+    name_counts: Dict[str, int] = {}
+    for i in ids:
+        nm = ws.entities[i].name if i in ws.entities else i
+        name_counts[nm] = name_counts.get(nm, 0) + 1
+    rows: List[Dict[str, str]] = []
+    for i in ids:
+        nm = ws.entities[i].name if i in ws.entities else i
+        if name_counts.get(nm, 0) > 1 and i != nm:
+            # ``i`` typically looks like ``ENT_ABC123``; strip the
+            # canonical prefix when present and keep a short tail so
+            # the label stays readable.
+            tail = i.split("_", 1)[-1][:6]
+            nm = f"{nm}#{tail}"
+        rows.append({"id": i, "name": nm})
+    return rows
 
 
 def project_event(ws: WorldStateV1, evt: EventNode) -> Dict[str, Any]:
@@ -313,6 +325,67 @@ def project_channel(ws: WorldStateV1, ch: Channel) -> Dict[str, Any]:
         "evidence_strength": ch.evidence_strength,
         "utterances": utterances,
     }
+
+
+def _event_fabula_time(ws: WorldStateV1, event_id: str) -> Optional[int]:
+    """Return ``fabula_time`` of ``event_id`` if found, else ``None``.
+
+    Used by the ``*_at`` projection helpers below to anchor causal edges
+    by the OTHER endpoint's occurrence time (audit R16-5).
+    """
+    for e in ws.events:
+        if e.id == event_id:
+            return getattr(e, "fabula_time", None)
+    return None
+
+
+def project_event_at(
+    ws: WorldStateV1, evt: EventNode, at_time: int,
+) -> Dict[str, Any]:
+    """Anchor-filtered variant of :func:`project_event` (audit R16-5).
+
+    Behaves like ``project_event`` but drops ``caused_by`` /  ``causes``
+    edges whose *other endpoint* event has a ``fabula_time`` strictly
+    greater than ``at_time``. The caller is responsible for the
+    occurrence gate on the focal event itself (the MCP layer already
+    runs :func:`reconstruct_event_at` first).
+    """
+    out = project_event(ws, evt)
+
+    def _edge_visible(other_id: Optional[str]) -> bool:
+        if other_id is None:
+            return True
+        ft = _event_fabula_time(ws, other_id)
+        # If the other event has no fabula_time we keep it (can't
+        # disprove visibility); only DROP when we know it's in the
+        # future of ``at_time``.
+        return ft is None or ft <= at_time
+
+    out["caused_by"] = [
+        c for c in out.get("caused_by", []) if _edge_visible(c.get("source"))
+    ]
+    out["causes"] = [
+        c for c in out.get("causes", []) if _edge_visible(c.get("target"))
+    ]
+    return out
+
+
+def project_channel_at(
+    ws: WorldStateV1, ch: Channel, at_time: int,
+) -> Dict[str, Any]:
+    """Anchor-filtered variant of :func:`project_channel` (audit R16-6).
+
+    Filters the ``utterances`` list to only those whose ``fabula_time``
+    is ``<= at_time``. The caller is responsible for the channel
+    availability-window gate on the channel itself (the MCP layer runs
+    :func:`reconstruct_channel_at` first).
+    """
+    out = project_channel(ws, ch)
+    out["utterances"] = [
+        u for u in out.get("utterances", [])
+        if (u.get("fabula_time") is None) or (u.get("fabula_time") <= at_time)
+    ]
+    return out
 
 
 def trace_information_flow(
@@ -461,23 +534,74 @@ def pov_visible_event_ids(
     visible: set[str] = set()
     if not pov_entity_id:
         return visible
+    # Audit R18-5: event types whose semantics are interior /
+    # narrator-mediated. A POV listed in ``target_ids`` is the
+    # *referent* of the experience, not a witness; only the speaker /
+    # experiencer plus an explicit external witness can see them.
+    INTERIOR_EVENT_TYPES = {
+        "revelation", "dream", "vision", "thought", "soliloquy",
+        "aside", "prophecy", "interior_monologue",
+    }
     for evt in ws.events:
         if evt.event_type == "utterance":
             if evt.speaker_id == pov_entity_id:
                 visible.add(evt.id)
                 continue
+            # Audit R18-4: addressee visibility must still respect the
+            # carrying channel. Laura's interior confession to Fred in
+            # ``brief_encounter`` is routed on a channel whose
+            # ``intelligibility[ENT_FRED] == 0.0``; without this gate
+            # the addressee shortcut would deliver the utterance
+            # straight to Fred's POV.
             if pov_entity_id in evt.addressee_ids:
+                if evt.via_channel_id:
+                    ch = ws.channels.get(evt.via_channel_id)
+                    if ch is not None:
+                        evt_ft = getattr(evt, "fabula_time", None)
+                        est = getattr(ch, "established_at_fabula", None)
+                        term = getattr(ch, "terminated_at_fabula", None)
+                        if evt_ft is not None:
+                            if est is not None and evt_ft < int(est):
+                                continue
+                            if term is not None and evt_ft >= int(term):
+                                continue
+                        intel = float(
+                            ch.intelligibility.get(pov_entity_id, 1.0)
+                        )
+                        if intel < intelligibility_threshold:
+                            continue
                 visible.add(evt.id)
                 continue
             ch = ws.channels.get(evt.via_channel_id) if evt.via_channel_id else None
             if ch and pov_entity_id in ch.participant_ids:
+                # Audit R17-1: gate channel-mediated visibility on the
+                # channel's availability window. Without this an
+                # utterance routed (correctly or via extraction error)
+                # on a long-severed channel leaks to every participant.
+                evt_ft = getattr(evt, "fabula_time", None)
+                est = getattr(ch, "established_at_fabula", None)
+                term = getattr(ch, "terminated_at_fabula", None)
+                if evt_ft is not None:
+                    if est is not None and evt_ft < int(est):
+                        continue
+                    if term is not None and evt_ft >= int(term):
+                        continue
                 intel = float(ch.intelligibility.get(pov_entity_id, 1.0))
                 if intel >= intelligibility_threshold:
                     visible.add(evt.id)
         else:
-            if pov_entity_id in (evt.actor_ids or []) or pov_entity_id in (
-                evt.target_ids or []
-            ):
+            # Audit R18-5: interior / narrator-mediated event types
+            # are visible only to the experiencer (first actor),
+            # never to target_ids (which name the referent of the
+            # dream/prophecy, not a witness).
+            etype = getattr(evt, "event_type", None)
+            actor_ids = list(evt.actor_ids or [])
+            target_ids = list(evt.target_ids or [])
+            if etype in INTERIOR_EVENT_TYPES:
+                if pov_entity_id in actor_ids:
+                    visible.add(evt.id)
+                continue
+            if pov_entity_id in actor_ids or pov_entity_id in target_ids:
                 visible.add(evt.id)
     return visible
 
@@ -512,16 +636,48 @@ def filter_world_state_for_pov(
     This is intentionally conservative: a richer implementation would
     also gate on spatial co-location and existing belief provenance.
     """
-    if not pov_entity_id or pov_entity_id not in ws.entities:
+    # Audit R18-9: unknown POV used to fall through to ``return ws``,
+    # silently handing the caller the full omniscient world. That
+    # defeats the POV safety boundary on every consumer of this
+    # surface. Fail closed: an unknown POV gets an empty-shaped
+    # world rather than the factual base.
+    if not pov_entity_id:
         return ws
+    if pov_entity_id not in ws.entities:
+        empty = ws.model_copy(deep=True)
+        empty.events = []
+        empty.channels = {}
+        empty.causal_topology = []
+        empty.spatial_topology = []
+        empty.social_topology = []
+        empty.propositions = []
+        # Drop every entity body so an unknown POV cannot even
+        # enumerate the cast.
+        empty.entities = {}
+        empty.objects = {}
+        empty.locations = {}
+        empty.world_traits = {}
+        return empty
     visible_evt_ids = pov_visible_event_ids(
         ws, pov_entity_id,
         intelligibility_threshold=intelligibility_threshold,
     )
-    visible_chn_ids = {
-        cid for cid, ch in ws.channels.items()
-        if pov_entity_id in ch.participant_ids
-    }
+    # Audit R18-7: channel existence must require *perceivability*,
+    # not bare participant membership. ``CHN_HIDDEN_TELESCREEN_SURVEILLANCE``
+    # in 1984 lists Winston/Julia as participants but with
+    # ``intelligibility=0.0`` precisely because they cannot perceive
+    # the channel exists until the on-page reveal. Require a positive
+    # decode probability AND that the channel is currently within its
+    # availability window relative to any visible event.
+    visible_chn_ids: set[str] = set()
+    for cid, ch in ws.channels.items():
+        if pov_entity_id not in ch.participant_ids:
+            continue
+        intel = float(ch.intelligibility.get(pov_entity_id, 1.0))
+        if intel < intelligibility_threshold:
+            # Imperceptible channel — hide its existence from POV.
+            continue
+        visible_chn_ids.add(cid)
     # Fabula ticks the POV could plausibly witness — used to gate
     # off-screen state-timeline drift on other entities/world traits.
     visible_fabula_ticks: set[int] = {
@@ -554,16 +710,78 @@ def filter_world_state_for_pov(
         oid for oid, obj in filtered.objects.items()
         if obj.owner_id == pov_entity_id or (pov_loc and obj.location_id == pov_loc)
     }
+    # Audit R18-8: ``world_traits`` are *audience-level* facts, not
+    # automatically character knowledge. Without an explicit
+    # POV-known surface, every global ideology / ambient norm leaks
+    # via every POV slice (1984's Party-doctrine traits leaking to
+    # every minor character POV). Gate inclusion on whether at least
+    # one visible event references the trait in its actor/target/
+    # location set, or the POV themselves is annotated to know it.
+    pov_known_world_trait_ids: set[str] = set()
+    visible_evt_refs: set[str] = set()
+    for e in filtered.events:
+        if e.id not in visible_evt_ids:
+            continue
+        visible_evt_refs.update(e.actor_ids or [])
+        visible_evt_refs.update(e.target_ids or [])
+        if getattr(e, "at_location_id", None):
+            visible_evt_refs.add(e.at_location_id)
+    for wt_id in filtered.world_traits.keys():
+        if wt_id in visible_evt_refs:
+            pov_known_world_trait_ids.add(wt_id)
+    # Also accept world traits the POV explicitly believes about
+    # (i.e. has a Belief whose target_id is the trait).
+    if pov_ent is not None:
+        for b in (getattr(pov_ent, "beliefs", None) or []):
+            tid = getattr(b, "target_id", None)
+            if tid and tid in filtered.world_traits:
+                pov_known_world_trait_ids.add(tid)
     pov_known_node_ids = (
         visible_evt_ids
         | {pov_entity_id}
         | pov_known_objects
-        | set(filtered.world_traits.keys())
+        | pov_known_world_trait_ids
     )
     filtered.causal_topology = [
         ce for ce in filtered.causal_topology
         if ce.source_id in pov_known_node_ids or ce.target_id in pov_known_node_ids
     ]
+    # Audit R18-6: prune the ``objects`` and ``locations`` registries
+    # to the POV's perceivable surface. Before this filter, Winston's
+    # POV carried ``OBJ_HIDDEN_TELESCREEN`` plus the full location
+    # registry (LOC_ROOM_101, LOC_OBRIEN_FLAT) the moment the world
+    # loaded, defeating the entire epistemic-irony design.
+    pov_known_locations: set[str] = set()
+    if pov_loc:
+        pov_known_locations.add(pov_loc)
+        # Adjacent locations via spatial_topology are reachable
+        # awareness (you know the next room exists).
+        for se in (filtered.spatial_topology or []):
+            if getattr(se, "source_id", None) == pov_loc:
+                tgt = getattr(se, "target_id", None)
+                if tgt:
+                    pov_known_locations.add(tgt)
+            if getattr(se, "target_id", None) == pov_loc:
+                src = getattr(se, "source_id", None)
+                if src:
+                    pov_known_locations.add(src)
+    # Locations referenced by visible events are also known.
+    for e in filtered.events:
+        if e.id in visible_evt_ids and getattr(e, "at_location_id", None):
+            pov_known_locations.add(e.at_location_id)
+    filtered.locations = {
+        lid: loc for lid, loc in filtered.locations.items()
+        if lid in pov_known_locations
+    }
+    filtered.objects = {
+        oid: obj for oid, obj in filtered.objects.items()
+        if oid in pov_known_objects
+    }
+    # World traits the POV doesn't know are dropped entirely.
+    filtered.world_traits = {
+        wt_id: wt for wt_id, wt in filtered.world_traits.items()
+        if wt_id in pov_known_world_trait_ids
+    }
 
     # Entities: POV keeps full record; everyone else has interior
     # state stripped (beliefs, concerns) and timelines clipped to

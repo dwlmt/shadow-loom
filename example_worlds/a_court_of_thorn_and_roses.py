@@ -650,7 +650,7 @@ world_state = WorldStateV1(
             speaker_id="ENT_TAMLIN", addressee_ids=["ENT_FEYRE", "ENT_FATHER_ARCHERON", "ENT_NESTA", "ENT_ELAIN"],
             actor_ids=["ENT_TAMLIN"], target_ids=["EVT_WOLF_KILLED", "ENT_ANDRAS"],
             description="The golden beast bursts into the cottage and demands a life under the Treaty for the slain wolf-faerie Andras.",
-            at_location_id="LOC_SPRING_COURT", content="A life for a life — under the terms of the Treaty between our peoples. Come with me to Prythian, or die here.",
+            at_location_id="LOC_MORTAL_LANDS", content="A life for a life — under the terms of the Treaty between our peoples. Come with me to Prythian, or die here.",
             via_channel_id=None, truth_value="performative",
             fabula_time=2000, syuzhet_index=23,
         ),

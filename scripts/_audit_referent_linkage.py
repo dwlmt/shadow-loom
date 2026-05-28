@@ -30,12 +30,25 @@ quality gate.
 from __future__ import annotations
 
 import importlib
+import os
 import pkgutil
 from collections import defaultdict
 from typing import Iterable
 
 import example_worlds
 from shadow_loom.models import EventNode, Proposition, WorldStateV1
+
+
+# R19-M15: branch-aware audit hook. Set
+# ``SHADOW_LOOM_AUDIT_BRANCH=<label>`` to audit a shadow branch.
+def _branch_projected(ws: WorldStateV1) -> WorldStateV1:
+    label = os.environ.get("SHADOW_LOOM_AUDIT_BRANCH")
+    if not label:
+        return ws
+    try:
+        return ws.projected_for_branch("shadow", label)
+    except Exception:
+        return ws
 
 
 def _iter_world_modules() -> Iterable[tuple[str, object]]:
@@ -65,6 +78,7 @@ def _build_world(module) -> WorldStateV1 | None:
 
 
 def _audit_world(name: str, ws: WorldStateV1) -> list[str]:
+    ws = _branch_projected(ws)
     findings: list[str] = []
     event_index: dict[str, EventNode] = {e.id: e for e in ws.events}
 

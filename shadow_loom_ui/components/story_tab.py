@@ -358,10 +358,11 @@ def _start_reingest(state: AppState, edited_text: str) -> None:
                 user_id=user_id,
                 world_id=parent_world_id,  # type: ignore[arg-type]
                 branch_label=parent_branch_label,
+                actor_id=user_id,
             )
 
             try:
-                db.update_project(project_id, raw_text=edited_text)
+                db.update_project(project_id, raw_text=edited_text, actor_id=user_id)
             except Exception:
                 logger.exception(
                     "[Re-ingest] save_version succeeded (v%s) but "
@@ -449,11 +450,16 @@ def _render_prose(state: AppState, container) -> None:
                 if entry.get("source") == "evaluate":
                     continue
                 # Skip if it'll be duplicated from session history
+                # R19-UI: capture branch identity per prose row so the
+                # card header can badge shadow rows distinctly.
+                _e_wid = entry.get("world_id") or "factual"
+                _e_blab = entry.get("branch_label")
                 prose_entries.append((
                     entry.get("source", "pipeline"),
                     entry["prose"],
                     None,  # DB doesn't store convergence directly
                     0,
+                    (_e_wid, _e_blab),
                 ))
                 prose_row_ids.append(int(entry.get("version_row_id") or 0))
         except Exception:
@@ -474,7 +480,22 @@ def _render_prose(state: AppState, container) -> None:
             # De-duplicate against DB entries by content hash
             key = pr.prose[:200]
             if key not in {p[1][:200] for p in prose_entries}:
-                prose_entries.append((pr.query_type, pr.prose, pr.converged, pr.audit_iterations))
+                # R19-UI: derive branch from pr.world_model.history
+                _s_wid = "factual"
+                _s_blab = None
+                try:
+                    _wm = getattr(pr, "world_model", None)
+                    if _wm is not None and getattr(_wm, "history", None):
+                        _h = _wm.history[-1]
+                        _s_wid = getattr(_h, "world_id", "factual") or "factual"
+                        _s_blab = getattr(_h, "branch_label", None)
+                except Exception:
+                    pass
+                prose_entries.append((
+                    pr.query_type, pr.prose,
+                    pr.converged, pr.audit_iterations,
+                    (_s_wid, _s_blab),
+                ))
                 # No DB row id for in-session results; pad to keep
                 # parallel arrays aligned.
                 prose_row_ids.append(0)
@@ -484,7 +505,15 @@ def _render_prose(state: AppState, container) -> None:
         return
 
     with container:
-        for i, (qtype, prose, converged, iters) in enumerate(prose_entries):
+        for i, _entry in enumerate(prose_entries):
+            # R19-UI: tuples now carry an optional 5th element
+            # (world_id, branch_label); legacy 4-tuples still work.
+            if len(_entry) >= 5:
+                qtype, prose, converged, iters, _branch_info = _entry
+            else:
+                qtype, prose, converged, iters = _entry
+                _branch_info = ("factual", None)
+            _br_wid, _br_blab = _branch_info
             with ui.card().classes(
                 "w-full bg-white border border-slate-200 rounded-xl "
                 "shadow-sm p-6"
@@ -496,6 +525,18 @@ def _render_prose(state: AppState, container) -> None:
                         render_pearl_chip,
                     )
                     render_pearl_chip(qtype)
+                    # R19-UI: shadow-branch badge.
+                    if _br_wid == "shadow":
+                        _btxt = (
+                            f"shadow: {_br_blab}"
+                            if _br_blab else "shadow"
+                        )
+                        ui.badge(_btxt, color="purple").props(
+                            "dense outline"
+                        ).tooltip(
+                            "Prose produced on a shadow branch "
+                            "(counterfactual / intervention fork)."
+                        )
                     if converged is not None:
                         color = "positive" if converged else "warning"
                         label = "converged" if converged else f"unconverged ({iters} iters)"

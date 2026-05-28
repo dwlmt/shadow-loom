@@ -741,11 +741,40 @@ class ConcernSnapshot(BaseModel):
     @field_validator("activation_fabula_window")
     @classmethod
     def validate_window_length(cls, v: Optional[List[int]]) -> Optional[List[int]]:
-        """HIGH-FIX: Validate activation_fabula_window is None, empty, or 2-element list."""
-        if v is not None and len(v) not in (0, 2):
+        """Validate activation_fabula_window is None, [], or a 2-element
+        list of ints with ``lo <= hi``.
+
+        Audit R17-3: the previous validator only checked length, so
+        malformed payloads like ``[None, 5]`` or ``["1", "2"]`` passed
+        and then exploded inside ``reconstruct_concern_at``'s
+        ``lo <= fabula_time <= hi`` comparison. Also enforce ordered
+        endpoints so a swapped window doesn't silently render every
+        tick as inactive.
+        """
+        if v is None:
+            return v
+        if len(v) not in (0, 2):
             raise ValueError(
-                f"activation_fabula_window must be None, empty, or [start, end]; got {len(v)}-element list"
+                f"activation_fabula_window must be None, empty, or "
+                f"[start, end]; got {len(v)}-element list"
             )
+        if len(v) == 2:
+            lo, hi = v
+            if not isinstance(lo, int) or isinstance(lo, bool):
+                raise ValueError(
+                    f"activation_fabula_window[0] must be int; got "
+                    f"{type(lo).__name__}={lo!r}"
+                )
+            if not isinstance(hi, int) or isinstance(hi, bool):
+                raise ValueError(
+                    f"activation_fabula_window[1] must be int; got "
+                    f"{type(hi).__name__}={hi!r}"
+                )
+            if lo > hi:
+                raise ValueError(
+                    f"activation_fabula_window endpoints must satisfy "
+                    f"lo <= hi; got [{lo}, {hi}]"
+                )
         return v
     counter_concern_ids: Optional[List[str]] = Field(
         default=None,
@@ -1163,6 +1192,39 @@ class Channel(AMWNNode):
             "modelled as low intelligibility for non-keyholders."
         ),
     )
+
+    @field_validator("intelligibility")
+    @classmethod
+    def _validate_intelligibility_range(
+        cls, v: Dict[str, float],
+    ) -> Dict[str, float]:
+        """Audit R17-9: enforce per-participant decode probabilities are
+        finite floats in ``[0, 1]``. Without this guard a malformed
+        extraction (``NaN``, ``-1.0``, ``2.5``) leaks into POV filtering
+        and DoChannel routing as if it were a valid probability.
+        """
+        import math
+        if not v:
+            return v
+        for pid, prob in v.items():
+            try:
+                p = float(prob)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Channel.intelligibility[{pid!r}]={prob!r} is not a "
+                    f"float"
+                ) from exc
+            if not math.isfinite(p):
+                raise ValueError(
+                    f"Channel.intelligibility[{pid!r}]={prob!r} must be "
+                    f"finite"
+                )
+            if p < 0.0 or p > 1.0:
+                raise ValueError(
+                    f"Channel.intelligibility[{pid!r}]={prob!r} must lie "
+                    f"in [0, 1]"
+                )
+        return v
     established_at_fabula: int = Field(
         default=0,
         description="Fabula tick the channel becomes available (0 = pre-story).",
@@ -1378,6 +1440,33 @@ class RelationshipMetric(BaseModel):
             "[0, 1], power_dynamic \u2208 [-1, 1]."
         ),
     )
+
+    @field_validator("value")
+    @classmethod
+    def _validate_metric_value_finite(cls, v: float) -> float:
+        """Audit R17-10: enforce a finite value in the widest legal
+        union range ``[-1, 1]``. Per-axis tightening (``fear`` is
+        non-negative) lives in the social-cascade clamp; this validator
+        is the schema-level safety net so imported / repaired data
+        cannot carry ``NaN`` / ``inf`` / ``4.0`` / ``-3.0`` into
+        downstream propagation.
+        """
+        import math
+        try:
+            f = float(v)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"RelationshipMetric.value={v!r} is not a float"
+            ) from exc
+        if not math.isfinite(f):
+            raise ValueError(
+                f"RelationshipMetric.value={v!r} must be finite"
+            )
+        if f < -1.0 or f > 1.0:
+            raise ValueError(
+                f"RelationshipMetric.value={v!r} must lie in [-1, 1]"
+            )
+        return f
     inertia: float = Field(
         default=0.3,
         description=(
@@ -1705,8 +1794,15 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
     Trait values are dicts ``{"value": float, "inertia": float}``.
     """
     # Seed from initial state
+    # Audit R18-24: include ``evidence_strength`` so reconstructed
+    # traits carry the full :class:`TraitVector` payload (callers
+    # like the auditor and the affect propagator key off it).
     traits: Dict[str, dict] = {
-        k: {"value": v.value, "inertia": v.inertia}
+        k: {
+            "value": v.value,
+            "inertia": v.inertia,
+            "evidence_strength": getattr(v, "evidence_strength", "moderate"),
+        }
         for k, v in entity.traits.items()
     }
     beliefs: list = [b.model_dump() for b in entity.beliefs]
@@ -1720,7 +1816,13 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
     # write-side guard in ``VersionedWorldModel.merge`` now blocks
     # that, but persisted worlds may still carry historical drift.
     holder_world = getattr(entity, "world_id", "factual") or "factual"
-    for snap in sorted(entity.state_timeline, key=lambda s: s.fabula_time):
+    # Audit R17-4: stable secondary key on ``triggered_by`` so two
+    # snapshots at the same fabula tick replay in a deterministic order
+    # even after serialization roundtrips reshuffle insertion order.
+    for snap in sorted(
+        entity.state_timeline,
+        key=lambda s: (s.fabula_time, getattr(s, "triggered_by", None) or ""),
+    ):
         if snap.fabula_time > fabula_time:
             break
         snap_world = getattr(snap, "world_id", holder_world) or holder_world
@@ -1728,7 +1830,11 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
             continue
         # Merge trait updates
         for k, tv in snap.traits.items():
-            traits[k] = {"value": tv.value, "inertia": tv.inertia}
+            traits[k] = {
+                "value": tv.value,
+                "inertia": tv.inertia,
+                "evidence_strength": getattr(tv, "evidence_strength", "moderate"),
+            }
         # Remove invalidated beliefs.
         # An invalidated entry may be either a bare ``target_id``
         # (legacy / coarse: drops every belief about that target)
@@ -1809,7 +1915,13 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> dict:
     Returns a dict with keys: magnitude, description.
     magnitude is a dict ``{"value": float, "inertia": float}``.
     """
-    magnitude = {"value": trait.magnitude.value, "inertia": trait.magnitude.inertia}
+    # Audit R18-24: include ``evidence_strength`` on the world-trait
+    # magnitude payload, mirroring the entity-trait fix above.
+    magnitude = {
+        "value": trait.magnitude.value,
+        "inertia": trait.magnitude.inertia,
+        "evidence_strength": getattr(trait.magnitude, "evidence_strength", "moderate"),
+    }
     description = trait.description
 
     # Branch-safe replay (mirror of ``reconstruct_entity_at``): only
@@ -1820,14 +1932,22 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> dict:
     # advance the factual mainline's trait magnitude in every
     # downstream replay (auditor, prose renderer, social/world tabs).
     holder_world = getattr(trait, "world_id", "factual") or "factual"
-    for snap in sorted(trait.state_timeline, key=lambda s: s.fabula_time):
+    # Audit R17-4: stable secondary key on ``triggered_by``.
+    for snap in sorted(
+        trait.state_timeline,
+        key=lambda s: (s.fabula_time, getattr(s, "triggered_by", None) or ""),
+    ):
         if snap.fabula_time > fabula_time:
             break
         snap_world = getattr(snap, "world_id", holder_world) or holder_world
         if snap_world != holder_world:
             continue
         if snap.magnitude is not None:
-            magnitude = {"value": snap.magnitude.value, "inertia": snap.magnitude.inertia}
+            magnitude = {
+                "value": snap.magnitude.value,
+                "inertia": snap.magnitude.inertia,
+                "evidence_strength": getattr(snap.magnitude, "evidence_strength", "moderate"),
+            }
         if snap.description is not None:
             description = snap.description
 
@@ -1863,7 +1983,11 @@ def reconstruct_object_at(obj: "NarrativeObject", fabula_time: int) -> dict:
     # the ``object_updates`` cross-branch write guard in
     # ``VersionedWorldModel.merge``.
     holder_world = getattr(obj, "world_id", "factual") or "factual"
-    for snap in sorted(obj.state_timeline, key=lambda s: s.fabula_time):
+    # Audit R17-4: stable secondary key on ``triggered_by``.
+    for snap in sorted(
+        obj.state_timeline,
+        key=lambda s: (s.fabula_time, getattr(s, "triggered_by", None) or ""),
+    ):
         if snap.fabula_time > fabula_time:
             break
         snap_world = getattr(snap, "world_id", holder_world) or holder_world
@@ -1890,6 +2014,108 @@ def reconstruct_object_at(obj: "NarrativeObject", fabula_time: int) -> dict:
         "location_id": location_id,
         "owner_id": owner_id,
         "properties": properties,
+    }
+
+
+def reconstruct_event_at(evt: "EventNode", fabula_time: int) -> Optional[dict]:
+    """Return a dict view of ``evt`` *as observed at* ``fabula_time``.
+
+    Events have no per-axis snapshot stream the way Entity / Object /
+    GlobalTrait do — the canonical model treats them as point-in-time
+    facts whose mutable fields (``at_location_id``, ``fabula_time``,
+    ``actor_ids``) can be rewritten by Pearl Rung-2/3 DoEvent surgery
+    but otherwise stay fixed. The reconstructor therefore acts as a
+    causal-gate: events that have not yet occurred at ``fabula_time``
+    are invisible to time-sliced consumers (auditor, MCP ``inspect
+    at_time=…``, the prose-renderer's "what is true at this beat?"
+    surface).
+
+    Returns the event's ``model_dump()`` dict when
+    ``evt.fabula_time <= fabula_time``, otherwise ``None``.
+    """
+    if int(getattr(evt, "fabula_time", 0)) > int(fabula_time):
+        return None
+    try:
+        return evt.model_dump()
+    except Exception:
+        # Defensive: if ``evt`` is a duck-typed shim, hand back a
+        # shallow attribute dict so callers always get something
+        # they can ``.get()`` against.
+        return {
+            "id": getattr(evt, "id", None),
+            "fabula_time": getattr(evt, "fabula_time", None),
+            "event_type": getattr(evt, "event_type", None),
+            "at_location_id": getattr(evt, "at_location_id", None),
+            "actor_ids": list(getattr(evt, "actor_ids", None) or []),
+            "description": getattr(evt, "description", None),
+        }
+
+
+def reconstruct_channel_at(channel: "Channel", fabula_time: int) -> Optional[dict]:
+    """Return a dict view of ``channel`` *as available at* ``fabula_time``.
+
+    Channels gate on the ``[established_at_fabula, terminated_at_fabula]``
+    window. Outside the window the channel is invisible to time-sliced
+    consumers (audience belief acquisition, utterance routing,
+    counterfactual epistemic reasoning). Inside the window the dump
+    is returned verbatim so callers can read ``intelligibility``,
+    ``directionality``, ``participant_ids``, etc.
+
+    Returns ``None`` before ``established_at_fabula`` or at/after
+    ``terminated_at_fabula`` (when set), else the channel
+    ``model_dump()``.
+
+    Audit R18-22: the comparison uses the half-open interval
+    ``[established, terminated)`` to match ``pov_visible_event_ids``
+    in ``projections.py`` (which treats ``evt_ft >= terminated`` as
+    dead). Previously this function used a closed upper bound
+    (``> terminated``), so 1984's telescreen channels terminated at
+    fabula tick 13000 reconstructed as available at exactly 13000
+    while the POV layer correctly hid them.
+    """
+    est = int(getattr(channel, "established_at_fabula", 0) or 0)
+    if int(fabula_time) < est:
+        return None
+    term = getattr(channel, "terminated_at_fabula", None)
+    if term is not None and int(fabula_time) >= int(term):
+        return None
+    try:
+        return channel.model_dump()
+    except Exception:
+        return {
+            "id": getattr(channel, "id", None),
+            "name": getattr(channel, "name", None),
+            "established_at_fabula": est,
+            "terminated_at_fabula": term,
+            "participant_ids": list(getattr(channel, "participant_ids", None) or []),
+            "intelligibility": dict(getattr(channel, "intelligibility", None) or {}),
+        }
+
+
+def reconstruct_location_at(loc: "Location", fabula_time: int) -> dict:
+    """Return a dict view of ``loc`` at ``fabula_time``.
+
+    Locations are mostly static in the canonical schema, but their
+    ``ambient_state`` (temperature, regime-grip, season) is the
+    storyworld's local equivalent of GlobalTrait — values authors
+    sometimes want to read as of a particular tick. This reconstructor
+    is the symmetric counterpart of :func:`reconstruct_world_trait_at`
+    for the per-location ambient layer; for now it returns the static
+    ``ambient_state`` as-is (no per-key timeline) so consumers can
+    treat ``reconstruct_*_at`` uniformly across element families.
+
+    Returns a dict with keys ``id``, ``name``, ``description``,
+    ``ambient_state``. Future work: add a ``LocationStateSnapshot``
+    timeline and replay it here.
+    """
+    return {
+        "id": getattr(loc, "id", None),
+        "name": getattr(loc, "name", None),
+        "description": getattr(loc, "description", None),
+        "ambient_state": {
+            k: (v.model_dump() if hasattr(v, "model_dump") else v)
+            for k, v in (getattr(loc, "ambient_state", None) or {}).items()
+        },
     }
 
 
@@ -1969,7 +2195,11 @@ def reconstruct_proposition_at(prop: "Proposition", fabula_time: int) -> dict:
     # ``PropositionSnapshot`` would silently mutate the factual
     # mainline's stakes/prior/description at every replay.
     holder_world = getattr(prop, "world_id", "factual") or "factual"
-    for snap in sorted(prop.state_timeline, key=lambda s: s.fabula_time):
+    # Audit R17-4: stable secondary key on ``triggered_by``.
+    for snap in sorted(
+        prop.state_timeline,
+        key=lambda s: (s.fabula_time, getattr(s, "triggered_by", None) or ""),
+    ):
         if snap.fabula_time > fabula_time:
             break
         snap_world = getattr(snap, "world_id", holder_world) or holder_world
@@ -2024,7 +2254,11 @@ def reconstruct_concern_at(concern: "Concern", fabula_time: int) -> dict:
     # replay (audience suspense, irony, social weight all key off
     # this).
     holder_world = getattr(concern, "world_id", "factual") or "factual"
-    for snap in sorted(concern.state_timeline, key=lambda s: s.fabula_time):
+    # Audit R17-4: stable secondary key on ``triggered_by``.
+    for snap in sorted(
+        concern.state_timeline,
+        key=lambda s: (s.fabula_time, getattr(s, "triggered_by", None) or ""),
+    ):
         if snap.fabula_time > fabula_time:
             break
         snap_world = getattr(snap, "world_id", holder_world) or holder_world
@@ -2086,6 +2320,12 @@ def reconstruct_relationship_at(
     blending). For exact engine state at a tick, replay through the
     propagator. For audit / counterfactual / time-slice display, the
     delta-replay view is the right semantic.
+
+    Audit R18-23: per-axis ``inertia`` now attenuates each rolled-back
+    delta (``delta_effective = delta * (1 - inertia)``) so the
+    replay better approximates the propagator's anchoring behaviour
+    on real plot data \u2014 institutional dyads with high inertia
+    (Party\u2192Winston) no longer rewind by raw authored amplitudes.
     """
     src = edge.source_entity_id
     tgt = edge.target_entity_id
@@ -2093,6 +2333,7 @@ def reconstruct_relationship_at(
 
     event_index = {e.id: e for e in events}
     metrics_now: Dict[str, float] = {}
+    axis_inertia: Dict[str, float] = {}
     axis_ranges: Dict[str, tuple[float, float]] = {
         "affinity": (-1.0, 1.0),
         "fear": (0.0, 1.0),
@@ -2100,6 +2341,9 @@ def reconstruct_relationship_at(
     }
     for axis_name, metric in edge.metrics.items():
         metrics_now[axis_name] = float(metric.value)
+        axis_inertia[axis_name] = float(
+            getattr(metric, "inertia", 0.0) or 0.0
+        )
 
     for cedge in causal_edges:
         if cedge.causality_type != "mutation_social":
@@ -2121,7 +2365,11 @@ def reconstruct_relationship_at(
         axis = cedge.trait_target
         if axis not in metrics_now:
             continue
-        metrics_now[axis] -= float(cedge.trait_delta)
+        # Audit R18-23: attenuate by inertia (clamped to [0, 1]) so
+        # high-inertia axes resist rollback the same way the social
+        # propagator resists forward mutation.
+        inertia = max(0.0, min(1.0, axis_inertia.get(axis, 0.0)))
+        metrics_now[axis] -= float(cedge.trait_delta) * (1.0 - inertia)
 
     out: Dict[str, float] = {}
     for axis_name, val in metrics_now.items():
@@ -2258,6 +2506,42 @@ class WorldStateV1(BaseModel):
                             f"WorldStateV1.{field_name}: dict key {key!r} "
                             f"does not match nested id {existing!r}"
                         )
+        # Audit R18-21: also backfill / validate the per-branch
+        # shadow sidecars. Pre-fix the validator only touched the
+        # top-level ``entities`` / ``objects`` / ``locations``
+        # registries, so a shadow split copy persisted without a
+        # nested ``id`` field round-tripped as ``id=""`` and broke
+        # every projected id-lookup downstream.
+        for sidecar_name in ("shadow_entities", "shadow_objects", "shadow_locations"):
+            sidecar = data.get(sidecar_name)
+            if not isinstance(sidecar, dict):
+                continue
+            for branch_label, mapping in list(sidecar.items()):
+                if not isinstance(mapping, dict):
+                    continue
+                for key, value in list(mapping.items()):
+                    if isinstance(value, dict):
+                        if not value.get("id"):
+                            value["id"] = key
+                        elif value["id"] != key:
+                            raise ValueError(
+                                f"WorldStateV1.{sidecar_name}[{branch_label!r}]: "
+                                f"dict key {key!r} does not match nested id "
+                                f"{value['id']!r}"
+                            )
+                    else:
+                        existing = getattr(value, "id", None)
+                        if not existing:
+                            try:
+                                value.id = key  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                        elif existing != key:
+                            raise ValueError(
+                                f"WorldStateV1.{sidecar_name}[{branch_label!r}]: "
+                                f"dict key {key!r} does not match nested id "
+                                f"{existing!r}"
+                            )
         return data
     shadow_entities: Dict[str, Dict[str, Entity]] = Field(
         default_factory=dict,
@@ -2347,6 +2631,90 @@ class WorldStateV1(BaseModel):
             "branch reported the post-mutation factual value despite "
             "the mutating event having been intervened away."
         ),
+    )
+    shadow_events: Dict[str, Dict[str, "EventNode"]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-shadow-branch event sidecar — mirror of "
+            "``shadow_entities`` for ``EventNode``. Keyed by "
+            "``branch_label`` then ``event_id``. Materialised lazily "
+            "by physics writers when a shadow merge needs to override "
+            "or suppress a factual event (e.g. relocating, "
+            "re-attributing, or wholly inventing an event on the "
+            "counterfactual branch) without mutating the factual "
+            "timeline. Read via :meth:`events_for_branch`."
+        ),
+    )
+    shadow_channels: Dict[str, Dict[str, "Channel"]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-shadow-branch channel sidecar — mirror of "
+            "``shadow_entities`` for ``Channel``. Keyed by "
+            "``branch_label`` then ``channel_id``. Materialised "
+            "lazily when a shadow merge opens/closes/re-routes a "
+            "communication channel; the factual ``channels`` dict is "
+            "never mutated. Read via :meth:`channels_for_branch`."
+        ),
+    )
+    shadow_locations: Dict[str, Dict[str, "Location"]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-shadow-branch location sidecar — mirror of "
+            "``shadow_entities`` for ``Location``. Keyed by "
+            "``branch_label`` then ``location_id``. Materialised "
+            "lazily when a shadow merge re-shapes a place "
+            "(ambient_state edit, parent change). Read via "
+            ":meth:`locations_for_branch`."
+        ),
+    )
+    shadow_causal_topology: Dict[str, Dict[str, "CausalEdge"]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-shadow-branch causal-edge sidecar. Keyed by "
+            "``branch_label`` then the composite key "
+            "``f'{source_id}|{target_id}|{causality_type}|{trait_target or \"\"}'``. "
+            "A clone substitutes for its factual twin in the layered "
+            "view; shadow-only edges are appended. Read via "
+            ":meth:`causal_topology_for_branch`."
+        ),
+    )
+    shadow_spatial_topology: Dict[str, Dict[str, "SpatialEdge"]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-shadow-branch spatial-edge sidecar. Keyed by "
+            "``branch_label`` then the composite key "
+            "``f'{source_id}|{target_id}|{connection_type}'``. "
+            "Read via :meth:`spatial_topology_for_branch`."
+        ),
+    )
+    # Audit R18-2: shadow deletion tombstones. The shadow-mutation
+    # sidecars above only support add/replace semantics \u2014 there
+    # was no way to express "this entity/object/channel/event is
+    # *removed* on branch X but still exists on factual." Without
+    # tombstones, a shadow DoEntityDelete had to either fail-shadow
+    # (leaving the deleted node visible on the branch read) or
+    # corrupt the factual baseline. These per-branch id sets are
+    # subtracted from the projected view in
+    # :meth:`projected_for_branch`.
+    shadow_removed_entity_ids: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="Per-branch entity-id tombstones (R18-2).",
+    )
+    shadow_removed_object_ids: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="Per-branch object-id tombstones (R18-2).",
+    )
+    shadow_removed_channel_ids: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="Per-branch channel-id tombstones (R18-2).",
+    )
+    shadow_removed_event_ids: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="Per-branch event-id tombstones (R18-2).",
+    )
+    shadow_removed_location_ids: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="Per-branch location-id tombstones (R18-2).",
     )
     events: List[EventNode]
     world_traits: Dict[str, "GlobalTrait"] = Field(
@@ -2556,6 +2924,130 @@ class WorldStateV1(BaseModel):
                 out.append(clone)
         return out
 
+    # ---- GAP-3: shadow projection parity for events/channels/locations/edges ----
+
+    @staticmethod
+    def _causal_edge_key(edge: "CausalEdge") -> str:
+        return (
+            f"{edge.source_id}|{edge.target_id}|{edge.causality_type}"
+            f"|{getattr(edge, 'trait_target', None) or ''}"
+        )
+
+    @staticmethod
+    def _spatial_edge_key(edge: "SpatialEdge") -> str:
+        return (
+            f"{edge.source_id}|{edge.target_id}"
+            f"|{getattr(edge, 'connection_type', '') or ''}"
+        )
+
+    def events_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> List["EventNode"]:
+        """Mirror of :meth:`propositions_for_branch` for events.
+
+        Shadow clones substitute for their factual twin by event id;
+        shadow-only events are appended. Order is preserved.
+        """
+        if branch_world_id != "shadow" or not branch_label:
+            return self.events
+        sidecar = self.shadow_events.get(branch_label) or {}
+        if not sidecar:
+            return self.events
+        out: List["EventNode"] = []
+        seen: set[str] = set()
+        for ev in self.events:
+            eid = getattr(ev, "id", None)
+            clone = sidecar.get(eid) if eid else None
+            out.append(clone if clone is not None else ev)
+            if eid:
+                seen.add(eid)
+        for eid, clone in sidecar.items():
+            if eid not in seen:
+                out.append(clone)
+        return out
+
+    def channels_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> Dict[str, "Channel"]:
+        """Mirror of :meth:`entities_for_branch` for channels."""
+        if branch_world_id != "shadow" or not branch_label:
+            return self.channels
+        sidecar = self.shadow_channels.get(branch_label) or {}
+        if not sidecar:
+            return self.channels
+        merged: Dict[str, "Channel"] = dict(self.channels)
+        merged.update(sidecar)
+        return merged
+
+    def locations_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> Dict[str, "Location"]:
+        """Mirror of :meth:`entities_for_branch` for locations."""
+        if branch_world_id != "shadow" or not branch_label:
+            return self.locations
+        sidecar = self.shadow_locations.get(branch_label) or {}
+        if not sidecar:
+            return self.locations
+        merged: Dict[str, "Location"] = dict(self.locations)
+        merged.update(sidecar)
+        return merged
+
+    def causal_topology_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> List["CausalEdge"]:
+        """Mirror of :meth:`social_topology_for_branch` for causal edges.
+
+        Keyed by ``_causal_edge_key``. Shadow clones substitute for
+        their factual twin; shadow-only edges are appended.
+        """
+        if branch_world_id != "shadow" or not branch_label:
+            return self.causal_topology
+        sidecar = self.shadow_causal_topology.get(branch_label) or {}
+        if not sidecar:
+            return self.causal_topology
+        out: List["CausalEdge"] = []
+        seen: set[str] = set()
+        for e in self.causal_topology:
+            key = self._causal_edge_key(e)
+            clone = sidecar.get(key)
+            out.append(clone if clone is not None else e)
+            seen.add(key)
+        for key, clone in sidecar.items():
+            if key not in seen:
+                out.append(clone)
+        return out
+
+    def spatial_topology_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> List["SpatialEdge"]:
+        """Mirror of :meth:`social_topology_for_branch` for spatial edges."""
+        if branch_world_id != "shadow" or not branch_label:
+            return self.spatial_topology
+        sidecar = self.shadow_spatial_topology.get(branch_label) or {}
+        if not sidecar:
+            return self.spatial_topology
+        out: List["SpatialEdge"] = []
+        seen: set[str] = set()
+        for e in self.spatial_topology:
+            key = self._spatial_edge_key(e)
+            clone = sidecar.get(key)
+            out.append(clone if clone is not None else e)
+            seen.add(key)
+        for key, clone in sidecar.items():
+            if key not in seen:
+                out.append(clone)
+        return out
+
     def projected_for_branch(
         self,
         branch_world_id: str = "factual",
@@ -2603,17 +3095,36 @@ class WorldStateV1(BaseModel):
         prop_sidecar = self.shadow_propositions.get(branch_label) or {}
         wt_sidecar = self.shadow_world_traits.get(branch_label) or {}
         soc_sidecar = self.shadow_social_topology.get(branch_label) or {}
-        if not (sidecar or obj_sidecar or prop_sidecar or wt_sidecar or soc_sidecar):
+        evt_sidecar = self.shadow_events.get(branch_label) or {}
+        chn_sidecar = self.shadow_channels.get(branch_label) or {}
+        loc_sidecar = self.shadow_locations.get(branch_label) or {}
+        caus_sidecar = self.shadow_causal_topology.get(branch_label) or {}
+        spat_sidecar = self.shadow_spatial_topology.get(branch_label) or {}
+        # Audit R18-2: per-branch tombstones.
+        removed_entities = set(self.shadow_removed_entity_ids.get(branch_label) or [])
+        removed_objects = set(self.shadow_removed_object_ids.get(branch_label) or [])
+        removed_channels = set(self.shadow_removed_channel_ids.get(branch_label) or [])
+        removed_events = set(self.shadow_removed_event_ids.get(branch_label) or [])
+        removed_locations = set(self.shadow_removed_location_ids.get(branch_label) or [])
+        if not (
+            sidecar or obj_sidecar or prop_sidecar or wt_sidecar
+            or soc_sidecar or evt_sidecar or chn_sidecar or loc_sidecar
+            or caus_sidecar or spat_sidecar
+            or removed_entities or removed_objects or removed_channels
+            or removed_events or removed_locations
+        ):
             return self
         update: Dict[str, Any] = {}
-        if sidecar:
-            update["entities"] = self.entities_for_branch(
-                branch_world_id, branch_label,
-            )
-        if obj_sidecar:
-            update["objects"] = self.objects_for_branch(
-                branch_world_id, branch_label,
-            )
+        if sidecar or removed_entities:
+            base_ents = self.entities_for_branch(branch_world_id, branch_label) if sidecar else dict(self.entities)
+            if removed_entities:
+                base_ents = {k: v for k, v in base_ents.items() if k not in removed_entities}
+            update["entities"] = base_ents
+        if obj_sidecar or removed_objects:
+            base_objs = self.objects_for_branch(branch_world_id, branch_label) if obj_sidecar else dict(self.objects)
+            if removed_objects:
+                base_objs = {k: v for k, v in base_objs.items() if k not in removed_objects}
+            update["objects"] = base_objs
         if prop_sidecar:
             update["propositions"] = self.propositions_for_branch(
                 branch_world_id, branch_label,
@@ -2624,6 +3135,35 @@ class WorldStateV1(BaseModel):
             )
         if soc_sidecar:
             update["social_topology"] = self.social_topology_for_branch(
+                branch_world_id, branch_label,
+            )
+        if evt_sidecar:
+            update["events"] = self.events_for_branch(
+                branch_world_id, branch_label,
+            )
+        if removed_events:
+            cur_events = update.get("events", self.events)
+            update["events"] = [e for e in cur_events if e.id not in removed_events]
+        if chn_sidecar:
+            update["channels"] = self.channels_for_branch(
+                branch_world_id, branch_label,
+            )
+        if removed_channels:
+            cur_chans = update.get("channels", self.channels)
+            update["channels"] = {k: v for k, v in cur_chans.items() if k not in removed_channels}
+        if loc_sidecar:
+            update["locations"] = self.locations_for_branch(
+                branch_world_id, branch_label,
+            )
+        if removed_locations:
+            cur_locs = update.get("locations", self.locations)
+            update["locations"] = {k: v for k, v in cur_locs.items() if k not in removed_locations}
+        if caus_sidecar:
+            update["causal_topology"] = self.causal_topology_for_branch(
+                branch_world_id, branch_label,
+            )
+        if spat_sidecar:
+            update["spatial_topology"] = self.spatial_topology_for_branch(
                 branch_world_id, branch_label,
             )
         return self.model_copy(update=update)

@@ -928,6 +928,19 @@ def build_affective_dashboard(state: AppState) -> None:
                         "shapes are comparable across metrics with very "
                         "different magnitudes."
                     )
+                    # R19-UI-(2): factual-vs-shadow overlay toggle.
+                    # Only meaningful when the current VWM head is a
+                    # shadow branch; harmless on factual (the overlay
+                    # short-circuits when baseline is the same ws).
+                    vs_factual_toggle = ui.switch(
+                        "vs factual", value=False,
+                        on_change=lambda _: _refresh(),
+                    ).props("dense").tooltip(
+                        "Overlay the factual mainline baseline as "
+                        "dashed lines (affect) and hollow rings "
+                        "(events) so shadow-branch divergences are "
+                        "visible at a glance."
+                    )
                     ui.button(
                         icon="open_in_full",
                         on_click=lambda: _open_ts_dialog(),
@@ -1272,6 +1285,25 @@ def build_affective_dashboard(state: AppState) -> None:
                     event_timeline_options,
                 )
 
+                # R19-UI-(2): resolve factual baseline ws for the
+                # overlay. ``versioned_model.current`` is the raw
+                # merged ``WorldStateV1`` whose ``entities`` dict is
+                # the factual baseline (shadow clones live in the
+                # ``shadow_*`` sidecars). Only attach when the toggle
+                # is on AND the active head is shadow \u2014 otherwise
+                # baseline equals the primary ws and the overlay
+                # would just duplicate every series.
+                _baseline_ws = None
+                try:
+                    if vs_factual_toggle.value:
+                        _vwm = getattr(state, "versioned_model", None)
+                        if _vwm is not None and getattr(_vwm, "history", None):
+                            _head = _vwm.history[-1]
+                            if getattr(_head, "world_id", "factual") == "shadow":
+                                _baseline_ws = getattr(_vwm, "current", None)
+                except Exception:
+                    _baseline_ws = None
+
                 ts_opts = affective_timeseries_options(
                     full_ws or ws,
                     fabula_cursor=fc,
@@ -1279,6 +1311,7 @@ def build_affective_dashboard(state: AppState) -> None:
                     axis=axis,
                     entity_ids=eids,
                     normalize=bool(normalize_toggle.value),
+                    ws_baseline=_baseline_ws,
                 )
                 timeseries_label.text = (
                     f"Affective Metrics over {axis_label}"
@@ -1298,6 +1331,7 @@ def build_affective_dashboard(state: AppState) -> None:
                 sc = state.syuzhet_cursor if is_syuzhet else None
                 et_opts = event_timeline_options(
                     full_ws or ws, fabula_cursor=fc, syuzhet_cursor=sc,
+                    ws_baseline=_baseline_ws,
                 )
                 _et_snapshot["opts"] = et_opts
                 _et_snapshot["title"] = f"Event Timeline ({axis_label})"

@@ -302,6 +302,19 @@ async def auth_callback(request: Request):
         return JSONResponse({"error": "Unsupported provider"}, status_code=400)
 
     # Persist user
+    # R20-C5: provider must supply a non-empty subject id. An empty
+    # ``user_id`` collapses ``provider_id`` to e.g. ``"github:"``,
+    # which would link every malformed-payload login onto the same
+    # account row. Fail the callback explicitly instead.
+    if not user_id:
+        logger.warning(
+            "[Auth] Provider %s returned empty user_id; rejecting login",
+            provider_name,
+        )
+        return JSONResponse(
+            {"error": "Provider did not return a valid user identifier."},
+            status_code=400,
+        )
     db_user = upsert_user(
         provider=provider_name,
         provider_id=f"{provider_name}:{user_id}",
@@ -344,6 +357,20 @@ async def auth_logout(request: Request):
     # points to a different host than the one serving the request.
     request_host = request.headers.get("host", "")
     origin = request.headers.get("origin") or request.headers.get("referer") or ""
+    # R20-C4: previously, missing Origin AND Referer headers bypassed
+    # the same-origin check entirely. Some client/proxy combinations
+    # (older curl, certain mobile webviews, cache layers) strip both
+    # headers, leaving the logout endpoint exposed to forged GETs.
+    # Reject any logout request that lacks BOTH headers — modern
+    # browsers always supply at least one for state-changing requests
+    # initiated from a page, so legitimate cross-tab logouts still
+    # work.
+    if not origin:
+        logger.warning(
+            "[Auth] Rejected logout with no Origin/Referer header (host=%s)",
+            request_host,
+        )
+        return RedirectResponse("/", status_code=403)
     if origin and request_host:
         from urllib.parse import urlparse as _urlparse
         try:

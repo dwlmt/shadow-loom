@@ -320,6 +320,7 @@ def _example_project_chip(state: AppState, example: dict) -> None:
                 source_project_id=example["id"],
                 new_owner_id=state.user_id,
                 new_name=example["name"],
+                actor_id=state.user_id,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Forking example failed")

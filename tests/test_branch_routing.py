@@ -63,14 +63,20 @@ class TestResolveBranchPolicy:
         assert world_id == "shadow"
         assert label and "Macbeth" in label
 
-    def test_intervention_auto_stays_factual(self):
+    def test_intervention_auto_routes_to_shadow(self):
+        """R19-UI-(4): intervention queries under ``auto`` policy now
+        auto-fork shadow (matching counterfactual behaviour) so that
+        ``do(X)`` probes don't silently mutate factual mainline. Use
+        ``branch_policy="mainline"`` to override.
+        """
         q = InterventionQuery(
             original_query="Have Macbeth confess to Banquo.",
             interventions={"macbeth.confessed": True},
         )
         cfg = PipelineConfig()
-        world_id, _ = _resolve_branch_policy(q, cfg)
-        assert world_id == "factual"
+        world_id, label = _resolve_branch_policy(q, cfg)
+        assert world_id == "shadow"
+        assert label  # non-empty
 
     def test_manual_edit_auto_stays_factual(self):
         q = ManualEditQuery(
@@ -161,13 +167,19 @@ class TestResolveBranchPolicy:
         assert label != "Parent fork label"
 
     def test_auto_inherits_factual_when_active_branch_is_factual(self):
+        """R19-UI-(4): a *manual edit* on the factual head still
+        stays factual; only counterfactual and intervention auto-fork
+        shadow. Intervention's behaviour is covered by
+        :meth:`test_intervention_auto_routes_to_shadow`.
+        """
         from shadow_loom.extract_graph import VersionedWorldModel
 
         vwm = VersionedWorldModel.from_world_state(_empty_world_state())
         # default v0 entry is factual
-        q = InterventionQuery(
-            original_query="x",
-            interventions={"a.b": 1},
+        q = ManualEditQuery(
+            original_query="edit",
+            description="Tweak a description.",
+            edited_prose="Banquo paced the hall, deep in thought.",
         )
         cfg = PipelineConfig()
         world_id, _ = _resolve_branch_policy(q, cfg, vwm)
@@ -252,9 +264,10 @@ def _seed_project() -> tuple[int, int]:
 
 def _save(project_id, user_id, version, *, ancestor_id=None,
           world_id="factual", branch_label=None, source="test"):
+    from tests.conftest import make_empty_world_state
     return save_version(
         project_id=project_id,
-        world_state_json="{}",
+        world_state_json=make_empty_world_state().model_dump_json(),
         version=version,
         source=source,
         description=f"v{version}",
@@ -534,7 +547,10 @@ class TestAppStateRawWorldStateAccessor:
         # factual baseline. We bypass the merge engine and write the
         # JSON directly so the test isolates the raw-vs-projected
         # plumbing from the merge logic.
-        from shadow_loom.models import Entity
+        from shadow_loom.models import Entity, Location
+        base.locations["LOC_VOID"] = Location(
+            id="LOC_VOID", name="Void", description="placeholder",
+        )
         ent = Entity(
             id="ENT_X", name="X",
             location_id="LOC_VOID", status="healthy",

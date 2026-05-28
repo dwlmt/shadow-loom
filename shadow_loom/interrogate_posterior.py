@@ -99,10 +99,17 @@ def interrogate_posterior(
         canonical_tick: Optional[int] = None
         truth_at_query: Optional[bool] = None
         if truth_map:
+            # R20-C1: ``truth_at_fabula`` is declared ``Dict[int, bool]``
+            # but JSON deserialization (DB roundtrip, MCP transport)
+            # can return string keys. We coerce both the keys and the
+            # lookup target so ``truth_map[canonical_tick]`` never
+            # raises a KeyError when the stored keys are strings like
+            # ``"1000"`` but ``canonical_tick`` is ``int(1000)``.
             try:
-                int_keys = sorted(int(k) for k in truth_map.keys())
+                normalized = {int(k): v for k, v in truth_map.items()}
             except (TypeError, ValueError):
-                int_keys = []
+                normalized = {}
+            int_keys = sorted(normalized.keys())
             if int_keys:
                 if fabula_time is None:
                     canonical_tick = int_keys[-1]
@@ -110,7 +117,7 @@ def interrogate_posterior(
                     eligible = [k for k in int_keys if k <= fabula_time]
                     canonical_tick = eligible[-1] if eligible else None
                 if canonical_tick is not None:
-                    truth_at_query = bool(truth_map[canonical_tick])
+                    truth_at_query = bool(normalized[canonical_tick])
 
         support_w = 0.0
         contradict_w = 0.0

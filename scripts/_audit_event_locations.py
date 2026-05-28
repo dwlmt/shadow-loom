@@ -19,6 +19,7 @@ fallback.
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -27,6 +28,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from shadow_loom.models import event_location_at  # noqa: E402
+
+
+# R19-M14: branch-aware audit hook (see _audit_utterances.py).
+def _branch_projected(ws):
+    label = os.environ.get("SHADOW_LOOM_AUDIT_BRANCH")
+    if not label:
+        return ws
+    try:
+        return ws.projected_for_branch("shadow", label)
+    except Exception:
+        return ws
 
 WORLDS = [
     "a_court_of_thorn_and_roses", "a_fish_called_wanda", "apocalypse_now",
@@ -41,7 +53,7 @@ WORLDS = [
 
 def audit(name: str) -> dict:
     mod = importlib.import_module(f"example_worlds.{name}")
-    ws = mod.world_state
+    ws = _branch_projected(mod.world_state)
     events = list(ws.events or [])
     explicit = 0
     fallback = 0

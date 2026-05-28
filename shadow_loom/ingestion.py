@@ -6448,10 +6448,38 @@ def _merge_physics_retry(
             getattr(ce, "rel_counterpart_id", None) or "",
         )
 
-    base_causal_keys = {_ce_key(c) for c in base.causal_topology}
-    new_causal = list(base.causal_topology) + [
-        c for c in retry.causal_topology if _ce_key(c) not in base_causal_keys
-    ]
+    base_causal_keys = {_ce_key(c): i for i, c in enumerate(base.causal_topology)}
+    new_causal = list(base.causal_topology)
+    # Audit R18-3: retry rows are now an *upsert* against the base.
+    # Pre-fix this was append-only — a retry that corrected
+    # ``fabula_time`` / ``causal_force`` / ``mechanism`` on an
+    # already-keyed edge silently dropped the correction. The keyed
+    # in-place merge below copies retry-only fields onto the base
+    # row (preferring retry when explicitly set / non-null) while
+    # preserving the base's ordering.
+    _SCALAR_OVERRIDE_FIELDS = (
+        "fabula_time", "causal_force", "mechanism", "trait_delta",
+        "description", "counterfactual_strength",
+    )
+    for c in retry.causal_topology:
+        k = _ce_key(c)
+        if k in base_causal_keys:
+            existing = new_causal[base_causal_keys[k]]
+            updates = {}
+            for fld in _SCALAR_OVERRIDE_FIELDS:
+                rv = getattr(c, fld, None)
+                if rv is None:
+                    continue
+                if isinstance(rv, str) and not rv.strip():
+                    continue
+                ev = getattr(existing, fld, None)
+                if rv != ev:
+                    updates[fld] = rv
+            if updates:
+                new_causal[base_causal_keys[k]] = existing.model_copy(update=updates)
+        else:
+            base_causal_keys[k] = len(new_causal)
+            new_causal.append(c)
 
     base_spatial_keys = {(s.source_id, s.target_id) for s in base.spatial_topology}
     new_spatial = list(base.spatial_topology) + [
@@ -6522,12 +6550,19 @@ def _dedupe_scene_events(
             # event distinct.
             content_norm = (e.content or e.description or "").strip().lower()
             if e.speaker_id and content_norm:
+                # Audit R18-15: include ``via_channel_id`` and
+                # ``truth_value`` so the same line spoken on two
+                # channels (live + telescreen broadcast) or with
+                # opposing truth values (sincere vs performative)
+                # is NOT collapsed onto a single id.
                 utt_key = (
                     "__utt__",
                     e.speaker_id,
                     frozenset(e.addressee_ids or []),
                     content_norm,
                     (e.fabula_time or 0) // fabula_window,
+                    getattr(e, "via_channel_id", None) or "",
+                    getattr(e, "truth_value", None) or "",
                 )
                 if utt_key in seen_keys:
                     canonical_of[e.id] = seen_keys[utt_key]
@@ -6541,6 +6576,14 @@ def _dedupe_scene_events(
             frozenset(e.target_ids or []),
             e.event_type,
             (e.fabula_time or 0) // fabula_window,
+            # Audit R18-15: include ``at_location_id`` and a hash of
+            # the description so two distinct scene beats sharing
+            # actors/targets/event_type at nearby fabula times but
+            # in different locations or with materially different
+            # descriptions are NOT collapsed onto a single id.
+            getattr(e, "at_location_id", None) or "",
+            (getattr(e, "description", None) or "").strip().lower()[:64],
+            frozenset(getattr(e, "object_ids", None) or []),
         )
         # Skip key-based dedup if both actor and target are empty \u2014
         # those are anonymous events the anon retry will handle.
@@ -6665,9 +6708,50 @@ def _merge_social_retry(
         asymmetric A→B / B→A pair survives.
     """
     merged_channels = dict(base.channels)
+    # Audit R18-14: switch from skip-on-collision to a field-level
+    # merge for the retry path. Pre-fix, a retry that corrected
+    # ``intelligibility`` / ``directionality`` / ``participant_ids``
+    # on an already-seen channel was silently dropped. We now copy
+    # retry-only / non-default fields onto the base channel while
+    # keeping the original id and any base-set provenance fields.
+    _CHN_OVERRIDE_FIELDS = (
+        "name", "medium", "directionality", "intelligibility",
+        "established_at_fabula", "terminated_at_fabula",
+        "description",
+    )
     for cid, ch in retry.channels.items():
         if cid not in merged_channels:
             merged_channels[cid] = ch
+            continue
+        existing = merged_channels[cid]
+        updates: dict = {}
+        for fld in _CHN_OVERRIDE_FIELDS:
+            rv = getattr(ch, fld, None)
+            if rv is None:
+                continue
+            if isinstance(rv, str) and not rv.strip():
+                continue
+            if isinstance(rv, dict) and not rv:
+                continue
+            ev = getattr(existing, fld, None)
+            if rv != ev:
+                updates[fld] = rv
+        # Union participant ids — retries usually *add* a missing
+        # participant rather than drop one.
+        try:
+            base_parts = list(getattr(existing, "participant_ids", None) or [])
+            retry_parts = list(getattr(ch, "participant_ids", None) or [])
+            if retry_parts:
+                merged_parts = list(base_parts)
+                for pid in retry_parts:
+                    if pid not in merged_parts:
+                        merged_parts.append(pid)
+                if merged_parts != base_parts:
+                    updates["participant_ids"] = merged_parts
+        except Exception:
+            pass
+        if updates:
+            merged_channels[cid] = existing.model_copy(update=updates)
 
     base_utt_ids = {e.id for e in base.utterance_events}
     merged_utterances = list(base.utterance_events) + [
@@ -7089,6 +7173,80 @@ def _social_mutation_coverage(
         if key in triples:
             covered.add(key)
     return (len(covered), len(triples))
+
+
+def _audit_referent_linkage(ws: "WorldStateV1") -> List[str]:
+    """Lift ``scripts/_audit_referent_linkage.py``'s lint logic into ingestion.
+
+    Round-14 audit (ING-5): the post-assembly referent-linkage audit
+    used to live only as a standalone script in ``scripts/``, so the
+    live pipeline never benefited from it. A proposition with multiple
+    truth ticks but no ``EVT_`` referent breaks shadow-suppression
+    (the counterfactual engine can't prune the proposition when its
+    causing event is intervened away), and a truth tick that sits far
+    outside its event referent's fabula window is almost certainly a
+    stale ingestion artefact.
+
+    Returns a list of human-readable findings (empty when the world is
+    clean). The caller decides whether to log, fail, or attach the
+    findings to ``stage_errors`` \u2014 keeping this function side-effect
+    free so it stays usable from the standalone script too.
+    """
+    from collections import defaultdict as _defaultdict
+    findings: List[str] = []
+    if ws is None:
+        return findings
+    event_index = {e.id: e for e in ws.events}
+
+    bad_prop_ids: set[str] = set()
+    for prop in (ws.propositions or []):
+        ticks = sorted((getattr(prop, "truth_at_fabula", None) or {}).keys())
+        event_refs = [
+            r for r in (getattr(prop, "referent_ids", None) or [])
+            if isinstance(r, str) and r.startswith("EVT_")
+        ]
+        pid = getattr(prop, "proposition_id", None) or getattr(prop, "id", "?")
+
+        if len(ticks) >= 2 and not event_refs:
+            findings.append(
+                f"{pid} has {len(ticks)} truth ticks ({ticks}) but no "
+                f"EVT_ referent \u2014 shadow-suppression cannot prune."
+            )
+            bad_prop_ids.add(pid)
+            continue
+
+        if event_refs:
+            ref_times = [
+                event_index[r].fabula_time
+                for r in event_refs
+                if r in event_index
+            ]
+            if ref_times:
+                lo, hi = min(ref_times) - 1000, max(ref_times) + 1000
+                for tick in ticks:
+                    # tick <= 500 is the conventional baseline-prior band.
+                    if tick <= 500:
+                        continue
+                    if not (lo <= tick <= hi):
+                        findings.append(
+                            f"{pid} truth tick {tick} outside +/-1000 "
+                            f"window of event referents (events at "
+                            f"{ref_times}) \u2014 likely stale tick or "
+                            f"missing referent."
+                        )
+
+    if bad_prop_ids:
+        beliefs_hit: dict[str, list[str]] = _defaultdict(list)
+        for ent in ws.entities.values():
+            for b in getattr(ent, "beliefs", None) or []:
+                if getattr(b, "proposition_id", None) in bad_prop_ids:
+                    beliefs_hit[b.proposition_id].append(ent.id)
+        for pid, holders in beliefs_hit.items():
+            findings.append(
+                f"{pid} is referenced by belief on {sorted(set(holders))} "
+                f"but the proposition itself lacks event referents."
+            )
+    return findings
 
 
 # --- Tier 2: prompt/process improvements (2026-05-06) ---
@@ -8098,7 +8256,9 @@ async def _extract_single_chunk_async(
     """
     i = params.chunk_index
     n = params.total_chunks
-    failure_flags: Dict[str, int] = {"physics": 0, "social": 0, "consequences": 0}
+    failure_flags: Dict[str, int] = {
+        "physics": 0, "social": 0, "consequences": 0, "consistency": 0,
+    }
     stage_errors: Dict[str, str] = {}
 
     # Per-agent-call timeout. Each X_agent.run(...) inside this
@@ -9036,6 +9196,34 @@ async def _extract_single_chunk_async(
             "no matching social channel/utterance.",
             i + 1, len(physics_only),
         )
+        # Round-14 audit (ING-3): physics-only orphans used to be
+        # advisory only \u2014 the social side was never repaired, so a
+        # downstream consumer reading ``social.utterance_events``
+        # silently lost speech-acts that physics had captured. Mirror
+        # the social_only path: synthesise a stub ``UtteranceEvent``
+        # on the social side from the physics event so the two extractions
+        # stay symmetric. Missing speaker / addressee fields are
+        # surfaced by the existing ``_social_anonymous_utterances`` retry
+        # path so the stub does not bypass quality gates.
+        social_known = {u.id for u in social.utterance_events}
+        social_stubs_added = 0
+        for evt in physics.events:
+            if evt.event_type != "utterance":
+                continue
+            if evt.id in social_known:
+                continue
+            try:
+                stub = evt.model_copy()
+            except Exception:
+                continue
+            social.utterance_events.append(stub)
+            social_stubs_added += 1
+        if social_stubs_added:
+            logger.info(
+                "[Step 3a/b\u00b7Async] Chunk %d: added %d stub utterance "
+                "events to social from physics (ING-3 parity recovery).",
+                i + 1, social_stubs_added,
+            )
 
     # --- Tier 1 #4: mutation_social coverage gauge (async) ----------
     covered, total = _social_mutation_coverage(physics, social)
@@ -9390,6 +9578,17 @@ async def _extract_single_chunk_async(
             )
             stage_errors.setdefault(
                 "audit",
+                f"{len(chunk_defects)} defect(s) {counts}",
+            )
+            # Promote audit defects from advisory to threshold-tracked
+            # (ING-2 follow-up audit fix). A single defect on this
+            # chunk counts as one ``consistency`` failure; the orchestrator
+            # raises only when >50% of chunks fail (same semantic as the
+            # other sub-stages) so isolated noise stays tolerated but
+            # structural rot can no longer slip past assembly.
+            failure_flags["consistency"] = 1
+            stage_errors.setdefault(
+                "consistency",
                 f"{len(chunk_defects)} defect(s) {counts}",
             )
 
@@ -9907,13 +10106,23 @@ async def extract_topology_async(
                         f"asyncio.TimeoutError: per-chunk pipeline did "
                         f"not complete within {chunk_timeout:.0f}s"
                     )
+                    # Audit R16-3: return the FULL canonical stage
+                    # keyset (including ``affect`` and ``consistency``)
+                    # so the downstream aggregation sees the timeout as
+                    # a per-stage failure for every stage, not just
+                    # physics/social/consequences. Otherwise affect-
+                    # stage outages from timeouts go uncounted.
                     return (
                         ChunkTopology(),
-                        {"physics": 1, "social": 1, "consequences": 1},
+                        {
+                            "physics": 1, "social": 1, "consequences": 1,
+                            "affect": 1, "consistency": 0,
+                        },
                         {
                             "physics": timeout_msg,
                             "social": timeout_msg,
                             "consequences": timeout_msg,
+                            "affect": timeout_msg,
                         },
                     )
             return await coro
@@ -9938,6 +10147,20 @@ async def extract_topology_async(
         # stays bounded on long runs. The most recent ones carry the
         # most coreference value.
         _CARRY_EVENT_ID_TAIL = 60
+        # Audit R16-2: ``consistency`` is a soft / advisory stage and
+        # its baseline value is 0, so ``all(flags.values())`` would
+        # always short-circuit to False for any sentinel that includes
+        # it. Detect "hard failure" against the CORE stages only.
+        _CORE_STAGES_FOR_HARD_FAILURE = (
+            "physics", "social", "consequences", "affect",
+        )
+        # Audit R16-1/R16-13: track how many chunks the loop actually
+        # processed so an early break can append synthetic failure
+        # sentinels for the remainder \u2014 otherwise the threshold
+        # check below sees the unprocessed tail as "silently ok" and
+        # the run completes against a truncated document.
+        early_break_reason: str | None = None
+        processed_count = 0
         for chunk, params in zip(chunks, params_list):
             params = params.model_copy(update={
                 "previous_event_ids": list(accumulated_event_ids[-_CARRY_EVENT_ID_TAIL:]),
@@ -9945,26 +10168,90 @@ async def extract_topology_async(
             })
             result = await _guarded_extract(chunk, params)
             chunk_results.append(result)
+            processed_count += 1
             topo, flags, _errs = result
-            # Detect "all stages failed" as a probable timeout / wedged
-            # model and short-circuit before the whole text is consumed
-            # by empty extractions.
-            if all(flags.values()):
+            # Detect "all CORE stages failed" as a probable timeout /
+            # wedged model and short-circuit before the whole text is
+            # consumed by empty extractions.
+            if all(flags.get(s, 0) for s in _CORE_STAGES_FOR_HARD_FAILURE):
                 consecutive_timeouts += 1
                 if consecutive_timeouts >= _CARRY_TIMEOUT_CONSECUTIVE_LIMIT:
+                    early_break_reason = (
+                        f"{consecutive_timeouts} consecutive fully-failed "
+                        f"chunk(s) in serial carry-over mode"
+                    )
                     logger.error(
-                        "[Pipeline\u00b7Async] %d consecutive fully-failed "
-                        "chunk(s) in serial carry-over mode \u2014 aborting "
-                        "the chunk loop early; the failure-threshold check "
-                        "below will surface the cause.",
-                        consecutive_timeouts,
+                        "[Pipeline\u00b7Async] %s \u2014 aborting the chunk "
+                        "loop early and marking the unprocessed tail as "
+                        "failed so the threshold check sees the truncation.",
+                        early_break_reason,
                     )
                     break
             else:
                 consecutive_timeouts = 0
             accumulated_event_ids.extend(e.id for e in topo.events)
             for cid, ch in topo.channels.items():
-                accumulated_channels.setdefault(cid, ch)
+                # Audit R17-5: ``setdefault`` froze the first ``Channel``
+                # object seen for each cid, so a later chunk that
+                # extended ``terminated_at_fabula`` (a re-spliced phone
+                # line, a restored back-channel, a re-established
+                # mind-link in act 3) silently kept the chunk-2 cut
+                # forever. Merge explicitly so carry-over reflects the
+                # union of evidence across chunks.
+                prior = accumulated_channels.get(cid)
+                if prior is None:
+                    accumulated_channels[cid] = ch
+                    continue
+                prior_term = getattr(prior, "terminated_at_fabula", None)
+                new_term = getattr(ch, "terminated_at_fabula", None)
+                # ``None`` means "still active" \u2014 it supersedes any
+                # concrete termination. Otherwise pick the LATER
+                # termination so a re-splice extends the channel's life.
+                if prior_term is None or new_term is None:
+                    merged_term = None
+                else:
+                    merged_term = max(int(prior_term), int(new_term))
+                try:
+                    prior.terminated_at_fabula = merged_term
+                except Exception:
+                    accumulated_channels[cid] = ch
+                    continue
+                # Union participant ids so a participant added in a
+                # later chunk isn't dropped on subsequent carry-overs.
+                try:
+                    existing_p = list(
+                        getattr(prior, "participant_ids", None) or []
+                    )
+                    for p in getattr(ch, "participant_ids", None) or []:
+                        if p not in existing_p:
+                            existing_p.append(p)
+                    prior.participant_ids = existing_p
+                except Exception:
+                    pass
+        if early_break_reason is not None and processed_count < len(chunks):
+            # Audit R16-1/R16-13: backfill the unprocessed chunks with
+            # the same full-keyset failure sentinel the timeout path
+            # uses so failure_counts and the threshold denominator
+            # stay in agreement.
+            missing = len(chunks) - processed_count
+            sentinel_err = (
+                f"carry-over early break: {early_break_reason}; "
+                f"this chunk was never dispatched"
+            )
+            for _ in range(missing):
+                chunk_results.append((
+                    ChunkTopology(),
+                    {
+                        "physics": 1, "social": 1, "consequences": 1,
+                        "affect": 1, "consistency": 0,
+                    },
+                    {
+                        "physics": sentinel_err,
+                        "social": sentinel_err,
+                        "consequences": sentinel_err,
+                        "affect": sentinel_err,
+                    },
+                ))
     else:
         # Audit fix #4 (second pass): use return_exceptions so an
         # unexpected un-caught failure in one chunk doesn't take down
@@ -9984,7 +10271,7 @@ async def extract_topology_async(
                 )
                 chunk_results.append((
                     ChunkTopology(),
-                    {"physics": 1, "social": 1, "consequences": 1, "affect": 1},
+                    {"physics": 1, "social": 1, "consequences": 1, "affect": 1, "consistency": 0},
                     {"physics": err, "social": err, "consequences": err, "affect": err},
                 ))
             else:
@@ -9995,6 +10282,7 @@ async def extract_topology_async(
     # ``KeyError`` when any chunk's affect call raises.
     failure_counts: Dict[str, int] = {
         "physics": 0, "social": 0, "consequences": 0, "affect": 0,
+        "consistency": 0,
     }
     sample_errors: Dict[str, str] = {}
     for _, flags, errs in chunk_results:
@@ -12242,7 +12530,12 @@ def reconcile_affect(
             return True
         if latest.salience is not None and latest.salience < 0.2:
             return False
-        if latest.activation_fabula_window is not None:
+        # Audit R17-2: treat empty ``[]`` window the same as ``None``
+        # (= no closure asserted) to match ``reconstruct_concern_at``,
+        # which only triggers window logic when the window has two
+        # endpoints. Previously any non-None window — including a
+        # ``DoConcern`` reset to ``[]`` — was classified as closed.
+        if latest.activation_fabula_window:
             return False
         return True
 
@@ -15279,24 +15572,26 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                     ),
                 ))
 
-    # E1.c.2 Concern closure check (audit fix): for every concern whose
-    # anchor proposition has a truth_at_fabula commit, the concern's
-    # state_timeline should contain a closure snapshot at or after the
-    # earliest commit (salience<0.2 or activation_fabula_window capped).
-    # Without one, downstream affective scoring will keep treating the
-    # concern as a standing fear/desire about an already-settled
-    # question \u2014 see ``affect_extraction.md`` rule 9 and the
-    # ``reconcile_affect`` auto-closer that backstops this. Surfaced as
-    # an info-level issue (not a hard error) so a deliberate
-    # surviving-concern pattern (e.g. fear of exposure of a now-true
-    # secret) doesn't trip the auditor.
+    # E1.c.2 Concern closure check (round-4 noise triage): historically
+    # this emitted a warning for every concern whose anchor proposition's
+    # truth had committed but whose state_timeline lacked an explicit
+    # closure snapshot. The Phase C ``reconcile_affect`` auto-closer
+    # ALWAYS injects synthetic closures for these, and no downstream
+    # consumer reads the warning. The warning therefore fired on every
+    # gold world (~70% of the 354 noise warnings observed in the
+    # round-4 deep audit) without surfacing actionable signal. The
+    # check is retained as a dead-loop scaffold so a future "deliberate
+    # surviving-concern" pattern can be discriminated from "Phase C
+    # will close it" \u2014 flip ``suppress_routine_open`` to False to
+    # re-enable noise emission for debugging.
+    suppress_routine_open = True
     prop_first_commit: Dict[str, int] = {}
     for prop in ws.propositions:
         if prop.truth_at_fabula:
             prop_first_commit[prop.proposition_id] = min(
                 int(k) for k in prop.truth_at_fabula.keys()
             )
-    if prop_first_commit:
+    if prop_first_commit and not suppress_routine_open:
         for ccn_id, (eid, c) in all_concerns.items():
             commit_fab = prop_first_commit.get(c.proposition_id)
             if commit_fab is None:
@@ -15308,7 +15603,10 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 if snap.salience is not None and snap.salience < 0.2:
                     closed = True
                     break
-                if snap.activation_fabula_window is not None:
+                # Audit R17-2: treat ``[]`` as "no closure asserted"
+                # (same as ``None``) so an explicit DoConcern reset
+                # doesn't get reclassified as a routine closure.
+                if snap.activation_fabula_window:
                     closed = True
                     break
             # Also consider already-closed if the initial baseline is
@@ -17252,6 +17550,27 @@ def _apply_world_state_patch(
         social_topology=new_social,
         propositions=new_propositions,
         world_facts=list(ws.world_facts),
+        # Audit R18-1: carry forward the shadow_* sidecars verbatim
+        # so a patch on the factual baseline does not silently
+        # collapse every shadow branch's clones / tombstones into
+        # the factual list. Sidecar mutation is the responsibility
+        # of dedicated shadow-patch tools; this preserves the
+        # invariant for general-purpose patches.
+        shadow_entities=dict(ws.shadow_entities),
+        shadow_objects=dict(ws.shadow_objects),
+        shadow_locations=dict(ws.shadow_locations),
+        shadow_events=dict(ws.shadow_events),
+        shadow_channels=dict(ws.shadow_channels),
+        shadow_world_traits=dict(ws.shadow_world_traits),
+        shadow_propositions=dict(ws.shadow_propositions),
+        shadow_social_topology=dict(ws.shadow_social_topology),
+        shadow_causal_topology=dict(ws.shadow_causal_topology),
+        shadow_spatial_topology=dict(ws.shadow_spatial_topology),
+        shadow_removed_entity_ids=dict(ws.shadow_removed_entity_ids),
+        shadow_removed_object_ids=dict(ws.shadow_removed_object_ids),
+        shadow_removed_channel_ids=dict(ws.shadow_removed_channel_ids),
+        shadow_removed_event_ids=dict(ws.shadow_removed_event_ids),
+        shadow_removed_location_ids=dict(ws.shadow_removed_location_ids),
     )
     return new_ws, changes
 
@@ -19019,7 +19338,17 @@ def validate_world_state(
             type(e).__name__, e,
         )
         llm_issues = []
-        llm_suggestions = []
+        # R20-H13: previously this branch silently dropped the LLM
+        # half of validation, so callers reading ``ValidationReport``
+        # could not tell apart "LLM ran and found nothing" from "LLM
+        # crashed and we have no opinion". Surface the degradation
+        # through ``suggestions`` so it survives serialization and
+        # appears in the UI's validation panel without requiring a
+        # schema change.
+        llm_suggestions = [
+            f"[degraded] LLM validator unavailable ({type(e).__name__}); "
+            "report reflects programmatic checks only."
+        ]
 
     # Merge programmatic + LLM issues
     # Round-6 audit: dedup on (severity, code, path, message) so the
@@ -19128,6 +19457,22 @@ async def validate_and_correct_world_state_async(
         logger.info(
             "%s Auto-repair fixed %d issue(s).",
             log_prefix, len(initial_repairs),
+        )
+
+    # Round-14 audit (ING-5): lift the standalone referent-linkage
+    # lint into the live validation path. Findings are logged as
+    # warnings; the deterministic + LLM validators retain the final
+    # say on whether the world fails closed.
+    try:
+        _ref_findings = _audit_referent_linkage(world_state)
+        if _ref_findings:
+            logger.warning(
+                "%s Referent linkage audit found %d issue(s). Sample: %s",
+                log_prefix, len(_ref_findings), _ref_findings[:3],
+            )
+    except Exception:
+        logger.exception(
+            "%s Referent linkage audit raised \u2014 continuing.", log_prefix,
         )
 
     # Programmatic + LLM validation. Offloaded to a worker thread
@@ -19426,6 +19771,23 @@ async def run_extraction_async(
         world_state, repairs = _auto_repair(world_state)
         if repairs:
             logger.info("[Pipeline·Async] Auto-repaired %d issues before validation.", len(repairs))
+
+        # Round-14 audit (ING-5): lift ``_audit_referent_linkage`` into
+        # the live post-assembly path so propositions with missing
+        # ``EVT_`` referents or stale truth ticks are surfaced as
+        # warnings rather than silently shipping to physics.
+        try:
+            _ref_findings = _audit_referent_linkage(world_state)
+            if _ref_findings:
+                logger.warning(
+                    "[Pipeline·Async] Referent linkage audit found %d "
+                    "issue(s) (post-assembly). Sample: %s",
+                    len(_ref_findings), _ref_findings[:3],
+                )
+        except Exception:
+            logger.exception(
+                "[Pipeline·Async] Referent linkage audit raised — continuing.",
+            )
 
         # Phase C: fold the Phase A3 catalogue + per-chunk Phase B4
         # affect outputs onto the assembled world (propositions /

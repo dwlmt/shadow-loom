@@ -55,7 +55,12 @@ from shadow_loom.generation import (
     _format_abduction,
     _annotate_ids,
 )
-from shadow_loom.models import EventNode, WorldStateV1
+from shadow_loom.models import (
+    EventNode,
+    WorldStateV1,
+    reconstruct_entity_at,
+    reconstruct_object_at,
+)
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
 from shadow_loom._agent_logging import log_agent_output
@@ -99,10 +104,19 @@ EFFECT_AUDIT_CATEGORIES: Dict[str, List[str]] = {
     # not strictly required (the surprise term is local Δ, not a
     # rung-3 attribution) but kept off to bound prompt size.
     "narrative_tension": ["epistemic", "probabilistic", "physics"],
-    # Non-directive
-    "observation": ["physics"],
-    "intervention": ["physics"],
-    "counterfactual": ["physics"],
+    # Non-directive — Pearl-rung-aware so the audit prompt explicitly
+    # lists the rung whose semantics the prose must satisfy.
+    # Round-14 audit (GAP-6): previously all three collapsed to
+    # ``["physics"]``, so an "observation" audit and a "counterfactual"
+    # audit listed the same category to the auditor LLM \u2014 erasing the
+    # rung distinction that the rest of the pipeline goes to lengths
+    # to preserve. The named rung categories are inert strings (they
+    # surface in the prompt's "AUDIT CATEGORIES TO CHECK" header)
+    # but give the auditor and any downstream log readers a clean
+    # rung-1 / rung-2 / rung-3 read.
+    "observation": ["physics", "observational"],
+    "intervention": ["physics", "interventional"],
+    "counterfactual": ["physics", "counterfactual"],
     # Note: ``general`` and ``interrogate`` queries short-circuit before
     # the auditor in pipeline.py — they answer questions *about* the
     # world model and never call the renderer, so they have no prose
@@ -506,6 +520,14 @@ class AuditViolation(BaseModel):
         # with a forced commit. Major by default; critical when the
         # affected proposition is part of an active SuspenseProfile.
         "premature_payoff",
+        # AUDIT (round-12): world_trait_timeline_disorder \u2014 a
+        # ``GlobalTrait.state_timeline`` whose snapshots are not in
+        # monotonically non-decreasing ``fabula_time`` order. Fires
+        # before the renderer is consulted: timeline disorder corrupts
+        # ``reconstruct_world_trait_at`` replay so any ambient-force
+        # grounding the prose draws on becomes unstable. Critical
+        # \u2014 the engine's invariant is broken.
+        "world_trait_timeline_disorder",
     ]
     severity: Literal["critical", "major", "minor"]
     description: str = Field(
@@ -1424,7 +1446,31 @@ def _format_propositional_context(brief: CreativeBrief) -> List[str]:
         ap = list(getattr(payload, "affected_propositions", []) or [])
         ab = list(getattr(payload, "affected_beliefs", []) or [])
         ac = list(getattr(payload, "affected_concerns", []) or [])
-        if not (ap or ab or ac):
+        ao = list(getattr(payload, "affected_objects", []) or [])
+        awt = list(getattr(payload, "affected_world_traits", []) or [])
+        ae = list(getattr(payload, "affected_edges", []) or [])
+        # Engine-emitted downstream cascade rails. The renderer
+        # surfaces these in the brief; the auditor must enumerate
+        # them too so prose that silently drops a prop relocation /
+        # ambient-force shift / topology rewrite is flagged as a
+        # miracle step rather than passed by a content-blind audit.
+        dtc = list(getattr(payload, "downstream_trait_changes", []) or [])
+        drc = list(getattr(payload, "downstream_relationship_changes", []) or [])
+        pcd = list(getattr(payload, "proposition_cascade_detail", []) or [])
+        bcd = list(getattr(payload, "belief_cascade_detail", []) or [])
+        ccd = list(getattr(payload, "concern_cascade_detail", []) or [])
+        ocd = list(getattr(payload, "object_cascade_detail", []) or [])
+        wtcd = list(getattr(payload, "world_trait_cascade_detail", []) or [])
+        ecd = list(getattr(payload, "edge_cascade_detail", []) or [])
+        edcd = list(getattr(payload, "entity_delete_cascade_detail", []) or [])
+        odcd = list(getattr(payload, "object_delete_cascade_detail", []) or [])
+        aed = list(getattr(payload, "affected_entity_deletes", []) or [])
+        aod = list(getattr(payload, "affected_object_deletes", []) or [])
+        bpd = list(getattr(payload, "blocked_propagations_detail", []) or [])
+        if not (ap or ab or ac or ao or awt or ae
+                or dtc or drc or pcd or bcd or ccd
+                or ocd or wtcd or ecd or edcd or odcd
+                or aed or aod or bpd):
             continue
         out.append(f"=== {label} (typed DoTarget surgery) ===")
         if ap:
@@ -1451,14 +1497,88 @@ def _format_propositional_context(brief: CreativeBrief) -> List[str]:
                     (getattr(payload, "affected_concern_descriptions", None) or [])[:12],
                 )
             )
+        if ao:
+            out.append(
+                "  OBJECTS relocated / owner-changed / property-set: "
+                + ", ".join(ao[:12])
+            )
+        if awt:
+            out.append(
+                "  WORLD TRAITS clamped (ambient-force shifts): "
+                + ", ".join(awt[:12])
+            )
+        if ae:
+            out.append(
+                "  EDGES rewritten (edge_type:action:source\u2192target): "
+                + ", ".join(ae[:12])
+            )
+        if aed:
+            out.append(
+                "  ENTITIES EXCISED (existence-counterfactual \u2014 must NOT appear in prose): "
+                + ", ".join(aed[:12])
+            )
+        if aod:
+            out.append(
+                "  OBJECTS EXCISED (existence-counterfactual \u2014 must NOT be referenced): "
+                + ", ".join(aod[:12])
+            )
+        if dtc:
+            out.append("  DOWNSTREAM TRAIT CASCADE:")
+            for ln in dtc[:8]:
+                out.append(f"    - {ln}")
+        if drc:
+            out.append("  DOWNSTREAM RELATIONSHIP CASCADE:")
+            for ln in drc[:8]:
+                out.append(f"    - {ln}")
+        if pcd:
+            out.append("  PROPOSITION CASCADE DETAIL:")
+            for ln in pcd[:8]:
+                out.append(f"    - {ln}")
+        if bcd:
+            out.append("  BELIEF CASCADE DETAIL:")
+            for ln in bcd[:8]:
+                out.append(f"    - {ln}")
+        if ccd:
+            out.append("  CONCERN CASCADE DETAIL:")
+            for ln in ccd[:8]:
+                out.append(f"    - {ln}")
+        if ocd:
+            out.append("  OBJECT CASCADE DETAIL:")
+            for ln in ocd[:8]:
+                out.append(f"    - {ln}")
+        if wtcd:
+            out.append("  WORLD-TRAIT CASCADE DETAIL:")
+            for ln in wtcd[:8]:
+                out.append(f"    - {ln}")
+        if ecd:
+            out.append("  EDGE CASCADE DETAIL:")
+            for ln in ecd[:8]:
+                out.append(f"    - {ln}")
+        if edcd:
+            out.append("  ENTITY DELETION CASCADE DETAIL:")
+            for ln in edcd[:8]:
+                out.append(f"    - {ln}")
+        if odcd:
+            out.append("  OBJECT DELETION CASCADE DETAIL:")
+            for ln in odcd[:8]:
+                out.append(f"    - {ln}")
+        if bpd:
+            out.append("  BLOCKED PROPAGATIONS (must dramatise resistance, not skip):")
+            for ln in bpd[:8]:
+                out.append(f"    - {ln}")
         tragedy = getattr(payload, "tragedy_form", None)
         if tragedy:
             out.append(f"  tragedy_form: {tragedy}")
         out.append(
-            "  Rule: every flipped proposition / belief / concern "
-            "above MUST be visibly grounded in an on-page event "
-            "or utterance; flag silent off-page changes as "
-            "miracle steps."
+            "  Rule: every flipped proposition / belief / concern / "
+            "object / world-trait / edge above MUST be visibly "
+            "grounded in an on-page event or utterance; flag silent "
+            "off-page changes as miracle steps. Cascade detail lines "
+            "(downstream trait/relationship/proposition/belief/concern/"
+            "object/world-trait/edge) must also be reflected in prose "
+            "\u2014 a beat per propagated effect, not a single summary "
+            "sentence. Blocked propagations require a visible "
+            "resistance beat, never a near-change."
         )
         out.append("")
 
@@ -2480,9 +2600,24 @@ def deterministic_prose_findings(
         )
 
         offending: List[str] = []
+        # R19-M6: past-perfect retrospective narration ("had felt",
+        # "had heard") is not a POV breach \u2014 the narrator is
+        # looking back, not crossing into another character's
+        # consciousness. Detect ``had`` immediately before the
+        # cognitive verb and skip those matches.
+        had_aux_re = re.compile(
+            r"\bhad\s+(?:" + cognitive_verbs + r")\b",
+            re.IGNORECASE,
+        )
         for sent in sentences:
             m = subj_verb_re.search(sent)
             if not m:
+                continue
+            # If the verb in this match is immediately preceded by
+            # ``had`` (past perfect / retrospective narration), skip.
+            verb_start = m.end(1)
+            tail = sent[verb_start:m.end()]
+            if had_aux_re.search(tail):
                 continue
             subject = m.group(1).strip().lower()
             # Skip if the subject is the POV entity (any alias).
@@ -4166,6 +4301,224 @@ def _event_copresence_violations(
     return issues
 
 
+def _position_mismatch_violations(
+    prose: str,
+    brief: CreativeBrief,
+    world_state: Optional[WorldStateV1],
+) -> List[AuditViolation]:
+    """Deterministic object / entity position-mismatch auditor pass.
+
+    Materialises the long-declared but never-emitted violation kinds
+    ``object_position_mismatch`` and ``entity_position_mismatch``
+    (see the ``violation_type`` enum at the top of this module). For
+    every :class:`NarrativeObject` with a non-trivial state_timeline,
+    and every :class:`Entity` with state_timeline movement snapshots,
+    the function:
+
+      1. Derives the scene's ``fabula_anchor`` from
+         ``brief.scene_context.recent_memory`` (max ``fabula_time``).
+      2. Reconstructs the canonical ``location_id`` at that anchor
+         via :func:`reconstruct_object_at` / :func:`reconstruct_entity_at`.
+      3. If prose verbatim names the object / entity AND a *different*
+         canonical location name within ~120 chars, emits a HARD
+         violation. The LLM auditor remains responsible for paraphrase
+         / pronoun cases.
+
+    Conservative on purpose \u2014 we only fire on verbatim, close-range
+    co-mentions to keep false-positive rate low, mirroring the
+    existing co-presence checker.
+    """
+    if world_state is None or not prose:
+        return []
+    locations = world_state.locations or {}
+    if not locations:
+        return []
+    entities = world_state.entities or {}
+    objects = (
+        getattr(world_state, "objects", None)
+        or getattr(world_state, "narrative_objects", None)
+        or {}
+    )
+
+    sc = getattr(brief, "scene_context", {}) or {}
+    fabula_anchor: Optional[int] = None
+    if isinstance(sc, dict):
+        recent = sc.get("recent_memory") or []
+        if isinstance(recent, list):
+            fts = [
+                e.get("fabula_time") for e in recent
+                if isinstance(e, dict) and isinstance(e.get("fabula_time"), int)
+            ]
+            if fts:
+                fabula_anchor = max(fts)
+    if fabula_anchor is None:
+        return []
+
+    prose_lower = prose.lower()
+
+    def _name_positions(name: str) -> list[int]:
+        if not name:
+            return []
+        n = name.strip().lower()
+        if len(n) < 3:
+            return []
+        out: list[int] = []
+        start = 0
+        while True:
+            i = prose_lower.find(n, start)
+            if i < 0:
+                break
+            out.append(i)
+            start = i + len(n)
+        return out
+
+    # Precompute location name → positions map.
+    loc_positions: Dict[str, list[int]] = {}
+    loc_names: Dict[str, str] = {}
+    for lid, loc in (locations.items() if isinstance(locations, dict) else []):
+        lname = getattr(loc, "name", lid) or lid
+        if len(lname) < 3:
+            continue
+        loc_names[lid] = lname
+        positions = _name_positions(lname)
+        if positions:
+            loc_positions[lid] = positions
+
+    if not loc_positions:
+        return []
+
+    issues: List[AuditViolation] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def _check_subject(
+        subject_id: str,
+        subject_name: str,
+        reconstructed_loc: Optional[str],
+        kind: Literal["object_position_mismatch", "entity_position_mismatch"],
+    ) -> None:
+        if not subject_name or not reconstructed_loc:
+            return
+        if reconstructed_loc not in loc_names:
+            return
+        s_positions = _name_positions(subject_name)
+        if not s_positions:
+            return
+        canonical_loc_name = loc_names[reconstructed_loc]
+        for si in s_positions:
+            for other_lid, other_positions in loc_positions.items():
+                if other_lid == reconstructed_loc:
+                    continue
+                other_name = loc_names[other_lid]
+                for oi in other_positions:
+                    if abs(oi - si) > 120:
+                        continue
+                    key = (kind, subject_id, other_lid)
+                    if key in seen:
+                        return
+                    seen.add(key)
+                    issues.append(AuditViolation(
+                        violation_type=kind,
+                        severity="major",
+                        description=(
+                            f"Prose places `{subject_id}` ({subject_name}) "
+                            f"at `{other_lid}` ({other_name}), but the "
+                            f"reconstructed location at fabula_time="
+                            f"{fabula_anchor} is `{reconstructed_loc}` "
+                            f"({canonical_loc_name})."
+                        ),
+                        evidence_quote=prose[max(0, si - 40): si + len(subject_name) + 40],
+                        feedback=(
+                            f"Either re-locate `{subject_id}` to "
+                            f"`{reconstructed_loc}` ({canonical_loc_name}) "
+                            f"for this beat, or stage an explicit movement "
+                            f"event before the mention."
+                        ),
+                    ))
+                    return
+
+    # Objects
+    for oid, obj in (objects.items() if isinstance(objects, dict) else []):
+        oname = getattr(obj, "name", None) or oid
+        timeline = getattr(obj, "state_timeline", None) or []
+        # Skip wholly-static objects with no timeline AND no initial
+        # location \u2014 nothing to mismatch against.
+        if not timeline and not getattr(obj, "location_id", None):
+            continue
+        try:
+            state = reconstruct_object_at(obj, fabula_anchor)
+        except Exception:
+            continue
+        _check_subject(
+            oid, oname, state.get("location_id"),
+            "object_position_mismatch",
+        )
+
+    # Entities
+    for eid, ent in (entities.items() if isinstance(entities, dict) else []):
+        ename = getattr(ent, "name", None) or eid
+        timeline = getattr(ent, "state_timeline", None) or []
+        if not timeline and not getattr(ent, "location_id", None):
+            continue
+        try:
+            state = reconstruct_entity_at(ent, fabula_anchor)
+        except Exception:
+            continue
+        _check_subject(
+            eid, ename, state.get("location_id"),
+            "entity_position_mismatch",
+        )
+
+    return issues
+
+
+def _world_trait_timeline_disorder_violations(
+    world_state: Optional[WorldStateV1],
+) -> List[AuditViolation]:
+    """Deterministic monotonicity check on ``GlobalTrait.state_timeline``.
+
+    Round-12 audit invariant. Any snapshot list whose consecutive
+    ``fabula_time`` values descend corrupts ``reconstruct_*_at``
+    replay and silently destabilises every renderer surface that
+    relies on the reconstructed magnitude (atmosphere prose, ambient
+    force grounding). Fires a HARD violation per offending trait.
+    Independent of prose \u2014 this is a pure world-state invariant.
+    """
+    if world_state is None:
+        return []
+    out: List[AuditViolation] = []
+    traits = getattr(world_state, "world_traits", None) or {}
+    iterator = traits.values() if isinstance(traits, dict) else (traits or [])
+    for wt in iterator:
+        timeline = getattr(wt, "state_timeline", None) or []
+        if len(timeline) < 2:
+            continue
+        prev = None
+        for snap in timeline:
+            ft = getattr(snap, "fabula_time", None)
+            if ft is None:
+                continue
+            if prev is not None and ft < prev:
+                wt_id = getattr(wt, "id", "") or getattr(wt, "world_trait_id", "?")
+                out.append(AuditViolation(
+                    violation_type="world_trait_timeline_disorder",
+                    severity="critical",
+                    description=(
+                        f"World trait {wt_id} state_timeline is not "
+                        f"monotonically ordered by fabula_time "
+                        f"(saw {prev} then {ft})."
+                    ),
+                    evidence_quote="",
+                    feedback=(
+                        f"Engine invariant breach: sort or rebuild "
+                        f"``{wt_id}.state_timeline`` so consecutive "
+                        f"snapshots have non-decreasing fabula_time."
+                    ),
+                ))
+                break
+            prev = ft
+    return out
+
+
 def run_audit(
     prose: str,
     brief: CreativeBrief,
@@ -4374,6 +4727,31 @@ def run_audit(
         audit.audit_summary = (
             f"{audit.audit_summary} [+{len(copresence_issues)} event "
             f"co-presence violation(s)]"
+        ).strip()
+
+    # Deterministic object / entity position-mismatch check. Materialises
+    # the long-declared ``object_position_mismatch`` and
+    # ``entity_position_mismatch`` violation kinds against the
+    # reconstructed location at the scene's fabula anchor.
+    position_issues = _position_mismatch_violations(
+        prose, brief, world_state,
+    )
+    if position_issues:
+        audit.violations = list(audit.violations) + position_issues
+        audit.passed = False
+        audit.audit_summary = (
+            f"{audit.audit_summary} [+{len(position_issues)} position "
+            f"mismatch(es)]"
+        ).strip()
+
+    # Pure world-state invariant: world_trait state_timeline ordering.
+    wt_disorder = _world_trait_timeline_disorder_violations(world_state)
+    if wt_disorder:
+        audit.violations = list(audit.violations) + wt_disorder
+        audit.passed = False
+        audit.audit_summary = (
+            f"{audit.audit_summary} [+{len(wt_disorder)} world-trait "
+            f"timeline disorder]"
         ).strip()
 
     logger.info(
@@ -4709,6 +5087,49 @@ def run_feedback_loop(
             ),
         )
 
+        # R19-H10: short-circuit on world-state-invariant violations.
+        # ``world_trait_timeline_disorder`` (and similar pure
+        # world-state invariants) cannot be fixed by re-rendering
+        # prose — the violation lives in the upstream world model.
+        # Continuing the rewrite loop guarantees the same violation
+        # re-fires every iteration, burning the entire iteration
+        # budget on an unfixable problem. Bail out immediately,
+        # routing the violation through ``engine_threshold_failures``
+        # so callers see it as an engine-state breach, not a prose
+        # failure.
+        _UNREWRITEABLE_VIOLATION_TYPES = {
+            "world_trait_timeline_disorder",
+        }
+        unrewriteable = [
+            v for v in audit.violations
+            if getattr(v, "violation_type", "") in _UNREWRITEABLE_VIOLATION_TYPES
+        ]
+        if unrewriteable:
+            logger.error(
+                "[FeedbackLoop] Detected %d world-state-invariant "
+                "violation(s) at iteration %d that prose rewriting "
+                "cannot fix (%s). Short-circuiting loop; the world "
+                "model must be repaired upstream.",
+                len(unrewriteable), iteration + 1,
+                ", ".join(sorted({v.violation_type for v in unrewriteable})),
+            )
+            invariant_failures = [
+                f"world_state_invariant: {v.violation_type}: {v.description}"
+                for v in unrewriteable
+            ]
+            return FeedbackLoopResult(
+                final_scene=current_scene,
+                converged=False,
+                iterations=iteration + 1,
+                history=history,
+                final_graph_version=graph_version,
+                change_impact=cycle_impact,
+                engine_thresholds_passed=False,
+                engine_threshold_failures=(
+                    list(engine_failures or []) + invariant_failures
+                ),
+            )
+
         # C (round-7 audit 2026-05-26): deterministic POV-lock and
         # meta-narration checks run alongside the LLM auditor and
         # merge their findings into the violation list. The LLM
@@ -4965,6 +5386,18 @@ def run_feedback_loop(
                     cycle_impact = prior_cycle_impact or cycle_impact
                     graph_version = prior_graph_version
                     graph_data = prior_graph_data
+                    # R19-L8: after rolling back ``cycle_impact`` to
+                    # the prior cycle's value, re-run the engine
+                    # threshold check so ``engine_passed`` /
+                    # ``engine_failures`` reflect the rolled-back
+                    # impact rather than the regressed cycle's
+                    # values.
+                    try:
+                        engine_passed, engine_failures = _engine_thresholds_check(
+                            cycle_impact, auditor_config,
+                        )
+                    except Exception:
+                        pass
                     pending_regression_warning = (
                         f"Your previous rewrite REGRESSED by introducing "
                         f"new violation type(s): "
@@ -5004,6 +5437,13 @@ def run_feedback_loop(
                     cycle_impact = prior_cycle_impact or cycle_impact
                     graph_version = prior_graph_version
                     graph_data = prior_graph_data
+                    # R19-L8: re-run engine threshold check after rollback.
+                    try:
+                        engine_passed, engine_failures = _engine_thresholds_check(
+                            cycle_impact, auditor_config,
+                        )
+                    except Exception:
+                        pass
                     break
 
         # --- Convergence rule ---

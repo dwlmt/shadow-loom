@@ -753,6 +753,30 @@ def _resolve_branch_policy(
     else:  # auto
         if query.query_type == "counterfactual":
             world_id = "shadow"
+        elif (
+            query.query_type == "intervention"
+            and (
+                vwm is None
+                or not vwm.history
+                or vwm.history[-1].world_id != "shadow"
+            )
+        ):
+            # R19-UI-(4): auto-fork shadow for ``do(X)`` interventions
+            # *launched from factual mainline* so that surgical
+            # "what changes if X" probes don't silently mutate the
+            # canonical timeline. A user who runs an intervention on
+            # the factual head from the UI expects the result to
+            # appear as a new shadow branch they can promote or
+            # discard \u2014 matching the affordance the command bar's
+            # "Intervene" tooltip implies.
+            #
+            # When the active head is *already* a shadow branch, we
+            # fall through to the inheritance path below so chained
+            # interventions iterate within the same scenario instead
+            # of spawning a sibling fork on every step. Mainline-
+            # intervention from factual is still available explicitly
+            # via ``branch_policy="mainline"``.
+            world_id = "shadow"
         elif vwm is not None and vwm.history:
             # Inherit the active branch so manual_edit / interrogate /
             # general / observation / intervention / directive queries
@@ -1473,6 +1497,7 @@ def _augment_topology_with_sandbox_deltas(
     fabula_time_now: int,
     fabula_time_historical: Optional[int] = None,
     world_id: Literal["factual", "shadow"] = "factual",
+    branch_label: Optional[str] = None,
     query_type: Optional[str] = None,
 ) -> "ChunkTopology":
     """Inject sandbox-derived state changes directly into the topology so
@@ -1524,6 +1549,7 @@ def _augment_topology_with_sandbox_deltas(
     # ------------------------------------------------------------------
     def _upsert_entity_trait(
         entity_id: str, trait: str, new_value: float, ft: int,
+        triggered_by: Optional[str] = None,
     ) -> None:
         ent = world_state.entities.get(entity_id)
         if ent is None:
@@ -1541,11 +1567,15 @@ def _augment_topology_with_sandbox_deltas(
             if eu.entity_id == entity_id and eu.fabula_time == ft:
                 if trait not in eu.trait_updates:
                     eu.trait_updates[trait] = tv
+                # Preserve first-seen provenance; only upgrade if the
+                # existing record was unattributed (triggered_by=None).
+                if triggered_by and not getattr(eu, "triggered_by", None):
+                    eu.triggered_by = triggered_by
                 return
         topology.entity_updates.append(EntityUpdate(
             entity_id=entity_id,
             fabula_time=ft,
-            triggered_by=None,
+            triggered_by=triggered_by,
             trait_updates={trait: tv},
         ))
 
@@ -1557,6 +1587,7 @@ def _augment_topology_with_sandbox_deltas(
     # ------------------------------------------------------------------
     def _upsert_world_trait_snapshot(
         wid: str, trait: str, new_value: float, ft: int,
+        triggered_by: Optional[str] = None,
     ) -> None:
         # Prefer an entry already accumulated in this topology so
         # multiple deltas for the same WORLD_ trait stack rather than
@@ -1569,7 +1600,7 @@ def _augment_topology_with_sandbox_deltas(
         snap = WorldTraitSnapshot(
             world_id=world_id,
             fabula_time=ft,
-            triggered_by=None,
+            triggered_by=triggered_by,
             magnitude=TraitVector(
                 value=float(max(0.0, min(1.0, new_value))),
                 inertia=inertia,
@@ -1599,12 +1630,13 @@ def _augment_topology_with_sandbox_deltas(
         node_id = m.get("node_id") if isinstance(m, dict) else getattr(m, "node_id", None)
         trait = m.get("trait") if isinstance(m, dict) else getattr(m, "trait", None)
         new_val = m.get("new_value") if isinstance(m, dict) else getattr(m, "new_value", None)
+        trig = m.get("triggered_by") if isinstance(m, dict) else getattr(m, "triggered_by", None)
         if not node_id or not trait or new_val is None:
             continue
         if node_id.startswith("WORLD_"):
-            _upsert_world_trait_snapshot(node_id, trait, float(new_val), fabula_time_now)
+            _upsert_world_trait_snapshot(node_id, trait, float(new_val), fabula_time_now, triggered_by=trig)
         else:
-            _upsert_entity_trait(node_id, trait, float(new_val), fabula_time_now)
+            _upsert_entity_trait(node_id, trait, float(new_val), fabula_time_now, triggered_by=trig)
 
     # --- Hidden deltas (Rung 3 abduction) ------------------------------
     historical_anchor = (
@@ -2164,6 +2196,12 @@ def _augment_topology_with_sandbox_deltas(
             if old_loc == v:
                 continue
             ev.at_location_id = v
+            # ROUND-15 (M-8): also re-emit the post-mutation event
+            # through topology.events so the merge persists the reveal.
+            # Without this, the in-place mutation on the transient
+            # world_state is lost after the snapshot is committed.
+            if ev not in topology.events:
+                topology.events.append(ev)
             logger.info(
                 "[Bridge\u00b7observe\u00b7EventLocation] Relocated %s "
                 "at_location_id=%r \u2192 %r (fabula_time=%s); co-presence "
@@ -2213,9 +2251,31 @@ def _augment_topology_with_sandbox_deltas(
         # while the persisted world still carries
         # ``EVT_GEORGE_JAILED`` as if the conviction had stuck.
         intervened = set(physics_result.get("intervened_nodes") or [])
+        # ROUND-15 (C-2): a DoEvent whose only effect was relocation or
+        # fabula-time shift preserves the causal chain — its descendants
+        # should NOT be cause-disconnected. Subtract EVT_ ids whose
+        # event_mutations are exclusively relocation/time_shift records.
+        _evt_muts = physics_result.get("event_mutations") or []
+        _non_disruptive: set[str] = set()
+        _disruptive: set[str] = set()
+        for _m in _evt_muts:
+            _mkind = (_m.get("kind") if isinstance(_m, dict)
+                      else getattr(_m, "kind", None))
+            _meid = (_m.get("event_id") if isinstance(_m, dict)
+                     else getattr(_m, "event_id", None))
+            if not _meid:
+                continue
+            if _mkind in ("relocation", "time_shift"):
+                _non_disruptive.add(_meid)
+            else:
+                _disruptive.add(_meid)
+        # An event with any disruptive mutation stays cause-broken.
+        _preserve = _non_disruptive - _disruptive
         cause_broken: set[str] = {
             nid for nid in intervened
-            if isinstance(nid, str) and nid.startswith("EVT_")
+            if isinstance(nid, str)
+            and nid.startswith("EVT_")
+            and nid not in _preserve
         }
         if prune_roots or cause_broken:
             closure = _compute_shadow_prune_closure(
@@ -2236,10 +2296,133 @@ def _augment_topology_with_sandbox_deltas(
                     len(closure), sorted(closure),
                 )
 
+    # ROUND-15 (H-6): bridge ``edge_mutations`` (DoCausalEdge /
+    # DoSpatialEdge / DoChannel) into the topology's vocabulary so the
+    # surgery persists into the merged snapshot regardless of whether
+    # the renderer's prose re-articulated it. Attribute-only mutations
+    # (lock/unlock/retune) have no clean topology counterpart today and
+    # rely on the in-place mutations the physics engine already applied
+    # to ``world_state``; they are logged but not bridged.
+    try:
+        _edge_muts = list(physics_result.get("edge_mutations") or [])
+        _causal_added = 0
+        _causal_severed = 0
+        _spatial_added = 0
+        _spatial_severed = 0
+        _channels_added = 0
+        _channels_removed = 0
+        _attr_only_skipped = 0
+        for _em in _edge_muts:
+            _etype = _em.get("edge_type") if isinstance(_em, dict) else getattr(_em, "edge_type", None)
+            _act = _em.get("action") if isinstance(_em, dict) else getattr(_em, "action", None)
+            _src = _em.get("source_id") if isinstance(_em, dict) else getattr(_em, "source_id", None)
+            _tgt = _em.get("target_id") if isinstance(_em, dict) else getattr(_em, "target_id", None)
+            _chn = _em.get("channel_id") if isinstance(_em, dict) else getattr(_em, "channel_id", None)
+            _ft = _em.get("fabula_time") if isinstance(_em, dict) else getattr(_em, "fabula_time", fabula_time_now)
+            _det = _em.get("details") if isinstance(_em, dict) else getattr(_em, "details", {})
+            _det = _det or {}
+            if _etype == "causal" and _act == "sever" and _src and _tgt:
+                _ctype = _det.get("causality_type") or "*"
+                key = (_src, _tgt, _ctype, int(_ft))
+                if key not in topology.removed_causal_edge_keys:
+                    topology.removed_causal_edge_keys.append(key)
+                    _causal_severed += 1
+            elif _etype == "causal" and _act == "add" and _src and _tgt:
+                # Pull the live edge from world_state (physics added it
+                # in-place) and copy into topology.causal_topology so
+                # the merge sees it.
+                for ce in (world_state.causal_topology or []):
+                    if ce.source_id == _src and ce.target_id == _tgt:
+                        if ce not in topology.causal_topology:
+                            topology.causal_topology.append(ce)
+                            _causal_added += 1
+                        break
+            elif _etype == "spatial" and _act == "sever" and _src and _tgt:
+                key = (_src, _tgt)
+                if key not in topology.removed_spatial_keys:
+                    topology.removed_spatial_keys.append(key)
+                    _spatial_severed += 1
+            elif _etype == "spatial" and _act == "add" and _src and _tgt:
+                for se in (world_state.spatial_topology or []):
+                    if se.source_id == _src and se.target_id == _tgt:
+                        if se not in topology.spatial_topology:
+                            topology.spatial_topology.append(se)
+                            _spatial_added += 1
+                        break
+            elif _etype == "channel" and _act == "deactivate" and _chn:
+                if _chn not in topology.removed_channel_ids:
+                    topology.removed_channel_ids.append(_chn)
+                    _channels_removed += 1
+            elif _etype == "channel" and _act == "activate" and _chn:
+                live_chn = (world_state.channels or {}).get(_chn)
+                if live_chn is not None and _chn not in topology.channels:
+                    topology.channels[_chn] = live_chn
+                    _channels_added += 1
+            else:
+                # lock/unlock/retune — attribute mutations on existing
+                # nodes/edges. The in-place mutation on world_state will
+                # ride through merge_topology IFF the merge re-reads the
+                # mutated node; today we lean on prose re-extraction to
+                # re-materialise. Flagged for future explicit bridging.
+                _attr_only_skipped += 1
+        if (_causal_severed or _causal_added or _spatial_severed
+                or _spatial_added or _channels_added or _channels_removed
+                or _attr_only_skipped):
+            logger.info(
+                "[Bridge\u00b7edge-mut] causal +%d / -%d, spatial +%d / -%d, "
+                "channels +%d / -%d, attr-only skipped=%d",
+                _causal_added, _causal_severed,
+                _spatial_added, _spatial_severed,
+                _channels_added, _channels_removed,
+                _attr_only_skipped,
+            )
+    except Exception:
+        logger.exception(
+            "[Bridge\u00b7edge-mut] failed to bridge edge_mutations into topology."
+        )
+
+    # ROUND-15 (H-7): bridge ``event_mutations`` (DoEvent relocation /
+    # time_shift) into the topology so the surgery persists. The
+    # physics engine has already mutated ``world_state.events`` in
+    # place; we re-emit the post-mutation EventNode through
+    # ``topology.events`` so the merge dedup path (matched by
+    # ``EventNode.id``) replaces the parent-world copy.
+    try:
+        _evt_muts = list(physics_result.get("event_mutations") or [])
+        _evt_ids: set[str] = set()
+        for _m in _evt_muts:
+            _eid = _m.get("event_id") if isinstance(_m, dict) else getattr(_m, "event_id", None)
+            if _eid:
+                _evt_ids.add(_eid)
+        if _evt_ids:
+            _evts_by_id = {e.id: e for e in (world_state.events or [])}
+            _existing_topo_ids = {e.id for e in (topology.events or [])}
+            _added = 0
+            for _eid in _evt_ids:
+                if _eid in _existing_topo_ids:
+                    continue
+                _live = _evts_by_id.get(_eid)
+                if _live is not None:
+                    topology.events.append(_live)
+                    _added += 1
+            if _added:
+                logger.info(
+                    "[Bridge\u00b7event-mut] bridged %d DoEvent surgeries "
+                    "into topology.events (relocation/time_shift).", _added,
+                )
+    except Exception:
+        logger.exception(
+            "[Bridge\u00b7event-mut] failed to bridge event_mutations into topology."
+        )
+
     # AUDIT P0-1: bridge typed DoEntityDelete / DoObjectDelete from the
     # physics sandbox into the topology's removed_*_ids so the merge
     # cascade scrubs every referential surface (mirrors the cascade
     # already applied in-place by ``causal_physics`` handlers).
+    # ROUND-15 (C-1): payloads from ``_typed_target_payload`` arrive as
+    # ``model_dump()`` dicts, so the old ``isinstance`` dispatch was a
+    # silent no-op. Dispatch on the ``target_kind`` literal instead and
+    # accept either dicts or typed models for forward-compat.
     try:
         from shadow_loom.query_models import (
             DoEntityDelete as _DoEntityDelete,
@@ -2248,12 +2431,20 @@ def _augment_topology_with_sandbox_deltas(
         _do_targets = list(physics_result.get("do_targets") or [])
         _do_targets += list(physics_result.get("historical_do_targets") or [])
         for _t in _do_targets:
-            if isinstance(_t, _DoEntityDelete):
-                if _t.entity_id not in topology.removed_entity_ids:
-                    topology.removed_entity_ids.append(_t.entity_id)
-            elif isinstance(_t, _DoObjectDelete):
-                if _t.object_id not in topology.removed_object_ids:
-                    topology.removed_object_ids.append(_t.object_id)
+            if isinstance(_t, dict):
+                _kind = _t.get("target_kind")
+                _eid = _t.get("entity_id")
+                _oid = _t.get("object_id")
+            else:
+                _kind = getattr(_t, "target_kind", None)
+                _eid = getattr(_t, "entity_id", None)
+                _oid = getattr(_t, "object_id", None)
+            if _kind == "entity_delete" or isinstance(_t, _DoEntityDelete):
+                if _eid and _eid not in topology.removed_entity_ids:
+                    topology.removed_entity_ids.append(_eid)
+            elif _kind == "object_delete" or isinstance(_t, _DoObjectDelete):
+                if _oid and _oid not in topology.removed_object_ids:
+                    topology.removed_object_ids.append(_oid)
     except Exception:
         logger.exception(
             "[Bridge\u00b7do-delete] failed to bridge typed "
@@ -3158,6 +3349,7 @@ def run_pipeline(
                 fabula_time_now=_ft_now,
                 fabula_time_historical=_ft_hist,
                 world_id=_world_id,
+                branch_label=_branch_label,
                 query_type=getattr(query, "query_type", None),
             )
             vwm_next = vwm.merge(
@@ -3734,6 +3926,7 @@ async def run_pipeline_async(
                 fabula_time_now=_ft_now,
                 fabula_time_historical=_ft_hist,
                 world_id=_world_id,
+                branch_label=_branch_label,
                 query_type=getattr(query, "query_type", None),
             )
             vwm_next = vwm.merge(
@@ -3821,7 +4014,23 @@ def _run_answer_step(
         preceding_prose=_preceding_prose,
         # Pass the source register so the Q&A LLM mirrors the same
         # tone / diction the renderer/auditor enforce on each chunk.
-        narrative_style=getattr(getattr(vwm, "current", None), "narrative_style", None),
+        # R19-H6: resolve via ``projected_for_branch`` so a shadow
+        # branch carrying its own narrative_style (future per-branch
+        # sidecar) is honoured instead of always reading the factual
+        # baseline. Today narrative_style isn't branched so this is
+        # a no-op, but the resolution path is now correct and a
+        # future ``shadow_narrative_style`` sidecar will Just Work.
+        narrative_style=(
+            getattr(
+                vwm.current.projected_for_branch(
+                    _branch_world_id, _branch_label,
+                ),
+                "narrative_style",
+                None,
+            )
+            if getattr(vwm, "current", None) is not None
+            else None
+        ),
         # Phase-9: forward typed Pearl-rung surgery metadata so the
         # intervention / counterfactual answer agents can match the
         # right epistemic / ontic register and apply the
@@ -3835,6 +4044,12 @@ def _run_answer_step(
         affected_propositions=list(physics_result.get("affected_propositions") or []) or None,
         affected_beliefs=list(physics_result.get("affected_beliefs") or []) or None,
         affected_concerns=list(physics_result.get("affected_concerns") or []) or None,
+        affected_objects=list(physics_result.get("affected_objects") or []) or None,
+        affected_world_traits=list(physics_result.get("affected_world_traits") or []) or None,
+        affected_edges=list(physics_result.get("affected_edges") or []) or None,
+        affected_entity_deletes=list(physics_result.get("affected_entity_deletes") or []) or None,
+        affected_object_deletes=list(physics_result.get("affected_object_deletes") or []) or None,
+        affected_events=list(physics_result.get("affected_events") or []) or None,
         tragedy_form=physics_result.get("tragedy_form"),
         # Phase-10: forward engine-emitted downstream cascades so the
         # intervention / counterfactual Q&A answer agent can enumerate
@@ -3846,6 +4061,16 @@ def _run_answer_step(
         proposition_mutations=list(physics_result.get("proposition_mutations") or []) or None,
         belief_mutations=list(physics_result.get("belief_mutations") or []) or None,
         concern_mutations=list(physics_result.get("concern_mutations") or []) or None,
+        # Round-5 audit: forward object / world-trait / edge mutation
+        # streams so the Q&A answer renderer can enumerate prop,
+        # ambient-force, and topology surgeries instead of dropping
+        # them at the answer hand-off.
+        object_mutations=list(physics_result.get("object_mutations") or []) or None,
+        world_trait_mutations=list(physics_result.get("world_trait_mutations") or []) or None,
+        edge_mutations=list(physics_result.get("edge_mutations") or []) or None,
+        entity_delete_mutations=list(physics_result.get("entity_delete_mutations") or []) or None,
+        object_delete_mutations=list(physics_result.get("object_delete_mutations") or []) or None,
+        event_mutations=list(physics_result.get("event_mutations") or []) or None,
         blocked=list(physics_result.get("blocked") or []) or None,
         causal_chain=list(physics_result.get("causal_chain") or []) or None,
     )
@@ -3854,6 +4079,74 @@ def _run_answer_step(
     physics_result["confidence"] = card.confidence
     physics_result["caveats"] = list(card.caveats)
     physics_result["evidence_node_ids"] = list(card.evidence_node_ids)
+    # R19-M11: deterministic confidence caps. LLM-declared
+    # confidence is uncalibrated and routinely contradicts the
+    # physics signals the pipeline already collected: an inert
+    # intervention (no engine mutations) cannot warrant high
+    # confidence; a high blocked-to-total ratio means the engine
+    # refused most of what was asked; zero grounded evidence ids
+    # means no causal proof. Apply per-source caps so confidence
+    # stays bounded above by the most pessimistic deterministic
+    # signal, even if the LLM declared 0.95.
+    try:
+        _caps: List[float] = [1.0]
+        # Cap 1: intervention inertness \u2014 if the engine reports
+        # the do-targets had no propagation effect, cap confidence
+        # at 0.4. ``physics_result['intervention_inert']`` is the
+        # explicit signal; if absent fall back to "no mutations and
+        # no blocked entries on a do-flavored query".
+        if qtype in ("intervention", "counterfactual"):
+            if physics_result.get("intervention_inert") is True:
+                _caps.append(0.4)
+            else:
+                _mut_total = sum(
+                    len(physics_result.get(k) or [])
+                    for k in (
+                        "mutations", "social_mutations",
+                        "proposition_mutations", "belief_mutations",
+                        "concern_mutations", "object_mutations",
+                        "world_trait_mutations", "edge_mutations",
+                        "entity_delete_mutations",
+                        "object_delete_mutations",
+                        "event_mutations",
+                    )
+                )
+                _blocked = len(physics_result.get("blocked") or [])
+                if _mut_total == 0 and _blocked == 0:
+                    _caps.append(0.4)
+                elif _blocked and (_mut_total + _blocked) > 0:
+                    # Cap 2: high blocked ratio \u2014 0.6 cap when
+                    # half or more of the requested surgeries were
+                    # refused by the engine.
+                    if (_blocked / float(_mut_total + _blocked)) >= 0.5:
+                        _caps.append(0.6)
+        # Cap 3: zero grounded evidence \u2014 cap at 0.5. This
+        # mirrors ``require_proof`` semantics in an advisory mode:
+        # answers with no evidence cannot be more confident than
+        # half.
+        if not card.evidence_node_ids:
+            _caps.append(0.5)
+        _confidence_cap = min(_caps)
+        if float(card.confidence or 0.0) > _confidence_cap:
+            _caveats = list(card.caveats)
+            _caveats.append(
+                f"Confidence capped to {_confidence_cap:.2f} by "
+                f"deterministic physics signals (R19-M11)."
+            )
+            from shadow_loom.answer import AnswerCard as _AnswerCard
+            card = _AnswerCard(
+                answer=card.answer,
+                confidence=_confidence_cap,
+                caveats=_caveats,
+                evidence_node_ids=list(card.evidence_node_ids),
+            )
+            physics_result["answer"] = card.answer
+            physics_result["confidence"] = card.confidence
+            physics_result["caveats"] = list(card.caveats)
+    except Exception:
+        # Best-effort: confidence calibration must never break
+        # the answer flow.
+        pass
     # ``proof`` is the field ``structured_response_data`` already
     # iterates for evidence rows; mirror evidence_node_ids onto it
     # so the chat card surfaces them without further changes.
@@ -4062,6 +4355,11 @@ def _build_brief_for_query(
             affected_propositions=physics_result.get("affected_propositions"),
             affected_beliefs=physics_result.get("affected_beliefs"),
             affected_concerns=physics_result.get("affected_concerns"),
+            affected_objects=physics_result.get("affected_objects"),
+            affected_world_traits=physics_result.get("affected_world_traits"),
+            affected_edges=physics_result.get("affected_edges"),
+            affected_entity_deletes=physics_result.get("affected_entity_deletes"),
+            affected_object_deletes=physics_result.get("affected_object_deletes"),
             # Phase-10 downstream cascade payload — engine-emitted
             # mutations/social/proposition/belief/concern records so
             # the InterventionBranch sent to the renderer carries the
@@ -4070,6 +4368,18 @@ def _build_brief_for_query(
             proposition_mutations=physics_result.get("proposition_mutations"),
             belief_mutations=physics_result.get("belief_mutations"),
             concern_mutations=physics_result.get("concern_mutations"),
+            # Round-5 audit: object / world-trait / edge mutation
+            # streams produced by ``_typed_target_payload`` were
+            # silently dropped here, so prop relocations, ambient-
+            # force shifts, and topology surgeries never reached the
+            # renderer brief. Forward them so InterventionBranch's
+            # object/world_trait/edge cascade detail rails populate.
+            object_mutations=physics_result.get("object_mutations"),
+            world_trait_mutations=physics_result.get("world_trait_mutations"),
+            edge_mutations=physics_result.get("edge_mutations"),
+            entity_delete_mutations=physics_result.get("entity_delete_mutations"),
+            object_delete_mutations=physics_result.get("object_delete_mutations"),
+            event_mutations=physics_result.get("event_mutations"),
             causal_chain=physics_result.get("causal_chain"),
             syuzhet_anchor=syuzhet_anchor,
             intervention_inert=bool(physics_result.get("intervention_inert")),
@@ -4095,6 +4405,11 @@ def _build_brief_for_query(
             affected_propositions=physics_result.get("affected_propositions"),
             affected_beliefs=physics_result.get("affected_beliefs"),
             affected_concerns=physics_result.get("affected_concerns"),
+            affected_objects=physics_result.get("affected_objects"),
+            affected_world_traits=physics_result.get("affected_world_traits"),
+            affected_edges=physics_result.get("affected_edges"),
+            affected_entity_deletes=physics_result.get("affected_entity_deletes"),
+            affected_object_deletes=physics_result.get("affected_object_deletes"),
             # Typed Rung-3 surgery target list — forward so the brief
             # builder can populate ``CounterfactualBranch.do_target``
             # and the renderer's "RUNG-3 SURGERY KIND" /
@@ -4109,6 +4424,16 @@ def _build_brief_for_query(
             proposition_mutations=physics_result.get("proposition_mutations"),
             belief_mutations=physics_result.get("belief_mutations"),
             concern_mutations=physics_result.get("concern_mutations"),
+            # Round-5 audit: forward Rung-3 object / world-trait /
+            # edge mutation streams so the counterfactual brief
+            # surfaces them in the renderer prompt (parallel to the
+            # intervention rung above).
+            object_mutations=physics_result.get("object_mutations"),
+            world_trait_mutations=physics_result.get("world_trait_mutations"),
+            edge_mutations=physics_result.get("edge_mutations"),
+            entity_delete_mutations=physics_result.get("entity_delete_mutations"),
+            object_delete_mutations=physics_result.get("object_delete_mutations"),
+            event_mutations=physics_result.get("event_mutations"),
             blocked=physics_result.get("blocked"),
             causal_chain=physics_result.get("causal_chain"),
             syuzhet_anchor=syuzhet_anchor,

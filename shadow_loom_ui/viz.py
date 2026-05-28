@@ -2003,6 +2003,7 @@ def affective_timeseries_options(
     entity_ids: list[str] | None = None,
     axis: str = "fabula",
     normalize: bool = False,
+    ws_baseline: WorldStateV1 | None = None,
 ) -> dict | None:
     """Pure options builder for :func:`render_affective_timeseries`.
 
@@ -2081,6 +2082,62 @@ def affective_timeseries_options(
         })
     if mark_lines:
         plot_series[0]["markLine"] = {"symbol": "none", "data": mark_lines}
+
+    # R19-UI-(2): factual-vs-shadow overlay. When the caller supplies
+    # a baseline ``ws`` (typically the un-projected factual world
+    # state), draw each metric a second time as a dashed, lower-opacity
+    # series so the reader can directly compare the shadow branch
+    # against the factual mainline on the same axes.
+    if ws_baseline is not None and ws_baseline is not ws:
+        try:
+            if is_syuzhet:
+                b_times, b_series = affective_timeseries_syuzhet(
+                    ws_baseline, samples=samples, entity_ids=entity_ids,
+                )
+            else:
+                b_times, b_series = affective_timeseries(
+                    ws_baseline, samples=samples, entity_ids=entity_ids,
+                )
+            for name, values in b_series.items():
+                if not values:
+                    continue
+                if normalize and values:
+                    lo = min(values)
+                    hi = max(values)
+                    span = hi - lo
+                    if span > 1e-9:
+                        norm_values = [(v - lo) / span for v in values]
+                    else:
+                        norm_values = [0.5 for _ in values]
+                    bdata = [
+                        [t, round(nv, 4), round(rv, 4)]
+                        for t, nv, rv in zip(b_times, norm_values, values)
+                    ]
+                else:
+                    bdata = [
+                        [t, round(v, 4), round(v, 4)]
+                        for t, v in zip(b_times, values)
+                    ]
+                plot_series.append({
+                    "name": f"{name.replace('_', ' ')} (factual)",
+                    "type": "line",
+                    "smooth": True,
+                    "showSymbol": False,
+                    "lineStyle": {
+                        "width": 1.5, "type": "dashed", "opacity": 0.55,
+                    },
+                    "color": _AFFECT_COLORS.get(name, "#3A7BD5"),
+                    "itemStyle": {
+                        "color": _AFFECT_COLORS.get(name, "#3A7BD5"),
+                        "opacity": 0.55,
+                    },
+                    "encode": {"x": 0, "y": 1, "tooltip": [0, 1, 2]},
+                    "data": bdata,
+                })
+        except Exception:
+            # Overlay is best-effort; never break the primary chart
+            # because the baseline projection failed.
+            pass
 
     # Event-locator overlay: hover any marker to see which event
     # falls at that x. Anchored to y=0 (charts are 0-1 bounded).
@@ -2319,6 +2376,7 @@ def event_timeline_options(
     syuzhet_cursor: int | None = None,
     enable_brush: bool = False,
     pulse_cursor: bool = True,
+    ws_baseline: WorldStateV1 | None = None,
 ) -> dict | None:
     """Pure options builder for :func:`render_event_timeline`.
 
@@ -2364,6 +2422,38 @@ def event_timeline_options(
             "data": mark_lines,
             "silent": True,
         }
+
+    # R19-UI-(2): factual-vs-shadow overlay for the event scatter.
+    # When ``ws_baseline`` is supplied, plot its events as faint
+    # hollow rings underneath the primary (shadow) scatter so the
+    # reader can see at a glance which events the shadow branch
+    # introduces, removes, or moves relative to factual mainline.
+    if ws_baseline is not None and ws_baseline is not ws:
+        try:
+            baseline_data = ws_to_timeline_data(ws_baseline)
+            if baseline_data:
+                series.append({
+                    "type": "scatter",
+                    "name": "events (factual)",
+                    "data": baseline_data,
+                    "symbol": "circle",
+                    "symbolSize": (
+                        12 if len(baseline_data) <= 40
+                        else 8 if len(baseline_data) <= 120
+                        else 5
+                    ),
+                    "itemStyle": {
+                        "color": "transparent",
+                        "borderColor": "#94a3b8",
+                        "borderWidth": 1.2,
+                        "opacity": 0.6,
+                    },
+                    "emphasis": {"scale": 1.4},
+                    "z": 1,
+                })
+                series[0]["z"] = 2
+        except Exception:
+            pass
 
     if pulse_cursor and (fabula_cursor is not None or syuzhet_cursor is not None):
         ys = sorted(d["value"][1] for d in scatter_data)

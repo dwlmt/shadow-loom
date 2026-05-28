@@ -22,12 +22,29 @@ Prints a summary table + per-world findings.
 """
 from __future__ import annotations
 import importlib
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+# R19-M13: branch-aware audit hook. Set
+# ``SHADOW_LOOM_AUDIT_BRANCH=<label>`` to audit a shadow branch
+# instead of the factual baseline. Default is the factual view
+# (this is a no-op for canonical example_worlds, which have no
+# shadow sidecars, but lets the script audit branched persisted
+# worlds without code changes).
+def _branch_projected(ws):
+    label = os.environ.get("SHADOW_LOOM_AUDIT_BRANCH")
+    if not label:
+        return ws
+    try:
+        return ws.projected_for_branch("shadow", label)
+    except Exception:
+        return ws
 
 WORLDS = [
     "a_court_of_thorn_and_roses", "a_fish_called_wanda", "apocalypse_now",
@@ -42,7 +59,7 @@ WORLDS = [
 
 def audit_world(name: str):
     mod = importlib.import_module(f"example_worlds.{name}")
-    ws = mod.world_state
+    ws = _branch_projected(mod.world_state)
     events = list(ws.events)
     by_id = {e.id: e for e in events}
     channels = dict(ws.channels or {})

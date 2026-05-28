@@ -1783,6 +1783,87 @@ def _backfill_location(existing, incoming):
     return existing.model_copy(update=update) if update else existing
 
 
+def _backfill_event(existing, incoming):
+    """Non-destructive merge of two :class:`EventNode` records sharing an id.
+
+    Re-ingestion (manual_edit, continuation re-extract, regen) can
+    re-emit an event with the same ``EVT_`` id but improved or
+    different fields. Previously the dedup path silently kept the
+    existing record with only a debug log, so corrected descriptions /
+    actor lists / proposition links / utterance payloads were dropped.
+
+    Policy:
+      * **Set-union list fields** (``actor_ids``, ``target_ids``,
+        ``addressee_ids``, ``resolves_proposition_ids``,
+        ``referenced_proposition_ids``, ``intervention_proposition_ids``)
+        — preserves all participants either side discovered.
+      * **Fill-blanks scalar fields** (``content``, ``via_channel_id``,
+        ``speaker_id``, ``truth_value``, ``at_location_id``) — incoming
+        wins iff existing is None/empty.
+      * **Longer-text fields** (``description``) — keep the longer text.
+      * **Locked scalar fields** (``fabula_time``, ``syuzhet_index``,
+        ``event_type``, ``intensity``) — existing wins; a non-trivial
+        incoming conflict is surfaced at WARNING so the operator can
+        decide whether to issue an explicit supersession.
+
+    Returns the merged ``EventNode`` (or ``existing`` unchanged when
+    no field updates apply).
+    """
+    update: Dict[str, Any] = {}
+
+    def _set_union(name: str) -> None:
+        old = list(getattr(existing, name, None) or [])
+        new = list(getattr(incoming, name, None) or [])
+        if not new:
+            return
+        seen = set(old)
+        merged = list(old)
+        for item in new:
+            if item not in seen:
+                merged.append(item)
+                seen.add(item)
+        if len(merged) != len(old):
+            update[name] = merged
+
+    for fld in ("actor_ids", "target_ids", "addressee_ids",
+                "resolves_proposition_ids", "referenced_proposition_ids",
+                "intervention_proposition_ids"):
+        if hasattr(existing, fld):
+            _set_union(fld)
+
+    def _fill_blank(name: str) -> None:
+        ex = getattr(existing, name, None)
+        inc = getattr(incoming, name, None)
+        if (ex is None or ex == "") and inc not in (None, ""):
+            update[name] = inc
+
+    for fld in ("content", "via_channel_id", "speaker_id",
+                "truth_value", "at_location_id"):
+        if hasattr(existing, fld):
+            _fill_blank(fld)
+
+    if hasattr(existing, "description"):
+        new_desc = _prefer_longer(existing.description, incoming.description)
+        if new_desc != existing.description:
+            update["description"] = new_desc
+
+    # Locked scalars: surface conflicts but do not overwrite. Manual
+    # corrections that genuinely need to overwrite should go through
+    # the explicit supersession path which rewrites provenance.
+    for fld in ("fabula_time", "syuzhet_index", "event_type", "intensity"):
+        ex = getattr(existing, fld, None)
+        inc = getattr(incoming, fld, None)
+        if ex is not None and inc is not None and ex != inc:
+            logger.warning(
+                "[merge\u00b7event_conflict] Event %s: incoming %s=%r differs "
+                "from existing %r \u2014 keeping existing. Use explicit "
+                "supersession (SUP_) to overwrite.",
+                getattr(existing, "id", "?"), fld, inc, ex,
+            )
+
+    return existing.model_copy(update=update) if update else existing
+
+
 def _backfill_world_trait(existing, incoming):
     """Non-destructive merge of two ``GlobalTrait`` records sharing an id."""
     update: Dict[str, Any] = {}
@@ -3240,9 +3321,10 @@ def _apply_deletions(
                 evt.actor_ids = [a for a in evt.actor_ids if a not in drop]
             if getattr(evt, "speaker_id", None) in drop:
                 evt.speaker_id = None
-            for fld in ("target_id", "addressee_id"):
-                if getattr(evt, fld, None) in drop:
-                    setattr(evt, fld, None)
+            for fld in ("target_ids", "addressee_ids"):
+                lst = getattr(evt, fld, None)
+                if lst:
+                    setattr(evt, fld, [x for x in lst if x not in drop])
         for p in merged.propositions:
             refs = getattr(p, "referent_ids", None)
             if refs:
@@ -3255,9 +3337,9 @@ def _apply_deletions(
         if hasattr(changeset, "causal_edges_removed"):
             changeset.causal_edges_removed += before_c - len(merged.causal_topology)
         for ch in (merged.channels or {}).values():
-            parts = getattr(ch, "participants", None)
+            parts = getattr(ch, "participant_ids", None)
             if parts:
-                ch.participants = [p for p in parts if p not in drop]
+                ch.participant_ids = [p for p in parts if p not in drop]
         # Drop concerns owned by the deleted entity is implicit (entity
         # itself is gone); scrub counter_concern targets across survivors.
         for ent in merged.entities.values():
@@ -3287,9 +3369,10 @@ def _apply_deletions(
             obj_ids = getattr(evt, "object_ids", None)
             if obj_ids and oid in obj_ids:
                 evt.object_ids = [o for o in obj_ids if o != oid]
-            for fld in ("target_id",):
-                if getattr(evt, fld, None) == oid:
-                    setattr(evt, fld, None)
+            for fld in ("target_ids",):
+                lst = getattr(evt, fld, None)
+                if lst and oid in lst:
+                    setattr(evt, fld, [x for x in lst if x != oid])
         for p in merged.propositions:
             refs = getattr(p, "referent_ids", None)
             if refs and oid in refs:
@@ -3301,9 +3384,9 @@ def _apply_deletions(
         for ent in merged.entities.values():
             ent.beliefs = [b for b in (ent.beliefs or []) if b.target_id != oid]
         for ch in (merged.channels or {}).values():
-            parts = getattr(ch, "participants", None)
+            parts = getattr(ch, "participant_ids", None)
             if parts and oid in parts:
-                ch.participants = [p for p in parts if p != oid]
+                ch.participant_ids = [p for p in parts if p != oid]
 
     # --- Locations
     for lid in topology.removed_location_ids:
@@ -3793,9 +3876,49 @@ class VersionedWorldModel(BaseModel):
         the gap exceeded the cap. Reserve one slot for a middle anchor
         so the user can still rewind to a logarithmically-spaced
         midpoint between v0 and the head.
+
+        R19-M16: also preserve the latest snapshot that observed each
+        distinct shadow branch_label, so trimming cannot drop the
+        sole snapshot carrying a branch's head state (which would
+        break rollback into that branch with a KeyError downstream).
         """
         if len(snapshots) <= max_k:
             return snapshots
+
+        # R19-M16: collect "branch head" snapshots \u2014 the latest
+        # snapshot observed for each distinct shadow branch label
+        # surfaced by any shadow_* sidecar. These are pinned through
+        # trimming below.
+        branch_head_versions: set = set()
+        try:
+            latest_for: Dict[str, int] = {}
+            for snap in snapshots:
+                ws = snap.world_state
+                labels: set = set()
+                for sidecar_name in (
+                    "shadow_entities", "shadow_objects",
+                    "shadow_propositions", "shadow_world_traits",
+                    "shadow_social_topology", "shadow_events",
+                    "shadow_channels", "shadow_locations",
+                    "shadow_causal_topology", "shadow_spatial_topology",
+                    "shadow_removed_entity_ids",
+                    "shadow_removed_object_ids",
+                    "shadow_removed_channel_ids",
+                    "shadow_removed_event_ids",
+                    "shadow_removed_location_ids",
+                ):
+                    sidecar = getattr(ws, sidecar_name, None) or {}
+                    for label, payload in sidecar.items():
+                        if payload:
+                            labels.add(label)
+                for label in labels:
+                    prev = latest_for.get(label)
+                    if prev is None or snap.version > prev:
+                        latest_for[label] = snap.version
+            branch_head_versions = set(latest_for.values())
+        except Exception:
+            branch_head_versions = set()
+
         # Partition: keep version 0 always, trim oldest of the rest
         v0 = [s for s in snapshots if s.version == 0]
         rest = sorted(
@@ -3821,6 +3944,18 @@ class VersionedWorldModel(BaseModel):
                 trimmed = v0 + tail
         else:
             trimmed = v0 + rest[-keep:]
+        # R19-M16: add any branch-head snapshots that weren't already
+        # selected. This may push the final count slightly above
+        # ``max_k`` but preserves rollback reachability into every
+        # active shadow branch.
+        kept_versions = {s.version for s in trimmed}
+        for snap in snapshots:
+            if (
+                snap.version in branch_head_versions
+                and snap.version not in kept_versions
+            ):
+                trimmed.append(snap)
+                kept_versions.add(snap.version)
         trimmed.sort(key=lambda s: s.version)
         return trimmed
 
@@ -4217,16 +4352,29 @@ class VersionedWorldModel(BaseModel):
         existing_event_keys = {
             (e.id, getattr(e, "world_id", "factual")) for e in merged.events
         }
+        # Index existing events by (id, world_id) so we can field-level
+        # backfill incoming duplicates instead of silently dropping
+        # them. Without this, a re-extracted EVT_X with a corrected
+        # description / extra actor would never reach the canonical
+        # world. ``_backfill_event`` preserves the "existing wins on
+        # locked scalars" invariant (fabula_time, syuzhet_index, etc.)
+        # but unions list fields and fills blanks.
+        existing_event_index = {
+            (e.id, getattr(e, "world_id", "factual")): i
+            for i, e in enumerate(merged.events)
+        }
         for evt in topology.events:
             key = (evt.id, getattr(evt, "world_id", "factual"))
             if key not in existing_event_keys:
                 merged.events.append(evt)
                 existing_event_keys.add(key)
+                existing_event_index[key] = len(merged.events) - 1
             else:
+                idx = existing_event_index[key]
+                merged.events[idx] = _backfill_event(merged.events[idx], evt)
                 logger.debug(
-                    "[VersionedWorldModel·merge] Duplicate event %s (%s) — kept existing.",
-                    evt.id,
-                    key[1],
+                    "[VersionedWorldModel\u00b7merge] Duplicate event %s (%s) \u2014 backfilled.",
+                    evt.id, key[1],
                 )
         merged.events.sort(key=lambda e: e.fabula_time)
         changeset.events_added = len(merged.events) - pre_events
@@ -4450,6 +4598,30 @@ class VersionedWorldModel(BaseModel):
         # location disagrees with the event's. Runs *after* the
         # additive sections so it can read the merged event list.
         _apply_event_spatial_anchor_repairs(merged, changeset)
+
+        # Audit R18-1: when this merge represents a shadow branch,
+        # mirror the freshly-merged shadow-tagged events/channels
+        # AND the channel removals into the per-branch sidecars on
+        # ``merged`` so ``projected_for_branch`` (and downstream
+        # tombstone-aware readers) see the mutations without
+        # depending on world_id tag-filtering of the factual lists.
+        # This is additive: items remain in ``merged.events`` /
+        # ``merged.channels`` tagged ``world_id="shadow"`` for
+        # backwards compatibility with non-projecting readers.
+        if world_id == "shadow" and branch_label:
+            ev_sidecar = merged.shadow_events.setdefault(branch_label, {})
+            for _e in merged.events:
+                if getattr(_e, "world_id", "factual") == "shadow":
+                    ev_sidecar.setdefault(_e.id, _e)
+            ch_sidecar = merged.shadow_channels.setdefault(branch_label, {})
+            for _cid, _ch in (merged.channels or {}).items():
+                if getattr(_ch, "world_id", "factual") == "shadow":
+                    ch_sidecar.setdefault(_cid, _ch)
+            if topology.removed_channel_ids:
+                bucket = merged.shadow_removed_channel_ids.setdefault(branch_label, [])
+                for _rcid in topology.removed_channel_ids:
+                    if _rcid not in bucket:
+                        bucket.append(_rcid)
 
         next_version = self.version + 1
         new_history = list(self.history) + [

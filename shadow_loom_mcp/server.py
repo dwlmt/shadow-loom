@@ -89,16 +89,22 @@ from shadow_loom.ingestion import (
 )
 from shadow_loom.models import (
     WorldStateV1,
-    reconstruct_entity_at,
-    reconstruct_world_trait_at,
-    reconstruct_proposition_at,
+    reconstruct_channel_at,
     reconstruct_concern_at,
+    reconstruct_entity_at,
+    reconstruct_event_at,
+    reconstruct_location_at,
+    reconstruct_object_at,
+    reconstruct_proposition_at,
+    reconstruct_world_trait_at,
 )
 from shadow_loom.narrative_physics import calculate_narrative_physics
 from shadow_loom.projections import (
     filter_world_state_for_pov,
     project_channel,
+    project_channel_at,
     project_event,
+    project_event_at,
     reconstruct_entity_at_causal,
     reconstruct_world_trait_at_causal,
     trace_information_flow,
@@ -306,6 +312,46 @@ def open_project(
                     for oid, o in ws.objects.items()},
         "world_traits": {wid: {"name": t.name, "magnitude": t.magnitude.value}
                          for wid, t in ws.world_traits.items()},
+        # Round-14 audit (GAP-8): Propositions and Concerns are
+        # first-class element families that the rest of the pipeline
+        # treats as queryable / mutable (DoProposition, DoConcern,
+        # PROP_ / CCN_ ``inspect`` routing). The open_project
+        # manifest used to omit them entirely, so MCP clients had to
+        # call ``inspect`` repeatedly to discover the registry.
+        # Surface compact id\u2192label maps so clients can render a
+        # ``Propositions`` / ``Concerns`` sidebar identically to
+        # ``Entities`` / ``Objects``. ``ws.propositions`` is a list;
+        # concerns live per-entity \u2014 we flatten both.
+        # Audit R18-13: use the canonical Pydantic field names. The
+        # previous keys (``p.id`` / ``p.content`` / ``p.truth_value``,
+        # ``c.id`` / ``c.label`` / ``c.valence``) silently produced an
+        # empty registry because :class:`Proposition` / :class:`Concern`
+        # actually expose ``proposition_id`` / ``description`` /
+        # ``kind`` and ``concern_id`` / ``polarity`` respectively. MCP
+        # clients rendering the project manifest saw blank sidebars
+        # despite worlds with dozens of propositions and concerns.
+        "propositions": {
+            p.proposition_id: {
+                "description": getattr(p, "description", None),
+                "kind": getattr(p, "kind", None),
+                "stakes": getattr(p, "stakes", None),
+                "truth_at_fabula": getattr(p, "truth_at_fabula", None),
+            }
+            for p in (ws.propositions or [])
+            if getattr(p, "proposition_id", None)
+        },
+        "concerns": {
+            c.concern_id: {
+                "holder_id": eid,
+                "proposition_id": getattr(c, "proposition_id", None),
+                "polarity": getattr(c, "polarity", None),
+                "salience": getattr(c, "salience", None),
+                "kind": getattr(c, "kind", None),
+            }
+            for eid, e in ws.entities.items()
+            for c in (getattr(e, "concerns", None) or [])
+            if getattr(c, "concern_id", None)
+        },
         "event_count": len(ws.events),
         "topology": {
             "causal_edges": len(ws.causal_topology),
@@ -386,13 +432,13 @@ def inspect(
     if node_id.startswith("ENT_"):
         return _inspect_entity(ws, node_id, at_time, timeline_limit, timeline_offset)
     elif node_id.startswith("LOC_"):
-        return _inspect_location(ws, node_id)
+        return _inspect_location(ws, node_id, at_time)
     elif node_id.startswith("EVT_"):
-        return _inspect_event(ws, node_id)
+        return _inspect_event(ws, node_id, at_time)
     elif node_id.startswith("OBJ_"):
-        return _inspect_object(ws, node_id)
+        return _inspect_object(ws, node_id, at_time)
     elif node_id.startswith("CHN_"):
-        return _inspect_channel(ws, node_id)
+        return _inspect_channel(ws, node_id, at_time)
     elif node_id.startswith("WORLD_"):
         return _inspect_world_trait(ws, node_id, at_time, timeline_limit, timeline_offset)
     elif node_id.startswith("PROP_"):
@@ -508,54 +554,144 @@ def _inspect_entity(
     }
 
 
-def _inspect_location(ws: WorldStateV1, lid: str) -> dict:
+def _inspect_location(ws: WorldStateV1, lid: str, at_time: int | None = None) -> dict:
     loc = ws.locations.get(lid)
     if loc is None:
         return {"error": f"Location '{lid}' not found."}
 
-    occupants = [{"id": eid, "name": e.name} for eid, e in ws.entities.items()
-                 if e.location_id == lid]
-    connections = []
-    for se in ws.spatial_topology:
-        if se.source_id == lid or se.target_id == lid:
-            other = se.target_id if se.source_id == lid else se.source_id
-            other_name = ws.locations[other].name if other in ws.locations else other
-            connections.append({"target": other, "name": other_name, "locked": se.is_locked})
-
-    return {
-        "id": lid, "name": loc.name, "type": "Location",
-        "description": loc.description,
-        "ambient_state": {
+    # Time-sliced ambient_state when ``at_time`` provided. Locations
+    # currently have no per-key snapshot timeline, so the reconstructor
+    # returns today's ambient_state — the dict view still establishes a
+    # uniform Rung-1 contract symmetric with entity/object/world-trait.
+    if at_time is not None:
+        snap = reconstruct_location_at(loc, at_time)
+        ambient = snap.get("ambient_state") or {}
+    else:
+        ambient = {
             k: {
                 "value": v.value,
                 "volatility": v.volatility,
                 "evidence_strength": v.evidence_strength,
             }
             for k, v in loc.ambient_state.items()
-        },
+        }
+
+    # Audit R16-7: occupants must respect the anchor — an entity that
+    # moved to LOC_B at t=50 must not appear in LOC_A's occupant list
+    # when inspected at t=10. Reconstruct each entity to ``at_time``
+    # and use that snapshot's ``location_id``.
+    if at_time is not None:
+        occupants = []
+        for eid, e in ws.entities.items():
+            snap = reconstruct_entity_at(e, at_time)
+            loc_at = snap.get("location_id") if isinstance(snap, dict) else None
+            if loc_at == lid:
+                occupants.append({"id": eid, "name": e.name})
+    else:
+        occupants = [{"id": eid, "name": e.name} for eid, e in ws.entities.items()
+                     if e.location_id == lid]
+    # Audit R16-8: spatial connections must respect the edge availability
+    # window when an anchor is provided. ``destroyed_at_fabula`` is
+    # optional (open-ended edges stay visible forever).
+    connections = []
+    for se in ws.spatial_topology:
+        if se.source_id != lid and se.target_id != lid:
+            continue
+        if at_time is not None:
+            est = int(getattr(se, "established_at_fabula", 0) or 0)
+            dst = getattr(se, "destroyed_at_fabula", None)
+            if at_time < est:
+                continue
+            if dst is not None and at_time >= int(dst):
+                continue
+        other = se.target_id if se.source_id == lid else se.source_id
+        other_name = ws.locations[other].name if other in ws.locations else other
+        connections.append({"target": other, "name": other_name, "locked": se.is_locked})
+
+    result = {
+        "id": lid, "name": loc.name, "type": "Location",
+        "description": loc.description,
+        "ambient_state": ambient,
         "occupants": occupants,
         "connections": connections,
     }
+    if at_time is not None:
+        result["at_time"] = at_time
+        result["reconstruction"] = "static_ambient"
+    return result
 
 
-def _inspect_event(ws: WorldStateV1, evt_id: str) -> dict:
+def _inspect_event(ws: WorldStateV1, evt_id: str, at_time: int | None = None) -> dict:
     evt = next((e for e in ws.events if e.id == evt_id), None)
     if evt is None:
         return {"error": f"Event '{evt_id}' not found."}
+    # Causal-gate: if ``at_time`` is provided and the event hasn't
+    # happened yet by that fabula tick, refuse to project it.
+    if at_time is not None:
+        snap = reconstruct_event_at(evt, at_time)
+        if snap is None:
+            return {
+                "id": evt_id,
+                "type": "Event",
+                "at_time": at_time,
+                "reconstruction": "not_yet_occurred",
+                "fabula_time": getattr(evt, "fabula_time", None),
+                "error": (
+                    f"Event '{evt_id}' has fabula_time "
+                    f"{getattr(evt, 'fabula_time', None)} > at_time {at_time}."
+                ),
+            }
+        projected = project_event_at(ws, evt, at_time)
+        projected["at_time"] = at_time
+        projected["reconstruction"] = "causal_gated"
+        return projected
     return project_event(ws, evt)
 
 
-def _inspect_channel(ws: WorldStateV1, cid: str) -> dict:
+def _inspect_channel(ws: WorldStateV1, cid: str, at_time: int | None = None) -> dict:
     ch = ws.channels.get(cid)
     if ch is None:
         return {"error": f"Channel '{cid}' not found."}
+    if at_time is not None:
+        snap = reconstruct_channel_at(ch, at_time)
+        if snap is None:
+            return {
+                "id": cid,
+                "type": "Channel",
+                "at_time": at_time,
+                "reconstruction": "outside_availability_window",
+                "established_at_fabula": getattr(ch, "established_at_fabula", None),
+                "terminated_at_fabula": getattr(ch, "terminated_at_fabula", None),
+                "error": (
+                    f"Channel '{cid}' is not available at fabula_time "
+                    f"{at_time} (window "
+                    f"[{getattr(ch, 'established_at_fabula', None)}, "
+                    f"{getattr(ch, 'terminated_at_fabula', None)}])."
+                ),
+            }
+        projected = project_channel_at(ws, ch, at_time)
+        projected["at_time"] = at_time
+        projected["reconstruction"] = "window_gated"
+        return projected
     return project_channel(ws, ch)
 
 
-def _inspect_object(ws: WorldStateV1, oid: str) -> dict:
+def _inspect_object(ws: WorldStateV1, oid: str, at_time: int | None = None) -> dict:
     obj = ws.objects.get(oid)
     if obj is None:
         return {"error": f"Object '{oid}' not found."}
+
+    if at_time is not None:
+        snap = reconstruct_object_at(obj, at_time)
+        return {
+            "id": oid, "name": obj.name, "type": "NarrativeObject",
+            "at_time": at_time,
+            "reconstruction": "snapshot_replay",
+            "location_id": snap.get("location_id"),
+            "owner_id": snap.get("owner_id"),
+            "properties": snap.get("properties") or {},
+            "affordances": [{"action": a.action, "target_type": a.target_type} for a in obj.affordances],
+        }
 
     return {
         "id": oid, "name": obj.name, "type": "NarrativeObject",
@@ -615,9 +751,26 @@ def _inspect_proposition(
     prop = next((p for p in ws.propositions if p.proposition_id == pid), None)
     if prop is None:
         return {"error": f"Proposition '{pid}' not found."}
+    # Audit R16-10: timeline pagination must operate on the anchored
+    # slice so future snapshots don't appear in the paginated window.
+    if at_time is not None:
+        timeline_source = [
+            s for s in prop.state_timeline if s.fabula_time <= at_time
+        ]
+    else:
+        timeline_source = list(prop.state_timeline)
     timeline_window, timeline_meta = _paginate_timeline(
-        prop.state_timeline, timeline_limit, timeline_offset,
+        timeline_source, timeline_limit, timeline_offset,
     )
+    # Audit R16-9: when an anchor is provided, the truth map must not
+    # leak future commits. Filter to truths committed at or before
+    # ``at_time``.
+    if at_time is not None:
+        truth_map = {
+            t: v for t, v in prop.truth_at_fabula.items() if t <= at_time
+        }
+    else:
+        truth_map = dict(prop.truth_at_fabula)
     out: dict = {
         "id": pid,
         "type": "Proposition",
@@ -627,13 +780,21 @@ def _inspect_proposition(
         "world_id": prop.world_id,
         "audience_default_prior": prop.audience_default_prior,
         "stakes": prop.stakes,
-        "truth_at_fabula": dict(prop.truth_at_fabula),
+        "truth_at_fabula": truth_map,
         "state_timeline": [s.model_dump() for s in timeline_window],
         "state_timeline_meta": timeline_meta,
     }
     if at_time is not None:
         out["at_time"] = at_time
-        out["snapshot"] = reconstruct_proposition_at(prop, at_time)
+        snap = reconstruct_proposition_at(prop, at_time)
+        out["snapshot"] = snap
+        # Audit R16-11 (mirror for propositions): top-level mutable
+        # fields must reflect the anchored snapshot so they don't
+        # disagree with ``snapshot`` in the same response.
+        if isinstance(snap, dict):
+            for k in ("stakes", "audience_default_prior", "description"):
+                if k in snap and snap[k] is not None:
+                    out[k] = snap[k]
     return out
 
 
@@ -656,8 +817,16 @@ def _inspect_concern(
             break
     if concern is None:
         return {"error": f"Concern '{cid}' not found."}
+    # Audit R16-12: timeline pagination must operate on the anchored
+    # slice so future snapshots don't appear in the paginated window.
+    if at_time is not None:
+        timeline_source = [
+            s for s in concern.state_timeline if s.fabula_time <= at_time
+        ]
+    else:
+        timeline_source = list(concern.state_timeline)
     timeline_window, timeline_meta = _paginate_timeline(
-        concern.state_timeline, timeline_limit, timeline_offset,
+        timeline_source, timeline_limit, timeline_offset,
     )
     out: dict = {
         "id": cid,
@@ -675,7 +844,22 @@ def _inspect_concern(
     }
     if at_time is not None:
         out["at_time"] = at_time
-        out["snapshot"] = reconstruct_concern_at(concern, at_time)
+        snap = reconstruct_concern_at(concern, at_time)
+        out["snapshot"] = snap
+        # Audit R16-11: top-level mutable fields must reflect the
+        # anchored snapshot so they don't disagree with ``snapshot`` in
+        # the same response.
+        if isinstance(snap, dict):
+            for k in (
+                "salience", "polarity", "activation_fabula_window",
+                "counter_concern_ids", "kind",
+            ):
+                if k in snap and snap[k] is not None:
+                    out[k] = (
+                        list(snap[k])
+                        if k == "counter_concern_ids"
+                        else snap[k]
+                    )
     return out
 
 
@@ -1281,6 +1465,7 @@ def promote_branch(
     try:
         promoted = db_promote_branch(
             version_row_id, user_id=user_row_id, description=description,
+            actor_id=user_row_id,
         )
     except VersionMutationError as e:
         return _sanitised_error("promote_branch", e)
@@ -2360,6 +2545,7 @@ async def ingest(
             source="ingestion",
             description="Initial ingestion",
             user_id=user_row_id,
+            actor_id=user_row_id,
         )
     except Exception as e:
         # Don't leave an orphan project with zero versions if the
@@ -2854,6 +3040,7 @@ def patch_world_state(
             # ``save_version`` default ``world_id='factual'``.
             world_id=ancestor_world_id,
             branch_label=ancestor_branch_label,
+            actor_id=user_row_id,
         )
     except Exception as exc:
         return _sanitised_error("patch_world_state", exc)
@@ -2908,6 +3095,7 @@ def branch(
         # wrong AMWN world.
         world_id=ancestor_world_id,
         branch_label=ancestor_branch_label,
+        actor_id=user_row_id,
     )
 
     return {
@@ -2970,7 +3158,7 @@ def share(
         )}
 
     target = exact[0]
-    add_project_member(project_id, target["id"], role)
+    add_project_member(project_id, target["id"], role, actor_id=user_row_id)
 
     return {
         "status": "shared",
@@ -3005,7 +3193,7 @@ def fork(
         return {"error": "Project not found."}
 
     fork_name = new_name or f"{proj.name} (fork)"
-    new_proj = fork_project(project_id, user_row_id, fork_name)
+    new_proj = fork_project(project_id, user_row_id, fork_name, actor_id=user_row_id)
     if new_proj is None:
         return {"error": "Fork failed — source project or version not found."}
 
@@ -3046,6 +3234,7 @@ def update_project_tool(
         name=name,
         description=description,
         is_public=is_public,
+        actor_id=user_row_id,
     )
     if updated is None:
         return {"error": "Update failed."}

@@ -156,6 +156,28 @@ def _render_card(
                 ui.badge(
                     f"{conf_pct}% confidence", color=conf_color,
                 ).props("dense outline")
+                # R19-UI: branch badge so a counterfactual answer is
+                # visually distinct from a factual one. Reads the
+                # active VWM head; falls back to no badge on factual
+                # mainline to keep the default case uncluttered.
+                _vwm = getattr(state, "versioned_model", None)
+                if _vwm is not None and getattr(_vwm, "history", None):
+                    _head = _vwm.history[-1]
+                    _world_id = getattr(_head, "world_id", "factual")
+                    _branch_label = getattr(_head, "branch_label", None)
+                    if _world_id == "shadow":
+                        _badge_text = (
+                            f"shadow: {_branch_label}"
+                            if _branch_label
+                            else "shadow"
+                        )
+                        ui.badge(_badge_text, color="purple").props(
+                            "dense outline"
+                        ).tooltip(
+                            "Answer derived from a shadow branch "
+                            "(counterfactual / intervention fork); "
+                            "factual mainline is unchanged."
+                        )
                 from shadow_loom_ui.components._pearl_chip import (
                     render_pearl_chip,
                 )

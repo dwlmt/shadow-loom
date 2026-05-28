@@ -352,7 +352,11 @@ def build_export_tab(state: AppState) -> None:
                 "One JSON object per persisted version: prompt + parsed "
                 "brief + generated prose + changeset summary + audit / "
                 "source provenance. Suitable for fine-tuning datasets "
-                "or for offline evaluation pipelines."
+                "or for offline evaluation pipelines. "
+                "R19-L5: analytics-only \u2014 does NOT include the full "
+                "world_state_json payload, so this dump is not "
+                "round-trip importable. Use the Project JSON export "
+                "(below) for fidelity-complete persistence."
             ).classes("text-sm text-slate-500")
 
             def _build_dataset_rows() -> list[dict] | None:
@@ -534,7 +538,7 @@ def build_export_tab(state: AppState) -> None:
 
                     def _toggle_visibility(e):
                         new_val = vis_switch.value
-                        db.update_project(state.project_id, is_public=new_val)
+                        db.update_project(state.project_id, is_public=new_val, actor_id=state.user_id)
                         ui.notify(
                             "Project is now public" if new_val else "Project is now private"
                         )
@@ -568,7 +572,8 @@ def build_export_tab(state: AppState) -> None:
                                 return
                             target_user = users[0]
                             db.add_project_member(
-                                state.project_id, target_user["id"], role_select.value
+                                state.project_id, target_user["id"], role_select.value,
+                                actor_id=state.user_id,
                             )
                             ui.notify(f"Invited {target_user['username']} as {role_select.value}")
                             invite_input.value = ""
@@ -599,7 +604,7 @@ def build_export_tab(state: AppState) -> None:
                                     ui.badge(m["role"], color="secondary").props("dense")
 
                                     def _remove(uid=m["user_id"]):
-                                        db.remove_project_member(state.project_id, uid)
+                                        db.remove_project_member(state.project_id, uid, actor_id=state.user_id)
                                         _refresh_members()
 
                                     ui.button(
@@ -618,6 +623,7 @@ def build_export_tab(state: AppState) -> None:
                         state.project_id,
                         state.user_id,
                         f"{state.project_name} (fork)",
+                        actor_id=state.user_id,
                     )
                     if new_proj is None:
                         ui.notify("Fork failed — source not found", type="negative")

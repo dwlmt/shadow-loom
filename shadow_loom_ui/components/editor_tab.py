@@ -1329,6 +1329,7 @@ def _do_save(state: AppState, new_ws: WorldStateV1) -> None:
             user_id=user_id,
             world_id=parent_world_id,  # type: ignore[arg-type]
             branch_label=parent_branch_label,
+            actor_id=user_id,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Manual edit save failed")

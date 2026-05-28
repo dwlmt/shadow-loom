@@ -835,6 +835,19 @@ def _append_result(messages: List[dict], result: NLQueryResult) -> None:
         pr = result.pipeline_result
         if pr is not None:
             parts.append(f"**{pr.query_type}**")
+            # R19-UI: surface branch identity so a counterfactual /
+            # intervention answer is visually distinct from factual.
+            try:
+                _wm = getattr(pr, "world_model", None)
+                if _wm is not None and getattr(_wm, "history", None):
+                    _head = _wm.history[-1]
+                    _wid = getattr(_head, "world_id", "factual")
+                    _blab = getattr(_head, "branch_label", None)
+                    if _wid == "shadow":
+                        _suffix = f": {_blab}" if _blab else ""
+                        parts.append(f"\U0001F33F *Branch:* `shadow{_suffix}`")
+            except Exception:
+                pass
             if pr.implausible:
                 # Show prominent warning regardless of whether prose was generated.
                 icon = "\u26a0\ufe0f"

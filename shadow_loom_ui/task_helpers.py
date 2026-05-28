@@ -179,7 +179,14 @@ async def run_query_as_task(
         with capture_logs_to_task(state, task):
             result = await runner()
     except Exception as exc:
-        state.finish_task(task, error=str(exc))
+        # R20-M20: log the full traceback server-side and only surface
+        # the exception class to the user toast so internal paths /
+        # SQL fragments do not bleed through. ``task.error`` keeps a
+        # short label for the indicator.
+        logging.getLogger(__name__).exception(
+            "Background task %r failed", label,
+        )
+        state.finish_task(task, error=type(exc).__name__)
         notify_task_complete(task)
         raise
 

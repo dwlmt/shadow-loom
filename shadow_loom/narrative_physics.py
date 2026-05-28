@@ -138,7 +138,10 @@ def _check_engine_vacuity(
             or physics_result.belief_mutations
             or physics_result.concern_mutations
             or physics_result.world_trait_mutations
-            or getattr(physics_result, "edge_mutations", None)):
+            or getattr(physics_result, "edge_mutations", None)
+            or getattr(physics_result, "entity_delete_mutations", None)
+            or getattr(physics_result, "object_delete_mutations", None)
+            or getattr(physics_result, "event_mutations", None)):
         return None
     if rung == 3 and physics_result.hidden_deltas:
         return None
@@ -263,12 +266,18 @@ def _typed_target_payload(
     om = list(getattr(physics_result, "object_mutations", None) or [])
     wtm = list(getattr(physics_result, "world_trait_mutations", None) or [])
     em = list(getattr(physics_result, "edge_mutations", None) or [])
+    edm = list(getattr(physics_result, "entity_delete_mutations", None) or [])
+    odm = list(getattr(physics_result, "object_delete_mutations", None) or [])
+    evm = list(getattr(physics_result, "event_mutations", None) or [])
     out["proposition_mutations"] = [m.model_dump() for m in pm]
     out["belief_mutations"] = [m.model_dump() for m in bm]
     out["concern_mutations"] = [m.model_dump() for m in cm]
     out["object_mutations"] = [m.model_dump() for m in om]
     out["world_trait_mutations"] = [m.model_dump() for m in wtm]
     out["edge_mutations"] = [m.model_dump() for m in em]
+    out["entity_delete_mutations"] = [m.model_dump() for m in edm]
+    out["object_delete_mutations"] = [m.model_dump() for m in odm]
+    out["event_mutations"] = [m.model_dump() for m in evm]
     out["affected_objects"] = sorted({
         getattr(m, "object_id", None) for m in om
         if getattr(m, "object_id", None)
@@ -300,6 +309,24 @@ def _typed_target_payload(
     out["affected_concerns"] = sorted({
         getattr(m, "concern_id", None) for m in cm
         if getattr(m, "concern_id", None)
+    })
+    # Existence-counterfactual side-effects: flat id lists for the
+    # renderer / auditor / MCP envelope to enumerate excisions.
+    out["affected_entity_deletes"] = sorted({
+        getattr(m, "entity_id", None) for m in edm
+        if getattr(m, "entity_id", None)
+    })
+    out["affected_object_deletes"] = sorted({
+        getattr(m, "object_id", None) for m in odm
+        if getattr(m, "object_id", None)
+    })
+    # DoEvent surgeries surface as "event_id:kind" pairs so the
+    # renderer / auditor / MCP envelope can enumerate event-level
+    # surgeries (relocations + time-shifts) without iterating the
+    # structured ``event_mutations`` list.
+    out["affected_events"] = sorted({
+        f"{getattr(m, 'event_id', '?')}:{getattr(m, 'kind', '?')}"
+        for m in evm
     })
     return out
 
@@ -544,6 +571,22 @@ def calculate_narrative_physics(
                 "rule2_redundant_evidence": list(
                     physics_result.rule2_redundant_evidence
                 ),
+                # Round-3 deep audit fix: surface Monte-Carlo / noisy-OR
+                # probabilistic outputs from the engine. With
+                # ``CausalPhysicsSettings.monte_carlo_samples`` defaulting
+                # to a positive value, every call routes through
+                # ``execute_distribution`` which populates
+                # ``trait_distributions``; without this surfacing the
+                # caller paid for N samples but the distribution data
+                # was dropped at the boundary. Both dicts are empty
+                # under deterministic / single-shot mode.
+                "trait_distributions": {
+                    nid: {tn: td.model_dump() for tn, td in traits.items()}
+                    for nid, traits in physics_result.trait_distributions.items()
+                },
+                "noisy_or_probabilities": [
+                    p.model_dump() for p in physics_result.noisy_or_probabilities
+                ],
                 # Channels & beliefs subsystem: surface what the
                 # do-surgery epistemically removed so the auditor and UI
                 # can reason about belief / utterance side-effects.
@@ -834,6 +877,16 @@ def calculate_narrative_physics(
                 "rule2_redundant_evidence": list(
                     physics_result.rule2_redundant_evidence
                 ),
+                # Round-3 deep audit fix: surface Monte-Carlo / noisy-OR
+                # probabilistic outputs (parity with the intervention
+                # branch). Empty under deterministic mode.
+                "trait_distributions": {
+                    nid: {tn: td.model_dump() for tn, td in traits.items()}
+                    for nid, traits in physics_result.trait_distributions.items()
+                },
+                "noisy_or_probabilities": [
+                    p.model_dump() for p in physics_result.noisy_or_probabilities
+                ],
                 # Channels & beliefs subsystem: counterfactual surgeries
                 # on past utterances / channels propagate as belief
                 # provenance pruning. Surface the totals so downstream
@@ -1071,8 +1124,16 @@ def calculate_narrative_physics(
             syuzhet_anchor=syuzhet_anchor,
         )
 
+        # Round-3 deep audit fix: every other narrative_physics branch
+        # returns ``status="success"`` on the happy path. ManualEdit
+        # previously returned ``status="manual_edit"`` which silently
+        # broke downstream consumers that gate on
+        # ``r["status"] == "success"`` (auditor, UI, MCP). The
+        # ``query_type`` field already carries the manual-edit
+        # discriminator, so normalising the status preserves
+        # information while restoring convention parity.
         return {
-            "status": "manual_edit",
+            "status": "success",
             "query_type": "manual_edit",
             "physics_state": full_state,
             "edited_prose": request.edited_prose,

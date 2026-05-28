@@ -1643,6 +1643,126 @@ def list_example_projects() -> list[dict]:
 # =====================================================================
 
 
+# ---------------------------------------------------------------------
+# Round-19 authorization helpers (R19-H1..H5)
+# ---------------------------------------------------------------------
+#
+# Defense-in-depth: prior to R19, the project mutation helpers
+# (``update_project``, ``fork_project``, ``add/remove_project_member``,
+# ``save_version``, ``promote_branch``) trusted their callers to have
+# performed authorization. The UI and MCP server did so, but any
+# non-UI/MCP code path (admin script, future helper, third-party
+# embedding) could mutate or read across users.
+#
+# These helpers now accept an optional ``actor_id``. When supplied,
+# the helper enforces the matching policy and raises
+# :class:`PermissionError` on failure. When ``actor_id`` is ``None``
+# the check is skipped and a warning is logged so the unchecked
+# path is observable in operational logs. New code paths SHOULD
+# always pass ``actor_id``.
+
+# Role precedence for project membership.
+_ROLE_RANK = {"viewer": 0, "editor": 1, "admin": 2}
+
+
+def _resolve_project_role(
+    s: "Session", project_id: int, actor_id: int
+) -> str | None:
+    """Return the effective role of *actor_id* on *project_id*.
+
+    Owners implicitly have ``"admin"``; explicit ProjectMemberRow rows
+    yield ``viewer | editor | admin``; non-members yield ``None``.
+    """
+    proj = s.get(ProjectRow, project_id)
+    if proj is None:
+        return None
+    if proj.owner_id == actor_id:
+        return "admin"
+    member = s.exec(
+        select(ProjectMemberRow).where(
+            ProjectMemberRow.project_id == project_id,
+            ProjectMemberRow.user_id == actor_id,
+        )
+    ).first()
+    return member.role if member else None
+
+
+def _authorize_project_action(
+    s: "Session",
+    project_id: int,
+    actor_id: int | None,
+    *,
+    min_role: str,
+    operation: str,
+) -> None:
+    """Raise :class:`PermissionError` if *actor_id* lacks *min_role*.
+
+    When ``actor_id`` is ``None`` the check is skipped and a warning
+    is logged so unchecked legacy call sites are observable. Pass
+    ``actor_id`` explicitly from any UI / MCP / external caller.
+    """
+    if actor_id is None:
+        logger.warning(
+            "[db.%s] called without actor_id on project %s — "
+            "authorization skipped (legacy call site).",
+            operation, project_id,
+        )
+        return
+    role = _resolve_project_role(s, project_id, actor_id)
+    if role is None:
+        raise PermissionError(
+            f"{operation}: user {actor_id} is not a member of project "
+            f"{project_id}."
+        )
+    if _ROLE_RANK.get(role, -1) < _ROLE_RANK.get(min_role, 99):
+        raise PermissionError(
+            f"{operation}: user {actor_id} has role '{role}' on project "
+            f"{project_id}, requires '{min_role}' or higher."
+        )
+
+
+def _authorize_project_read(
+    s: "Session",
+    project_id: int,
+    actor_id: int | None,
+    *,
+    operation: str,
+) -> None:
+    """Raise :class:`PermissionError` if *actor_id* cannot read project.
+
+    Read access is granted to owners, any member, and (when the
+    project's ``is_public`` flag is set) any authenticated actor.
+    Skips the check with a warning when ``actor_id`` is ``None``.
+    """
+    if actor_id is None:
+        logger.warning(
+            "[db.%s] called without actor_id on project %s — "
+            "read authorization skipped (legacy call site).",
+            operation, project_id,
+        )
+        return
+    proj = s.get(ProjectRow, project_id)
+    if proj is None:
+        raise PermissionError(
+            f"{operation}: project {project_id} not found."
+        )
+    if proj.is_public:
+        return
+    if proj.owner_id == actor_id:
+        return
+    member = s.exec(
+        select(ProjectMemberRow).where(
+            ProjectMemberRow.project_id == project_id,
+            ProjectMemberRow.user_id == actor_id,
+        )
+    ).first()
+    if member is None:
+        raise PermissionError(
+            f"{operation}: user {actor_id} cannot read private project "
+            f"{project_id}."
+        )
+
+
 def update_project(
     project_id: int,
     *,
@@ -1651,8 +1771,14 @@ def update_project(
     label: str | None = None,
     is_public: bool | None = None,
     raw_text: str | None = None,
+    actor_id: int | None = None,
 ) -> Optional[ProjectRow]:
     with get_session() as s:
+        # R19-H1: admin-level membership (owner or admin role) required.
+        _authorize_project_action(
+            s, project_id, actor_id,
+            min_role="admin", operation="update_project",
+        )
         row = s.get(ProjectRow, project_id)
         if row is None:
             return None
@@ -1676,9 +1802,25 @@ def fork_project(
     source_project_id: int,
     new_owner_id: int,
     new_name: str | None = None,
+    actor_id: int | None = None,
 ) -> Optional[ProjectRow]:
-    """Fork a project: copy latest version to a new project owned by new_owner_id."""
+    """Fork a project: copy latest version to a new project owned by new_owner_id.
+
+    R19-H3: ``actor_id`` (defaults to ``new_owner_id``) must be allowed
+    to read the source project (owner, member, or source ``is_public``).
+    R19-H5: the forked v0 is now persisted through :func:`save_version`
+    so the same strict WorldStateV1 validation that protects new
+    versions also protects forks.
+    """
+    # Default the actor to the fork target if not explicitly supplied,
+    # matching the prior UI/MCP semantics where the fork action is
+    # always taken on behalf of the new owner.
+    effective_actor = actor_id if actor_id is not None else new_owner_id
     with get_session() as s:
+        _authorize_project_read(
+            s, source_project_id, effective_actor,
+            operation="fork_project",
+        )
         source = s.get(ProjectRow, source_project_id)
         if source is None:
             return None
@@ -1699,32 +1841,51 @@ def fork_project(
             forked_from_id=source_project_id,
         )
         s.add(forked)
-        s.flush()
+        s.commit()
+        s.refresh(forked)
+        forked_id = forked.id
+        # Capture source attributes before leaving the session — once
+        # ``save_version`` opens its own session below the detached
+        # ``latest`` row would lazy-load against a closed session.
+        src_world_state_json = latest.world_state_json
+        src_world_id = latest.world_id
+        src_branch_label = latest.branch_label
+        src_prose = latest.prose
+        src_raw_query = latest.raw_query
+        src_parsed_query_json = latest.parsed_query_json
+        src_changeset_json = latest.changeset_json
 
-        ver = VersionRow(
-            project_id=forked.id,
+    # R19-H5: route v0 creation through save_version so the strict
+    # WorldStateV1 validation at the persistence boundary protects
+    # forks just as it protects ordinary mutations. The fork carries
+    # the source's branch identity and provenance verbatim (R11-04).
+    try:
+        save_version(
+            forked_id,
+            src_world_state_json,
             version=0,
             source="fork",
             description=f"Forked from project {source_project_id}",
-            world_state_json=latest.world_state_json,
-            # Round-11 R11-04: carry forward branch identity and
-            # narrative material from the source head. Without this,
-            # forking from a shadow branch silently demoted the fork's
-            # v0 to ``world_id="factual"`` (the default) and dropped
-            # the prose/raw_query/parsed_query/changeset provenance,
-            # so loading the fork looked like a fresh factual baseline
-            # instead of a continuation of the shadow exploration.
-            world_id=latest.world_id,
-            branch_label=latest.branch_label,
-            prose=latest.prose,
-            raw_query=latest.raw_query,
-            parsed_query_json=latest.parsed_query_json,
-            changeset_json=latest.changeset_json,
+            world_id=src_world_id,
+            branch_label=src_branch_label,
+            prose=src_prose,
+            raw_query=src_raw_query,
+            parsed_query_json=src_parsed_query_json,
+            changeset_json=src_changeset_json,
+            user_id=new_owner_id,
         )
-        s.add(ver)
-        s.commit()
-        s.refresh(forked)
-        return forked
+    except Exception:
+        # If validation refuses the fork, roll back the orphaned
+        # ProjectRow so we don't leave a v-less shell behind.
+        with get_session() as s_cleanup:
+            stale = s_cleanup.get(ProjectRow, forked_id)
+            if stale is not None:
+                s_cleanup.delete(stale)
+                s_cleanup.commit()
+        raise
+
+    with get_session() as s_final:
+        return s_final.get(ProjectRow, forked_id)
 
 
 class ProjectDeleteError(Exception):
@@ -1824,8 +1985,14 @@ def add_project_member(
     project_id: int,
     user_id: int,
     role: str = "viewer",
+    actor_id: int | None = None,
 ) -> ProjectMemberRow:
     with get_session() as s:
+        # R19-H2: only owners / admin members may modify membership.
+        _authorize_project_action(
+            s, project_id, actor_id,
+            min_role="admin", operation="add_project_member",
+        )
         existing = s.exec(
             select(ProjectMemberRow).where(
                 ProjectMemberRow.project_id == project_id,
@@ -1844,8 +2011,17 @@ def add_project_member(
         return row
 
 
-def remove_project_member(project_id: int, user_id: int) -> bool:
+def remove_project_member(
+    project_id: int,
+    user_id: int,
+    actor_id: int | None = None,
+) -> bool:
     with get_session() as s:
+        # R19-H2: only owners / admin members may modify membership.
+        _authorize_project_action(
+            s, project_id, actor_id,
+            min_role="admin", operation="remove_project_member",
+        )
         row = s.exec(
             select(ProjectMemberRow).where(
                 ProjectMemberRow.project_id == project_id,
@@ -2281,6 +2457,7 @@ def save_version(
     branch_label: str | None = None,
     pipeline_reextraction_failed: bool = False,
     accept_partial: bool = False,
+    actor_id: int | None = None,
 ) -> VersionRow:
     """Persist a new version node in the version tree.
 
@@ -2304,30 +2481,47 @@ def save_version(
             "version or pass accept_partial=True to explicitly accept the "
             "partial extraction."
         )
+    # R19-H4: when actor_id is supplied, require editor-or-higher
+    # membership on the target project. Skipped (with warning) when
+    # actor_id is None so legacy pipeline call sites keep working.
+    if actor_id is not None:
+        with get_session() as _auth_s:
+            _authorize_project_action(
+                _auth_s, project_id, actor_id,
+                min_role="editor", operation="save_version",
+            )
     # Cheap shape-check at the persistence boundary so corrupted
-    # payloads are flagged early. Logged-only by default (warning) so
-    # legacy / stub callers continue to work; controlled by the
-    # ``SHADOW_LOOM_STRICT_PERSIST`` env var, which when set to
-    # ``"1"``/``"true"`` upgrades the warning to a hard ``ValueError``.
-    # Skipped entirely when ``accept_partial=True`` so explicit
-    # "persist what we have" callers still get through.
+    # payloads are flagged early.
+    #
+    # Audit R18-20: validation failure is now **strict by default**.
+    # The previous behaviour logged a warning and continued unless
+    # ``SHADOW_LOOM_STRICT_PERSIST=1`` was set, which meant a typed
+    # field drift (e.g. enum rename, new required field) silently
+    # poisoned the project history. Callers that need to persist a
+    # partial / known-invalid payload (recovery shims, fuzz tests)
+    # opt out by passing ``accept_partial=True``. The env var stays
+    # as a kill-switch in the opposite direction: setting it to
+    # ``"0"`` / ``"false"`` downgrades the failure back to a warning
+    # for emergency operational use.
     if not accept_partial:
         try:
             from shadow_loom.models import WorldStateV1
             WorldStateV1.model_validate_json(world_state_json)
         except Exception as exc:
             import os as _os
-            strict = _os.environ.get("SHADOW_LOOM_STRICT_PERSIST", "").lower() in {"1", "true", "yes", "on"}
+            env_val = _os.environ.get("SHADOW_LOOM_STRICT_PERSIST", "").lower()
+            soft = env_val in {"0", "false", "no", "off"}
             msg = (
                 f"save_version: world_state_json failed WorldStateV1 "
                 f"validation at persistence boundary: {exc}"
             )
-            if strict:
+            if soft:
+                logger.warning(msg + " (SHADOW_LOOM_STRICT_PERSIST disabled.)")
+            else:
                 raise ValueError(
-                    msg + " (SHADOW_LOOM_STRICT_PERSIST=1; pass "
-                    "accept_partial=True to bypass.)"
+                    msg + " (pass accept_partial=True to bypass, or set "
+                    "SHADOW_LOOM_STRICT_PERSIST=0 to soften.)"
                 ) from exc
-            logger.warning(msg)
     # When an explicit version is supplied we honour it (single attempt).
     max_attempts = 1 if version is not None else 5
     last_err: Exception | None = None
@@ -2777,6 +2971,7 @@ def promote_branch(
     user_id: int | None = None,
     description: str | None = None,
     force: bool = False,
+    actor_id: int | None = None,
 ) -> VersionRow:
     """Copy a shadow-branch version onto the factual mainline as a new version.
 
@@ -2811,6 +3006,11 @@ def promote_branch(
             raise VersionMutationError(
                 f"Version row {version_row_id} not found."
             )
+        # R19-H4: editor-or-higher membership required to promote.
+        _authorize_project_action(
+            s, src.project_id, actor_id,
+            min_role="editor", operation="promote_branch",
+        )
         if src.world_id == "factual":
             raise VersionMutationError(
                 f"Version {version_row_id} already lives on the factual "
