@@ -1934,6 +1934,56 @@ def compute_hidden_channels_for(
 _PREVENTED_EVENT_TYPES = frozenset({"prevented", "never_happened", "removed"})
 
 
+def _syuzhet_to_fabula_cutoff(
+    world_state: WorldStateV1,
+    syuzhet_anchor: Optional[int],
+) -> Optional[int]:
+    """Convert a syuzhet (reading-order) anchor to the corresponding
+    fabula (chronological) cutoff.
+
+    P2/P3/P4 (2026-05-29 ninth-pass audit): the constraint-building
+    helpers below take a ``syuzhet_anchor`` (reader position) but
+    repeatedly compare it directly to ``fabula_time`` /
+    ``truth_at_fabula`` / ``state_timeline`` keys (chronological
+    time). The two axes are not interchangeable — author-placed
+    flashbacks (early fabula, late syuzhet) and prolepses (late
+    fabula, early syuzhet) corrupt the resulting prevented-event /
+    proposition-truth / world-invariant slices.
+
+    This helper returns ``max(evt.fabula_time)`` across events the
+    reader has *seen* (``syuzhet_index <= syuzhet_anchor``), giving a
+    safe upper bound for fabula-time gates derived from a syuzhet
+    anchor.
+
+    Return-value contract:
+    - ``syuzhet_anchor is None`` \u2192 ``None`` (caller falls back to
+      \"no slicing\").
+    - ``syuzhet_anchor`` set but **no** event has a ``syuzhet_index``
+      \u2264 anchor \u2192 ``\u2212(2**31)`` sentinel (cutoff before any
+      fabula_time, so callers' ``ft > cap`` / ``t <= cap`` checks
+      suppress every row).
+    - Otherwise \u2192 the largest ``fabula_time`` among visible events.
+    """
+    if syuzhet_anchor is None:
+        return None
+    fabula_times = [
+        int(getattr(e, "fabula_time", 0))
+        for e in (getattr(world_state, "events", None) or [])
+        if getattr(e, "syuzhet_index", None) is not None
+        and int(getattr(e, "syuzhet_index", 0)) <= syuzhet_anchor
+        and getattr(e, "fabula_time", None) is not None
+    ]
+    if not fabula_times:
+        # Anchor explicitly set but nothing visible yet \u2192 suppress
+        # everything by returning a cutoff before any plausible
+        # fabula_time. Using a 32-bit minimum keeps the value well
+        # below any realistic story timestamp while staying a plain
+        # ``int`` for callers that compare against ``int(...)`` of
+        # fabula_time / truth_at_fabula keys.
+        return -(2 ** 31)
+    return max(fabula_times)
+
+
 def build_object_coherence_constraints(
     world_state: WorldStateV1,
     fabula_anchor: Optional[int],
@@ -2183,7 +2233,11 @@ def build_prevented_event_constraints(
     events = list(getattr(world_state, "events", []) or [])
     if not events:
         return []
-    cap = syuzhet_anchor
+    # P2 (2026-05-29 ninth-pass audit): event.fabula_time is on the
+    # chronological axis; syuzhet_anchor is the reading-order axis.
+    # Compare like-to-like by translating the syuzhet anchor to a
+    # fabula cutoff.
+    cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
     prevented = []
     for e in events:
         if (getattr(e, "event_type", None) or "") not in _PREVENTED_EVENT_TYPES:
@@ -2515,7 +2569,7 @@ def build_false_proposition_constraints(
         prop_iter = list(props.values())
     else:
         prop_iter = list(props)
-    cap = syuzhet_anchor if syuzhet_anchor is not None else None
+    cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
     falsified: List[tuple] = []
     for p in prop_iter:
         pid = getattr(p, "id", None) or getattr(p, "proposition_id", None) or "?"
@@ -2585,7 +2639,7 @@ def build_true_proposition_constraints(
     if not props:
         return []
     prop_iter = list(props.values()) if isinstance(props, dict) else list(props)
-    cap = syuzhet_anchor
+    cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
     committed_true: List[tuple] = []
     for p in prop_iter:
         pid = getattr(p, "id", None) or getattr(p, "proposition_id", None) or "?"
@@ -2653,7 +2707,9 @@ def build_world_invariant_constraints(
     world_traits = getattr(world_state, "world_traits", None) or {}
     if not world_traits:
         return []
-    cap = syuzhet_anchor
+    # P4 (2026-05-29 ninth-pass audit): state_timeline.fabula_time
+    # gates need a fabula-axis cutoff.
+    cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
     invariants: List[tuple] = []
     for wid, wt in world_traits.items():
         base = getattr(wt, "magnitude", None)
@@ -2729,7 +2785,9 @@ def _latest_proposition_truth_map(
         prop_iter = list(props.values())
     else:
         prop_iter = list(props)
-    cap = syuzhet_anchor
+    # P3 (2026-05-29 ninth-pass audit): truth_at_fabula keys are
+    # fabula_time; syuzhet_anchor must be translated.
+    cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
     for p in prop_iter:
         pid = getattr(p, "id", None) or getattr(p, "proposition_id", None)
         if not pid:
@@ -2783,7 +2841,9 @@ def build_unrealised_concern_constraints(
         entity_iter = list(entities.values())
     else:
         entity_iter = list(entities)
-    cap = syuzhet_anchor
+    # P4 (2026-05-29 ninth-pass audit): activation_fabula_window is on
+    # the chronological axis; compare via fabula cutoff.
+    cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
     rows: List[tuple] = []  # (entity_id, entity_name, concern, prop_truth)
     for ent in entity_iter:
         concerns = getattr(ent, "concerns", None) or []
@@ -2881,7 +2941,9 @@ def build_false_belief_grounding_constraints(
         entity_iter = list(entities.values())
     else:
         entity_iter = list(entities)
-    cap = syuzhet_anchor
+    # P3 (2026-05-29 ninth-pass audit): established_at_fabula is on the
+    # chronological axis; compare via fabula cutoff.
+    cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
     rows: List[tuple] = []  # (entity_id, entity_name, belief)
     for ent in entity_iter:
         beliefs = getattr(ent, "beliefs", None) or []
@@ -3065,20 +3127,16 @@ class DirectiveAssembler:
     ) -> Optional[int]:
         """Translate a syuzhet anchor into a fabula_time cut-off.
 
-        Returns the maximum ``fabula_time`` among events whose
-        ``syuzhet_index`` is ``<= syuzhet_anchor``. ``None`` if the
-        anchor is ``None`` or no event qualifies, signalling
-        "use latest available state" to callers.
+        A1 (2026-05-29 tenth-pass audit): now a thin wrapper around the
+        module-level :func:`_syuzhet_to_fabula_cutoff` so the
+        anchor-set-but-no-visible-event case returns the
+        ``-(2**31)`` suppression sentinel instead of ``None``. Without
+        this fix, a reader at position zero with future-only events
+        would see *all* beliefs / trait snapshots surfaced (the
+        ``None`` branch read "no slicing"), contaminating dramatic
+        irony with knowledge the entity hasn't acquired yet.
         """
-        if syuzhet_anchor is None:
-            return None
-        revealed_t = [
-            e.fabula_time for e in self.world_state.events
-            if e.syuzhet_index is not None
-            and e.syuzhet_index <= syuzhet_anchor
-            and e.fabula_time is not None
-        ]
-        return max(revealed_t) if revealed_t else None
+        return _syuzhet_to_fabula_cutoff(self.world_state, syuzhet_anchor)
 
     def compute_trait_trajectories(
         self,
@@ -3467,8 +3525,19 @@ class DirectiveAssembler:
     # ------------------------------------------------------------------
     # Graph helpers for affective measures
     # ------------------------------------------------------------------
-    def _build_causal_digraph(self) -> nx.DiGraph:
-        """Build a weighted causal DiGraph from the world state topology."""
+    def _build_causal_digraph(self) -> nx.MultiDiGraph:
+        """Build a weighted causal MultiDiGraph from the world state topology.
+
+        N6 (2026-05-29 ninth-pass audit): switched from ``nx.DiGraph``
+        to ``nx.MultiDiGraph``. The old implementation collapsed
+        parallel ``(u, v)`` causal edges down to the single strongest
+        one, silently discarding distinct ``mechanism`` /
+        ``causality_type`` annotations that downstream attribution,
+        Halpern-Pearl actual-cause and per-mechanism propagation all
+        key off. With multi-edge storage, ``in_edges(data=True)`` /
+        ``out_edges(data=True)`` iterate every parallel edge so per-
+        mechanism passes see the full causal multiplicity.
+        """
         _STRENGTH_W = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
         _scaling = _get_settings().physics.causal_force_scaling
         # Pre-index relationship per-axis evidence so ``mutation_social``
@@ -3483,7 +3552,7 @@ class DirectiveAssembler:
             for axis_name, m in rel.metrics.items():
                 if m.observed:
                     rel_axis_es[(rel.source_entity_id, rel.target_entity_id, axis_name)] = m.evidence_strength
-        g = nx.DiGraph()
+        g: nx.MultiDiGraph = nx.MultiDiGraph()
         for ce in self.world_state.causal_topology:
             evidence_w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
             # For mutation_social edges, multiply by the per-axis
@@ -3496,12 +3565,17 @@ class DirectiveAssembler:
                     evidence_w = min(evidence_w, _STRENGTH_W.get(rel_es, 0.5))
             force_scale = ce.causal_force / _scaling
             w = evidence_w * force_scale
-            if g.has_edge(ce.source_id, ce.target_id):
-                existing = g[ce.source_id][ce.target_id]["weight"]
-                if w <= existing:
-                    continue
-            g.add_edge(ce.source_id, ce.target_id,
-                       weight=w, mechanism=ce.mechanism)
+            # MultiDiGraph: each call adds a *new* parallel edge keyed
+            # by an auto-incremented int; mechanism / causality_type
+            # are preserved per parallel edge so callers iterating
+            # ``in_edges(data=True)`` see every mechanism.
+            g.add_edge(
+                ce.source_id, ce.target_id,
+                weight=w,
+                mechanism=ce.mechanism,
+                causality_type=ce.causality_type,
+                necessity=getattr(ce, "necessity", None),
+            )
         return g
 
     # When set on the instance, overrides the syuzhet-anchored reveal
@@ -6400,7 +6474,7 @@ class DirectiveAssembler:
         logger.debug("[DirectiveAssembly·Assemble] effect=%s entities=%s intensity=%.2f",
                      effect, entity_ids, intensity)
 
-        gaps = self.compute_epistemic_gaps(entity_ids)
+        gaps = self.compute_epistemic_gaps(entity_ids, syuzhet_anchor=syuzhet_anchor)
         trajectories = self.compute_trait_trajectories(
             entity_ids, syuzhet_anchor=syuzhet_anchor,
         )
@@ -6436,19 +6510,16 @@ class DirectiveAssembler:
         # =============================================================
         # OBJECT COHERENCE  (where each prop is + what it can do)
         # =============================================================
-        # Translate syuzhet_anchor → fabula_anchor (max fabula_time of
-        # any event with syuzhet_index <= syuzhet_anchor) so
-        # ``reconstruct_object_at`` can walk each object's
-        # state_timeline to the correct tick. Falls back to None when
-        # the anchor is unset; the builder then uses the static
-        # initial position which is still better than nothing.
-        fabula_anchor: Optional[int] = None
-        if syuzhet_anchor is not None:
-            for evt in self.world_state.events:
-                if evt.syuzhet_index <= syuzhet_anchor and (
-                    fabula_anchor is None or evt.fabula_time > fabula_anchor
-                ):
-                    fabula_anchor = evt.fabula_time
+        # A7 (2026-05-29 tenth-pass audit): use the single canonical
+        # syuzhet-\u2192-fabula translation helper so the three builders
+        # below see the same anchor-set-but-no-visible-event sentinel
+        # the prevented-event / proposition / world-invariant builders
+        # see. The previous inline loop returned ``None`` in that case,
+        # which silently surfaced *all* events to the event-copresence
+        # filter (over-constraint).
+        fabula_anchor = _syuzhet_to_fabula_cutoff(
+            self.world_state, syuzhet_anchor,
+        )
         constraints.extend(build_object_coherence_constraints(
             self.world_state, fabula_anchor, world_label="this",
         ))
@@ -8552,6 +8623,14 @@ class DirectiveAssembler:
             anc_evt = next(
                 (e for e in self.world_state.events if e.id == anc_id), None,
             )
+            # N5 (2026-05-29 ninth-pass audit): an upstream ancestor that
+            # the reader has not yet encountered (``syuzhet_index >
+            # syuzhet_anchor``) must not be surfaced as the
+            # attributed perpetrator — the attribution would leak a
+            # not-yet-narrated choice into the audience-facing rage
+            # surface. Skip ancestors that fail the visibility gate.
+            if anc_evt is not None and not _visible(anc_evt):
+                continue
             if anc_evt and anc_evt.event_type == "choice" and anc_evt.actor_ids:
                 # Found an entity who made a choice upstream of the loss
                 actor = anc_evt.actor_ids[0]

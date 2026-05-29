@@ -1748,6 +1748,29 @@ def compute_tension(
 
     if not entity_ids:
         entity_ids = list(ws.entities.keys())[:6]
+    else:
+        # C5 (twelfth-pass audit): validate user-supplied entity_ids at
+        # the MCP boundary so a malformed payload (non-list, empty list
+        # after filtering, non-string entries, or unknown prefixes)
+        # surfaces a clear error envelope instead of cascading into
+        # downstream KeyError / AttributeError noise from the sandbox.
+        if not isinstance(entity_ids, list):
+            return {"error": "entity_ids must be a list of string IDs."}
+        _allowed_prefixes = ("ENT_", "OBJ_", "LOC_", "EVT_", "CHN_")
+        bad = [
+            x for x in entity_ids
+            if not isinstance(x, str) or not x.startswith(_allowed_prefixes)
+        ]
+        if bad:
+            return {
+                "error": (
+                    "entity_ids contains malformed IDs (expected "
+                    "ENT_/OBJ_/LOC_/EVT_/CHN_ prefix): "
+                    f"{bad[:5]}"
+                )
+            }
+        if not entity_ids:
+            return {"error": "entity_ids must not be empty."}
 
     # Build ego-graph and DirectiveAssembler for score computation
     try:
@@ -1755,7 +1778,15 @@ def compute_tension(
         from shadow_loom.instantiator import AMWNInstantiator
         from shadow_loom.directive_assembly import DirectiveAssembler
 
-        ego_payload = extract_ego_graph_from_memory(ws, entity_ids)
+        # C3 (twelfth-pass audit): thread ``syuzhet_anchor`` into the
+        # ego-graph extraction so the sandbox seen by the
+        # DirectiveAssembler is gated to the reader's position. Without
+        # this the assembler's mystery / dramatic-irony / surprise
+        # scores were computed against a future-leaking ego view even
+        # when the caller had explicitly anchored the request.
+        ego_payload = extract_ego_graph_from_memory(
+            ws, entity_ids, syuzhet_anchor=syuzhet_anchor,
+        )
         ego_dict = ego_payload.model_dump()
         sandbox = AMWNInstantiator.create_sandbox(ego_dict, "interrogate")
         assembler = DirectiveAssembler(sandbox, ego_dict, ws)
@@ -1780,10 +1811,14 @@ def compute_tension(
                     assembler.compute_tension_score(entity_ids, syuzhet_anchor), 3
                 ),
             },
-            "epistemic_gaps": [g.model_dump() for g in assembler.compute_epistemic_gaps(entity_ids)],
+            # B4 (eleventh-pass audit): thread ``syuzhet_anchor`` into
+            # gap/trajectory computations so the MCP interrogation
+            # surface honours the same anchor as the score block above
+            # (mirrors pipeline.run_pipeline's A6 fix).
+            "epistemic_gaps": [g.model_dump() for g in assembler.compute_epistemic_gaps(entity_ids, syuzhet_anchor=syuzhet_anchor)],
             "narrative_tensions": [t.model_dump() for t in assembler.compute_narrative_tension(syuzhet_anchor)],
             "hidden_channels": [c.model_dump() for c in assembler.compute_hidden_channels(syuzhet_anchor)],
-            "trait_trajectories": [t.model_dump() for t in assembler.compute_trait_trajectories(entity_ids)],
+            "trait_trajectories": [t.model_dump() for t in assembler.compute_trait_trajectories(entity_ids, syuzhet_anchor=syuzhet_anchor)],
             "relationship_tensions": [t.model_dump() for t in assembler.compute_relationship_tensions(entity_ids)],
         }
 
@@ -4055,6 +4090,34 @@ def resource_project(project_id: int) -> str:
     }, default=str)
 
 
+# C7 (twelfth-pass audit): hard byte cap on the unauthenticated
+# ``resource_world`` MCP resource so a public project containing tens
+# of thousands of entities/events can't be requested in a single
+# blocking call. Over the cap, the resource degrades to a summary
+# projection and the caller is told to use the per-entity / paginated
+# endpoints. 1 MB was chosen to comfortably hold typical projects
+# (see sample_plots/* round-trips in the test suite, all <200 KB)
+# while still capping pathological worlds.
+_MAX_RESOURCE_WORLD_BYTES = 1_000_000
+
+
+def _summary_projection(ws: WorldStateV1) -> dict:
+    """Lightweight overview of a world used when the full payload
+    exceeds the resource cap. Includes only entity / event / location
+    IDs and counts so the caller can paginate via the per-entity
+    resource endpoints."""
+    return {
+        "summary": True,
+        "entity_count": len(ws.entities),
+        "event_count": len(ws.events),
+        "location_count": len(ws.locations),
+        "object_count": len(ws.objects),
+        "proposition_count": len(ws.propositions or []),
+        "entity_ids": list(ws.entities.keys()),
+        "location_ids": list(ws.locations.keys()),
+    }
+
+
 @mcp.resource("world://project/{project_id}/world")
 def resource_world(project_id: int) -> str:
     """Current world state of a public project (unauthenticated)."""
@@ -4064,7 +4127,35 @@ def resource_world(project_id: int) -> str:
     ws, _ = load_world_state_projected(project_id)
     if ws is None:
         return json.dumps({"error": "No world model"})
-    return ws.model_dump_json(indent=2)
+    payload = ws.model_dump_json(indent=2)
+    if len(payload.encode("utf-8")) > _MAX_RESOURCE_WORLD_BYTES:
+        return json.dumps(
+            {
+                "error": (
+                    "world payload exceeds "
+                    f"{_MAX_RESOURCE_WORLD_BYTES} bytes; use the "
+                    "per-entity resource "
+                    "(world://project/{id}/entity/{entity_id}) to "
+                    "paginate."
+                ),
+                **_summary_projection(ws),
+            },
+            indent=2,
+            default=str,
+        )
+    return payload
+
+
+# D1 (thirteenth-pass audit): per-resource byte caps. The world cap
+# (``_MAX_RESOURCE_WORLD_BYTES``) only constrained the world dump;
+# sibling unauthenticated resources still served unbounded payloads,
+# allowing a single anonymous caller to amplify a tiny request into
+# tens of MB of JSON serialisation work. These siblings get tighter
+# caps because their canonical payload is much smaller (one entity,
+# one version tree).
+_MAX_RESOURCE_ENTITY_BYTES = 250_000
+_MAX_RESOURCE_VERSIONS_BYTES = 500_000
+_MAX_RESOURCE_VERSIONS_ROWS = 1_000
 
 
 @mcp.resource("world://project/{project_id}/entity/{entity_id}")
@@ -4079,7 +4170,30 @@ def resource_entity(project_id: int, entity_id: str) -> str:
     ent = ws.entities.get(entity_id)
     if ent is None:
         return json.dumps({"error": f"Entity {entity_id} not found"})
-    return ent.model_dump_json(indent=2)
+    payload = ent.model_dump_json(indent=2)
+    if len(payload.encode("utf-8")) > _MAX_RESOURCE_ENTITY_BYTES:
+        # Pathological entity with thousands of beliefs / state-timeline
+        # entries — return an id+counts summary so the caller can still
+        # discover the entity exists without dragging the full blob.
+        return json.dumps(
+            {
+                "error": (
+                    "entity payload exceeds "
+                    f"{_MAX_RESOURCE_ENTITY_BYTES} bytes; entity has "
+                    "an unusually long state_timeline / belief list."
+                ),
+                "summary": True,
+                "id": entity_id,
+                "name": ent.name,
+                "status": ent.status,
+                "belief_count": len(ent.beliefs),
+                "concern_count": len(ent.concerns),
+                "state_timeline_count": len(ent.state_timeline),
+            },
+            indent=2,
+            default=str,
+        )
+    return payload
 
 
 @mcp.resource("world://project/{project_id}/versions")
@@ -4088,8 +4202,40 @@ def resource_versions(project_id: int) -> str:
     proj = get_project(project_id)
     if proj is None or not proj.is_public:
         return json.dumps({"error": "Not found or access denied"})
-    tree = get_version_tree(project_id)
-    return json.dumps(tree or [], default=str)
+    tree = get_version_tree(project_id) or []
+    # Row cap first (cheap), then byte cap as a defence-in-depth check.
+    truncated = False
+    if len(tree) > _MAX_RESOURCE_VERSIONS_ROWS:
+        tree = tree[: _MAX_RESOURCE_VERSIONS_ROWS]
+        truncated = True
+    payload = json.dumps(tree, default=str)
+    if len(payload.encode("utf-8")) > _MAX_RESOURCE_VERSIONS_BYTES:
+        return json.dumps(
+            {
+                "error": (
+                    "versions payload exceeds "
+                    f"{_MAX_RESOURCE_VERSIONS_BYTES} bytes; use the "
+                    "authenticated paginated API instead."
+                ),
+                "summary": True,
+                "version_count": len(tree),
+                "truncated": truncated,
+            },
+            indent=2,
+            default=str,
+        )
+    if truncated:
+        # Wrap with a marker so the caller knows the list is partial;
+        # an unmarked truncation would silently hide history.
+        return json.dumps(
+            {
+                "truncated": True,
+                "limit": _MAX_RESOURCE_VERSIONS_ROWS,
+                "rows": tree,
+            },
+            default=str,
+        )
+    return payload
 
 
 # =====================================================================

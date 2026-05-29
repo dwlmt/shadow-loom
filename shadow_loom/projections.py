@@ -774,9 +774,18 @@ def filter_world_state_for_pov(
         | pov_known_objects
         | pov_known_world_trait_ids
     )
+    # Audit (eighth pass, M1): the original filter kept an edge if
+    # *either* endpoint was POV-known, which leaked the hidden
+    # endpoint's id through the dangling reference (e.g. in
+    # ``Nineteen Eighty-Four`` the POV could see an edge
+    # ``EVT_VISIBLE → OBJ_HIDDEN_TELESCREEN`` even when the object
+    # itself had been stripped from ``filtered.objects``). Require
+    # both endpoints to survive POV visibility so referential
+    # integrity is preserved.
     filtered.causal_topology = [
         ce for ce in filtered.causal_topology
-        if ce.source_id in pov_known_node_ids or ce.target_id in pov_known_node_ids
+        if ce.source_id in pov_known_node_ids
+        and ce.target_id in pov_known_node_ids
     ]
     # Audit R18-6: prune the ``objects`` and ``locations`` registries
     # to the POV's perceivable surface. Before this filter, Winston's
@@ -815,6 +824,32 @@ def filter_world_state_for_pov(
         if wt_id in pov_known_world_trait_ids
     }
 
+    # Audit (seventh pass, C7): ``social_topology`` was left
+    # unfiltered, so every RelationshipEdge between two non-POV
+    # entities (and every interior metric on those edges) leaked
+    # straight through the POV boundary — handing the reader
+    # omniscient knowledge of off-page rivalries, affinities, and
+    # fears. Restrict to edges where the POV is at least one
+    # endpoint; characters' private feelings about each other are
+    # not POV-knowable without an explicit observation channel.
+    filtered.social_topology = [
+        re for re in (filtered.social_topology or [])
+        if getattr(re, "source_entity_id", None) == pov_entity_id
+        or getattr(re, "target_entity_id", None) == pov_entity_id
+    ]
+
+    # Audit (seventh pass, C8): ``spatial_topology`` was left
+    # unfiltered, so edges between two unfamiliar locations
+    # (rooms / regions the POV has never visited and that no
+    # visible event references) leaked the map's full geometry.
+    # Restrict to edges where at least one endpoint is in the
+    # POV-known locations set.
+    filtered.spatial_topology = [
+        se for se in (filtered.spatial_topology or [])
+        if getattr(se, "source_id", None) in pov_known_locations
+        or getattr(se, "target_id", None) in pov_known_locations
+    ]
+
     # Entities: POV keeps full record; everyone else has interior
     # state stripped (beliefs, concerns) and timelines clipped to
     # fabula ticks the POV could witness.
@@ -824,10 +859,26 @@ def filter_world_state_for_pov(
         ent.beliefs = []
         ent.concerns = []
         if ent.state_timeline:
-            ent.state_timeline = [
-                snap for snap in ent.state_timeline
-                if snap.fabula_time in visible_fabula_ticks
-            ]
+            # Audit (seventh pass, C9): the snapshot-level
+            # ``beliefs_added`` / ``beliefs_invalidated`` channels
+            # are the per-tick deltas the top-level scrub above
+            # would otherwise replay back into the entity's
+            # interior state. Clearing only the top-level lists
+            # leaves the snapshot deltas readable by any consumer
+            # that walks ``state_timeline`` directly (Q&A,
+            # diagnostics, downstream replay), leaking other
+            # characters' belief formation to the POV. Strip the
+            # delta fields on every retained snapshot in lockstep
+            # with the top-level scrub.
+            clipped: List[Any] = []
+            for snap in ent.state_timeline:
+                if snap.fabula_time not in visible_fabula_ticks:
+                    continue
+                _snap_copy = snap.model_copy(deep=True)
+                _snap_copy.beliefs_added = []
+                _snap_copy.beliefs_invalidated = []
+                clipped.append(_snap_copy)
+            ent.state_timeline = clipped
 
     # World traits: drift snapshots gated to visible ticks — POV can't
     # know about silent off-screen world drift. The trait itself stays
@@ -843,10 +894,21 @@ def filter_world_state_for_pov(
     # witnessed; clip state_timeline likewise.
     for prop in filtered.propositions:
         if prop.truth_at_fabula:
-            prop.truth_at_fabula = {
-                t: v for t, v in prop.truth_at_fabula.items()
-                if t in visible_fabula_ticks
-            }
+            # Audit (eighth pass, M2): ``truth_at_fabula`` is typed
+            # ``Dict[int, bool]`` but a JSON/DB round-trip outside
+            # the pydantic validator can present str keys. Coerce
+            # to int before membership-checking against the int
+            # ``visible_fabula_ticks`` set or the entire ledger is
+            # silently dropped from the POV slice.
+            _clipped: Dict[int, bool] = {}
+            for _t, _v in prop.truth_at_fabula.items():
+                try:
+                    _ti = int(_t)
+                except (TypeError, ValueError):
+                    continue
+                if _ti in visible_fabula_ticks:
+                    _clipped[_ti] = _v
+            prop.truth_at_fabula = _clipped
         if prop.state_timeline:
             prop.state_timeline = [
                 snap for snap in prop.state_timeline

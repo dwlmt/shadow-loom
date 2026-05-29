@@ -983,6 +983,42 @@ not change the public Pydantic schema. See
 [academic-foundations.md §2.x](academic-foundations.md) for the
 underlying theory pointers.
 
+## D-AUDIT-2026-05-29. Thirteenth-pass engineering hardening
+
+A follow-up implementation-side audit closed seven robustness issues
+orthogonal to the formal calculus but material to reproducibility.
+All seven ship with regression tests in
+[`tests/test_audit_thirteenth_pass_regression.py`](../tests/test_audit_thirteenth_pass_regression.py).
+
+* **D1. MCP resource payload caps.** The `world://` sibling resources
+  for an entity (250 KB) and the version tree (500 KB / 1 000 rows)
+  now wrap truncated bodies in a `{"truncated": True, "limit": N, "rows": [...]}`
+  envelope so clients see the limit instead of a silently-clipped
+  JSON. See [mcp-guide.md §4](mcp-guide.md#4-the-5-resources).
+* **D2. UI upload safety.** The Story-tab uploader now bounds reads at
+  `10 × PHYSICS_MAX_INGEST_WORDS` bytes and surfaces decode errors as
+  a single toast in place of an unbounded `read().decode("utf-8")`.
+* **D3. Belief baseline anchors preserved.** The ingestion-side
+  auto-default that rewrote `Belief.established_at_fabula == 0` to a
+  later event time has been removed; pre-story anchors are respected
+  as authored, fixing the Bayesian-surprise baseline.
+* **D4. Legacy do-target failures are visible.** Four
+  `except Exception: pass` blocks in `_coerce_legacy_dict` now emit a
+  `UserWarning` (with the validator detail) instead of silently
+  dropping a malformed surgery.
+* **D5. Noisy-OR knobs are strictly bounded.**
+  `PHYSICS_NOISY_OR_THRESHOLD ∈ [0, 1]` and
+  `PHYSICS_NOISY_OR_TEMPERATURE ∈ (0, 10]`, eliminating the
+  divide-by-zero / silent-disable failure modes.
+* **D6. `init_db` is thread-safe.** Engine construction, `create_all`,
+  lightweight migrations and Postgres partition setup now run under a
+  module-level `threading.Lock`. The body still always rebinds
+  `_engine` so per-test `init_db("sqlite://")` fixtures continue to
+  receive a clean shard.
+* **D7. Branch traversal is `O(versions)`.** `list_branches`
+  pre-indexes `children_by_anc` once instead of running an
+  `O(branches × versions)` inner scan per branch.
+
 ---
 
 ## What we rejected

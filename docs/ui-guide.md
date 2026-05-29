@@ -124,6 +124,11 @@ route and surface in whichever tab consumes their result
   result actually carries new *story* prose, so a question or an audit
   report never perturbs the lineage view. (Evaluation reports surface
   on the Audit tab.)
+* The **Upload** affordance accepts UTF-8 plain text only and caps the
+  read at `10 × PHYSICS_MAX_INGEST_WORDS` bytes (D2, thirteenth-pass
+  audit, 2026-05-29). Oversized or non-UTF-8 uploads surface a single
+  user-facing toast and abort the read rather than ballooning process
+  memory or crashing the dialog handler.
 
 ## 2. Explorer tab
 

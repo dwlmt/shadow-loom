@@ -774,6 +774,18 @@ _SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
 # =====================================================================
 
 _engine = None
+# D6 (thirteenth-pass audit): ``init_db`` used to perform an unguarded
+# ``_engine = create_engine(...)`` followed by ``create_all`` /
+# migrations / partition setup. Under the multi-tenant NiceGUI app
+# multiple worker threads can race on first request and each call
+# ``init_db`` concurrently \u2014 the second thread would clobber the
+# first engine mid-migration, leaking connections and intermittently
+# corrupting the schema-version stamp. Guard the whole bootstrap with
+# a double-checked lock so only the first caller runs migrations and
+# subsequent callers no-op once ``_engine`` is set.
+import threading as _threading
+
+_engine_lock = _threading.Lock()
 
 
 def get_engine():
@@ -789,6 +801,22 @@ def get_session() -> Session:
 
 def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
     """Create the engine, all tables, and seed the example user."""
+    global _engine
+
+    # D6 (thirteenth-pass audit): serialise concurrent first-call
+    # initialisation. We do NOT short-circuit when ``_engine`` is
+    # already set \u2014 several test fixtures rely on
+    # ``init_db("sqlite://")`` *replacing* the engine on every test to
+    # get a clean in-memory shard, and silently no-op'ing would
+    # smuggle stale state across tests. The lock only prevents two
+    # threads from racing inside ``_init_db_locked`` and corrupting
+    # the migration / partition-setup steps.
+    with _engine_lock:
+        _init_db_locked(database_url)
+
+
+def _init_db_locked(database_url: str) -> None:
+    """Body of :func:`init_db`, executed under ``_engine_lock``."""
     global _engine
 
     # Railway / Heroku-style ``postgres://`` URLs are legacy SQLAlchemy
@@ -2889,6 +2917,17 @@ def list_branches(project_id: int) -> list[dict]:
         return []
 
     by_id: dict[int, VersionRow] = {r.id: r for r in rows}
+    # D7 (thirteenth-pass audit): pre-index children once instead of
+    # rescanning the full ``rows`` list inside the per-branch walk.
+    # The old O(branches * versions) inner loop became visible on
+    # long-running interactive sessions (50+ branches \xd7 thousands of
+    # versions on a single project) where ``get_version_branches`` is
+    # called on every UI version-tree refresh.
+    children_by_anc: dict[int, list[VersionRow]] = {}
+    for c in rows:
+        if c.ancestor_id is None:
+            continue
+        children_by_anc.setdefault(c.ancestor_id, []).append(c)
     # A version is a *branch root* when it has no ancestor (mainline v0)
     # or when its ancestor lives on a different world_id.
     branches: list[dict] = []
@@ -2900,12 +2939,10 @@ def list_branches(project_id: int) -> list[dict]:
         # Walk forward along same-world_id direct descendants to find the head.
         head = r
         version_count = 1
-        # Children are not pre-indexed; do a simple linear search per branch.
-        # Branches are typically shallow so the cost stays small.
         while True:
             same_branch_children = [
-                c for c in rows
-                if c.ancestor_id == head.id and c.world_id == head.world_id
+                c for c in children_by_anc.get(head.id, ())
+                if c.world_id == head.world_id
             ]
             if not same_branch_children:
                 break

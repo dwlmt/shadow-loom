@@ -752,6 +752,31 @@ Rung-2 prose that invents background premises and
 honestly as a Pearl-approximation rather than a Pearl-rigorous
 implementation.
 
+\paragraph{Post-audit engineering hardening
+(2026-05-29, thirteenth-pass).} A follow-up implementation
+audit closed seven robustness issues orthogonal to the formal
+calculus but material to reproducibility:
+(D1)~the four MCP \texttt{world://} sibling resources now cap
+their payloads (250\,KB for an entity, 500\,KB / 1\,000 rows
+for the version tree) and wrap truncated bodies in a
+\texttt{\{truncated, limit, rows\}} envelope; (D2)~the UI
+ingest upload reads at most $10\times\texttt{MAX\_INGEST\_WORDS}$
+bytes and surfaces decode errors as a single toast;
+(D3)~the ingestion-side auto-default that silently rewrote
+baseline-anchored beliefs (\texttt{established\_at\_fabula==0})
+to a later event time has been removed; (D4)~the legacy
+do-target coercer emits a \texttt{UserWarning} (with the
+validator detail) instead of silently dropping a malformed
+surgery; (D5)~the noisy-OR knobs are now strictly bounded
+($\texttt{threshold}\in[0,1]$, $\texttt{temperature}\in(0,10]$);
+(D6)~\texttt{init\_db} serialises engine construction and
+migrations under a module-level lock; and (D7)~branch traversal
+is now $O(\text{versions})$ rather than
+$O(\text{branches}\times\text{versions})$. All seven fixes ship
+with regression tests in
+\texttt{tests/test\_audit\_thirteenth\_pass\_regression.py};
+the full 2469-test suite is green.
+
 As an internal sanity check, the four structural-affect scorers
 were audited against the bundled twenty-fixture corpus
 (\texttt{example\_worlds/}) at seven evenly-spaced syuzhet anchors

@@ -2675,12 +2675,41 @@ class CausalPhysicsEngine:
                 return True
             return False
 
+        # Audit (eighth pass, H2): ``Proposition.truth_at_fabula`` is
+        # typed ``Dict[int, bool]`` and the model validator coerces
+        # str keys to int at construction, but a ledger reconstructed
+        # via ``model_construct`` / ``model_copy(update=...)`` / a raw
+        # JSON or DB round-trip outside the validator can present
+        # str keys. ``old_ft not in ledger`` then silently misses the
+        # entry and relocation is skipped — stranding both the
+        # primary and the inverse ledger at the old tick after the
+        # event has been retimed. Normalize keys to int in-place
+        # before the membership check so the relocation is robust to
+        # transport-layer key drift.
+        def _coerce_ledger_int_keys(_ledger: Any) -> None:
+            if not isinstance(_ledger, dict):
+                return
+            _str_keys = [k for k in list(_ledger.keys()) if not isinstance(k, int)]
+            for _k in _str_keys:
+                try:
+                    _ik = int(_k)
+                except (TypeError, ValueError):
+                    continue
+                if _ik in _ledger and _ledger[_ik] != _ledger[_k]:
+                    # Conflict — keep the existing int entry and drop
+                    # the duplicate string one.
+                    del _ledger[_k]
+                    continue
+                _ledger[_ik] = _ledger[_k]
+                del _ledger[_k]
+
         truth_relocated = 0
         for prop in (self.world_state.propositions or []):
             _pid = getattr(prop, "proposition_id", None) or getattr(prop, "id", None)
             if _pid is None or not _evt_commits_prop(evt, _pid):
                 continue
             ledger = getattr(prop, "truth_at_fabula", None)
+            _coerce_ledger_int_keys(ledger)
             if not ledger or old_ft not in ledger:
                 continue
             truth_value = ledger[old_ft]
@@ -2709,6 +2738,41 @@ class CausalPhysicsEngine:
             if not other_committer_at_old and new_ft != old_ft:
                 del ledger[old_ft]
             truth_relocated += 1
+
+            # Audit (seventh pass, B4): inverse-proposition mirror.
+            # ``_apply_do_proposition`` and the ingestion writers all
+            # mirror committed truth onto ``inverse_proposition_id``
+            # with the flipped value. When DoEventTimeShift relocates
+            # the primary ledger key, the inverse's ledger entry at
+            # ``old_ft`` is stranded — every consumer of the inverse
+            # then sees ``not v`` at a tick when the primary is no
+            # longer committed and ``None`` at the tick the primary
+            # has moved to. Relocate the inverse entry in lockstep.
+            inv_pid = getattr(prop, "inverse_proposition_id", None)
+            if inv_pid:
+                for inv_prop in (self.world_state.propositions or []):
+                    if getattr(inv_prop, "proposition_id", None) != inv_pid:
+                        continue
+                    inv_ledger = getattr(inv_prop, "truth_at_fabula", None)
+                    _coerce_ledger_int_keys(inv_ledger)
+                    if not inv_ledger or old_ft not in inv_ledger:
+                        break
+                    inv_val = inv_ledger[old_ft]
+                    inv_existing = inv_ledger.get(new_ft)
+                    if inv_existing is not None and inv_existing != inv_val:
+                        logger.warning(
+                            "[CausalPhysics\u00b7do_event_time_shift] Inverse "
+                            "prop %s already has truth_at_fabula[%d]=%s "
+                            "conflicting with relocated mirror value %s; "
+                            "leaving inverse ledger untouched.",
+                            inv_pid, new_ft, inv_existing, inv_val,
+                        )
+                        break
+                    inv_ledger[new_ft] = inv_val
+                    if not other_committer_at_old and new_ft != old_ft:
+                        del inv_ledger[old_ft]
+                    truth_relocated += 1
+                    break
 
             # Audit (sixth pass, F6): the ingestion post-pass
             # ``_post_pass_synthesize_audience_beliefs`` keys each
@@ -3713,6 +3777,21 @@ class CausalPhysicsEngine:
             ce for ce in (ws.causal_topology or [])
             if ce.source_id != oid and ce.target_id != oid
         ]
+        # Audit (eighth pass, M5): spatial edges may carry a
+        # ``barrier_item_id`` pointing at the deleted object (a
+        # locked door's key, a dragon guarding a pass, the One Ring
+        # blocking egress). When the object is excised the lock
+        # becomes a ghost barrier — traversal still appears blocked
+        # by a non-existent item. Scrub the reference and normalize
+        # the lock state: if ``is_locked`` was True solely because
+        # of this item, leave the edge locked but barrier-less so
+        # downstream readers can still see the original intent
+        # while the dangling id is cleared.
+        _spatial_scrubbed = 0
+        for se in (ws.spatial_topology or []):
+            if getattr(se, "barrier_item_id", None) == oid:
+                se.barrier_item_id = None
+                _spatial_scrubbed += 1
         # Beliefs targeting the object.
         _beliefs_removed = 0
         for ent in (ws.entities or {}).values():
@@ -4980,10 +5059,22 @@ class CausalPhysicsEngine:
             barrier_node = self.sandbox.nodes.get(barrier_id, {})
             barrier_name = barrier_node.get("name", "")
             barrier_node_type = barrier_node.get("node_type", "NarrativeObject")
+            # N1 (2026-05-29 ninth-pass audit): only admit an unlocking
+            # key whose holder is *physically at* one of the locked
+            # edge's endpoints. The previous version treated any key
+            # owned anywhere in the world (including by dead or off-map
+            # characters) as making the locked edge globally traversable
+            # — so a dropped/inherited key on the far side of the map
+            # silently opened every matching door.
             for nid, ndata in self.sandbox.nodes(data=True):
                 if ndata.get("node_type") != "NarrativeObject":
                     continue
-                if ndata.get("owner_id") is None:
+                owner_id = ndata.get("owner_id")
+                if owner_id is None:
+                    continue
+                owner_node = self.sandbox.nodes.get(owner_id, {})
+                owner_loc = owner_node.get("location_id")
+                if owner_loc not in (u, v):
                     continue
                 for aff in ndata.get("affordances", []):
                     if not isinstance(aff, dict):
@@ -5244,6 +5335,67 @@ class CausalPhysicsEngine:
                     len(closure) - len(newly_pruned),
                     len(newly_pruned),
                     sorted(newly_pruned),
+                )
+
+        # Audit (eighth pass, H1): mirror the merge-time
+        # ``cause_disconnected_event_ids`` seeding done by
+        # ``shadow_loom.pipeline.build_branch_topology`` so engine-time
+        # and persistence-time chain-reaction closures agree. Without
+        # this, a DoEvent that disruptively mutates (e.g. swaps
+        # ``actor_ids`` / ``target_ids`` / wipes ``description`` /
+        # changes ``event_type`` to a non-prevented value) without
+        # marking the event ``pruned`` leaves descendants alive in
+        # the engine sandbox — they fire during propagation, get
+        # cited by the brief / answer layer — but the merge layer
+        # then suppresses them, producing a turn-internal split
+        # where reasoning and persistence disagree. A pure
+        # relocation/time_shift preserves the chain (see ROUND-15
+        # C-2 in pipeline.py) so we exclude those.
+        _disruptive_evt_ids: set[str] = set()
+        _relocation_only_evt_ids: set[str] = set()
+        for _m in self._event_mutations:
+            _meid = getattr(_m, "event_id", None)
+            _mkind = getattr(_m, "kind", None)
+            if not _meid:
+                continue
+            if _mkind in ("relocation", "time_shift"):
+                _relocation_only_evt_ids.add(_meid)
+            else:
+                _disruptive_evt_ids.add(_meid)
+        # Any event with a disruptive mutation stays cause-broken even
+        # if it also has a relocation mutation in the same batch.
+        cause_broken_evt_ids = _disruptive_evt_ids - (
+            _relocation_only_evt_ids - _disruptive_evt_ids
+        )
+        # Subtract events already pruned (closure above already
+        # handled their descendants) — we only need the
+        # cause-disconnected delta as additional seeds.
+        cause_broken_seeds = cause_broken_evt_ids - pruned_evt_ids
+        if cause_broken_seeds:
+            chain_parents = chain_reaction_parents_from_sandbox(self.sandbox)
+            cd_closure = expand_chain_reaction_closure(
+                chain_parents, cause_broken_seeds,
+            )
+            # Descendants of cause-broken events are themselves
+            # cause-disconnected — mark and add to pruned_evt_ids so
+            # provenance pruning + brief surfacing sees the full
+            # cascade. Do NOT mark the cause_broken_seeds themselves
+            # pruned (they still occurred; they just no longer cause
+            # what they used to).
+            cd_descendants = cd_closure - cause_broken_seeds
+            cd_newly_pruned = cd_descendants - pruned_evt_ids
+            if cd_newly_pruned:
+                for nid in cd_newly_pruned:
+                    if self.sandbox.has_node(nid):
+                        self.sandbox.nodes[nid]["pruned"] = True
+                pruned_evt_ids |= cd_newly_pruned
+                logger.info(
+                    "[CausalPhysics·ChainClosure] cause-disconnected "
+                    "do-event mutation expanded %d root event(s) → %d "
+                    "descendant(s) via chain_reaction closure: %s",
+                    len(cause_broken_seeds),
+                    len(cd_newly_pruned),
+                    sorted(cd_newly_pruned),
                 )
 
         beliefs_pruned = 0

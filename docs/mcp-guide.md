@@ -346,6 +346,24 @@ Resources are designed for **context priming** — point your agent at
 `world://project/{id}/world` once at the start of a conversation and it has
 the full graph in scope without burning a tool call per inspection.
 
+### Resource payload caps (thirteenth-pass audit, 2026-05-29)
+
+Large projects can produce gigantic resource payloads that exceed the MCP
+client's framing budget and silently truncate mid-JSON. To make the limits
+explicit and recoverable, the four "sibling" resources cap their bodies and
+return a **summary projection** plus a `truncated` envelope when over the
+cap:
+
+| Resource | Byte cap | Row cap | Fallback when exceeded |
+|---|---|---|---|
+| `world://project/{id}/world` | 1 MB | — | `_summary_projection(ws)` (counts only). |
+| `world://project/{id}/entity/{entity_id}` | 250 KB | — | `{id, name, status, belief_count, concern_count, state_timeline_count}`. |
+| `world://project/{id}/versions` | 500 KB | 1 000 rows | Row-cap first, then byte-cap. Truncated payloads are wrapped in `{"truncated": true, "limit": N, "rows": [...]}`. |
+
+Clients that need the full body should fall back to the equivalent **tool**
+call (`get_world_state`, `get_entity`, `list_versions`) which streams
+rather than packs into one resource frame.
+
 ---
 
 ## 5. The auto-versioning contract

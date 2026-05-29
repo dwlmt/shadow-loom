@@ -80,7 +80,37 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
         ui.label("Or upload a .txt file:").classes("text-xs text-slate-500 mt-2")
 
         async def _handle_upload(e):
-            content = e.content.read().decode("utf-8")
+            # D2 (thirteenth-pass audit): hard byte cap + safe decode.
+            # The previous handler called ``e.content.read().decode("utf-8")``
+            # unconditionally — a 500 MB binary upload would balloon
+            # process memory and the UnicodeDecodeError on non-UTF-8
+            # input would crash the dialog handler with no user-facing
+            # message. Cap at ~10x the word budget (UTF-8 word ~5 bytes)
+            # so we read enough to detect the over-limit case and bail
+            # cleanly on either size or encoding violations.
+            _MAX_UPLOAD_BYTES = max(1, MAX_INGEST_WORDS) * 10
+            try:
+                raw = e.content.read(_MAX_UPLOAD_BYTES + 1)
+            except Exception as exc:  # pragma: no cover - I/O envelope
+                ui.notify(f"Could not read upload: {exc}", type="negative")
+                return
+            if len(raw) > _MAX_UPLOAD_BYTES:
+                ui.notify(
+                    f"File exceeds {_MAX_UPLOAD_BYTES:,}-byte upload "
+                    "cap (roughly "
+                    f"{MAX_INGEST_WORDS:,}-word ingest limit).",
+                    type="negative",
+                )
+                return
+            try:
+                content = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                ui.notify(
+                    "File is not valid UTF-8 text. Save as plain "
+                    "UTF-8 .txt and retry.",
+                    type="negative",
+                )
+                return
             n = count_words(content)
             if n > MAX_INGEST_WORDS:
                 ui.notify(

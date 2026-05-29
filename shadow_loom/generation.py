@@ -60,6 +60,7 @@ from shadow_loom.directive_assembly import (
     build_unrealised_concern_constraints,
     build_world_invariant_constraints,
     compute_hidden_channels_for,
+    _syuzhet_to_fabula_cutoff,
 )
 from shadow_loom.models import WorldStateV1
 from shadow_loom.query_models import (
@@ -4890,22 +4891,16 @@ def _syuzhet_to_fabula_anchor(
 ) -> Optional[int]:
     """Translate ``syuzhet_anchor`` → ``fabula_anchor``.
 
-    Used by :func:`build_object_coherence_constraints` (and any other
-    builder that needs to walk an object / entity / world-trait
-    state_timeline) so per-tick reconstructed positions reflect what
-    the reader has seen up to ``syuzhet_anchor``. Returns the maximum
-    ``fabula_time`` of any event whose ``syuzhet_index`` is at or
-    before the cap; ``None`` propagates when no anchor is supplied.
+    A1 (2026-05-29 tenth-pass audit): now a thin delegate to the
+    canonical :func:`shadow_loom.directive_assembly._syuzhet_to_fabula_cutoff`
+    so the anchor-set-but-no-visible-event case returns the
+    ``-(2**31)`` suppression sentinel instead of ``None``. Downstream
+    object-coherence / state-timeline reconstruction therefore sees a
+    pre-event baseline (correct) rather than "no slicing" (which
+    surfaced the latest available state, leaking future-event
+    knowledge into anchored prompts).
     """
-    if syuzhet_anchor is None:
-        return None
-    fabula_anchor: Optional[int] = None
-    for evt in getattr(world_state, "events", []) or []:
-        if evt.syuzhet_index <= syuzhet_anchor and (
-            fabula_anchor is None or evt.fabula_time > fabula_anchor
-        ):
-            fabula_anchor = evt.fabula_time
-    return fabula_anchor
+    return _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
 
 
 def _user_intent_constraints(original_query: Optional[str]) -> List[ConstraintBlock]:

@@ -10,6 +10,7 @@ No NiceGUI imports — this module is purely data-oriented.
 
 from __future__ import annotations
 
+import html
 import logging
 from typing import Any, Callable, Iterable, Optional
 
@@ -429,10 +430,14 @@ def ws_to_graph_data(
 
     def _node(nid: str, name: str, ntype: str, **extra: Any) -> None:
         all_ids.add(nid)
-        tooltip = f"<b>{name}</b><br/>Type: {ntype}"
+        # C1 (twelfth-pass audit): escape all dynamic fields before
+        # composing the HTML tooltip; ECharts renders the formatter
+        # string as HTML, so an LLM-extracted description containing
+        # ``<img onerror=...>`` would otherwise execute on hover.
+        tooltip = f"<b>{html.escape(str(name))}</b><br/>Type: {html.escape(str(ntype))}"
         for k, v in extra.items():
             if v:
-                tooltip += f"<br/>{k}: {v}"
+                tooltip += f"<br/>{html.escape(str(k))}: {html.escape(str(v))}"
         nodes.append({
             "id": nid,
             "name": name,
@@ -860,10 +865,10 @@ def ws_to_sankey_data(
     def _iter():
         for ce, modality in edges_with_mod:
             tip = (
-                f"<b>{MODALITY_LABELS.get(modality, ce.causality_type)}"
-                f"</b> \u00b7 {ce.mechanism}<br/>"
+                f"<b>{html.escape(str(MODALITY_LABELS.get(modality, ce.causality_type)))}"
+                f"</b> \u00b7 {html.escape(str(ce.mechanism))}<br/>"
                 f"force {ce.causal_force:.1f} \u00b7 evidence "
-                f"{ce.evidence_strength}<br/>fabula t={ce.fabula_time}"
+                f"{html.escape(str(ce.evidence_strength))}<br/>fabula t={ce.fabula_time}"
             )
             yield (ce.source_id, ce.target_id, ce.causal_force, tip)
 
@@ -911,8 +916,8 @@ def ws_to_information_sankey_data(
                 continue
             ch = ws.channels.get(evt.via_channel_id) if evt.via_channel_id else None
             tip = (
-                f"medium: {ch.medium if ch else 'unmediated'}<br/>"
-                f"truth: {evt.truth_value or 'unspecified'}<br/>"
+                f"medium: {html.escape(str(ch.medium if ch else 'unmediated'))}<br/>"
+                f"truth: {html.escape(str(evt.truth_value or 'unspecified'))}<br/>"
                 f"syuzhet={evt.syuzhet_index} fabula={evt.fabula_time}"
             )
             sender = evt.speaker_id or (evt.actor_ids[0] if evt.actor_ids else None)
@@ -922,8 +927,8 @@ def ws_to_information_sankey_data(
                 yield (sender, aid, 1.0, tip)
         for ch in ws.channels.values():
             tip = (
-                f"medium: {ch.medium}<br/>"
-                f"directionality: {ch.directionality}<br/>"
+                f"medium: {html.escape(str(ch.medium))}<br/>"
+                f"directionality: {html.escape(str(ch.directionality))}<br/>"
                 f"established t={ch.established_at_fabula}"
             )
             pids = list(ch.participant_ids)
@@ -942,7 +947,7 @@ def ws_to_world_influence_sankey_data(
             if not ce.source_id.startswith("WORLD_"):
                 continue
             tip = (
-                f"{ce.causality_type} · {ce.mechanism}<br/>"
+                f"{html.escape(str(ce.causality_type))} · {html.escape(str(ce.mechanism))}<br/>"
                 f"force {ce.causal_force:.1f}"
             )
             yield (ce.source_id, ce.target_id, ce.causal_force, tip)
@@ -1032,7 +1037,7 @@ def ws_to_social_graph_data(
         top_traits = ", ".join(
             f"{k}={v.value:.1f}" for k, v in list(ent.traits.items())[:3]
         )
-        tooltip = f"<b>{ent.name}</b><br/>Status: {ent.status}<br/>{top_traits}"
+        tooltip = f"<b>{html.escape(str(ent.name))}</b><br/>Status: {html.escape(str(ent.status))}<br/>{html.escape(top_traits)}"
         nodes.append({
             "id": eid,
             "name": ent.name,
@@ -1076,9 +1081,9 @@ def ws_to_spatial_graph_data(
     cats = [{"name": "Location"}]
 
     for lid, loc in ws.locations.items():
-        tooltip = f"<b>{loc.name}</b>"
+        tooltip = f"<b>{html.escape(str(loc.name))}</b>"
         if loc.description:
-            tooltip += f"<br/>{loc.description[:80]}"
+            tooltip += f"<br/>{html.escape(loc.description[:80])}"
         nodes.append({
             "id": lid,
             "name": loc.name,
@@ -1218,9 +1223,9 @@ def ws_to_map_graph_data(
     real_loc_ids: set[str] = set()
     for lid, loc in ws.locations.items():
         real_loc_ids.add(lid)
-        tooltip = f"<b>{loc.name}</b>"
+        tooltip = f"<b>{html.escape(str(loc.name))}</b>"
         if loc.description:
-            tooltip += f"<br/>{loc.description[:120]}"
+            tooltip += f"<br/>{html.escape(loc.description[:120])}"
         nodes.append({
             "id": lid,
             "name": loc.name,
@@ -1337,9 +1342,9 @@ def ws_to_map_graph_data(
             if resolved_status == "dead":
                 border = "#7f1d1d"
             tooltip = (
-                f"<b>{ent.name}</b><br/>"
-                f"status: {resolved_status}<br/>"
-                f"loc: {resolved_loc or '(off-stage)'}"
+                f"<b>{html.escape(str(ent.name))}</b><br/>"
+                f"status: {html.escape(str(resolved_status))}<br/>"
+                f"loc: {html.escape(str(resolved_loc or '(off-stage)'))}"
             )
             nodes.append({
                 "id": ent_id,
@@ -1416,9 +1421,9 @@ def ws_to_map_graph_data(
 
             props = snap.get("properties") or {}
             prop_str = ", ".join(f"{k}={v}" for k, v in list(props.items())[:4])
-            tooltip = f"<b>{obj.name}</b><br/>{placement}"
+            tooltip = f"<b>{html.escape(str(obj.name))}</b><br/>{html.escape(str(placement))}"
             if prop_str:
-                tooltip += f"<br/>{prop_str}"
+                tooltip += f"<br/>{html.escape(prop_str)}"
 
             nodes.append({
                 "id": obj_id,
@@ -1475,9 +1480,9 @@ def ws_to_map_graph_data(
                 continue
             arc_colour = NODE_COLORS.get("Channel", "#C46BD9")
             tip = (
-                f"<b>{ch.name}</b><br/>"
-                f"medium: {ch.medium}<br/>"
-                f"directionality: {ch.directionality}"
+                f"<b>{html.escape(str(ch.name))}</b><br/>"
+                f"medium: {html.escape(str(ch.medium))}<br/>"
+                f"directionality: {html.escape(str(ch.directionality))}"
             )
             if ch.directionality in ("broadcast", "simplex"):
                 src = parts[0]
@@ -1542,12 +1547,12 @@ def ws_to_map_graph_data(
             for addr in addressees:
                 tip = (
                     f"<b>utterance @ t={evt_t}</b><br/>"
-                    f"{speaker} \u2192 {addr}<br/>"
-                    f"channel: {ch_label}<br/>"
-                    f"medium: {medium}"
+                    f"{html.escape(str(speaker))} \u2192 {html.escape(str(addr))}<br/>"
+                    f"channel: {html.escape(str(ch_label))}<br/>"
+                    f"medium: {html.escape(str(medium))}"
                 )
                 if content:
-                    tip += f"<br/><i>{content}</i>"
+                    tip += f"<br/><i>{html.escape(content)}</i>"
                 links.append({
                     "source": speaker,
                     "target": addr,
@@ -1628,15 +1633,15 @@ def ws_to_map_graph_data(
             if len(desc) > 120:
                 desc = desc[:117] + "\u2026"
             tip = (
-                f"<b>{evt.id}</b> ({evt.event_type}) @ t={evt_t}<br/>"
-                f"at {evt_loc}"
+                f"<b>{html.escape(str(evt.id))}</b> ({html.escape(str(evt.event_type))}) @ t={evt_t}<br/>"
+                f"at {html.escape(str(evt_loc))}"
             )
             if desc:
-                tip += f"<br/>{desc}"
+                tip += f"<br/>{html.escape(desc)}"
             if channel_addressees:
                 tip += (
                     "<br/><i>channel-mediated: "
-                    f"{', '.join(sorted(channel_addressees))}</i>"
+                    f"{html.escape(', '.join(sorted(channel_addressees)))}</i>"
                 )
             event_node_id = f"__event_glyph__{evt.id}"
             nodes.append({
@@ -1823,8 +1828,20 @@ def event_overlay_series(
         # Compose a multi-line label; rendered via ``:formatter`` on
         # the chart's tooltip (axis trigger picks this series up at the
         # hovered category).
+        #
+        # C1 (2026-05-29 twelfth-pass audit): HTML-escape every dynamic
+        # field before interpolating into the tooltip markup. Event
+        # ``description`` (and, defensively, ``id`` / ``event_type``)
+        # originates from LLM-extracted source text and could contain
+        # ``<img onerror=...>`` or ``<script>`` payloads; ECharts
+        # tooltips render the resulting string as HTML, so unescaped
+        # interpolation was an XSS sink.
         lines = "<br/>".join(
-            f"<b>{e['id']}</b> [{e['event_type']}]: {e['description']}"
+            "<b>{}</b> [{}]: {}".format(
+                html.escape(str(e["id"])),
+                html.escape(str(e["event_type"])),
+                html.escape(str(e["description"])),
+            )
             for e in evs[:5]
         )
         if len(evs) > 5:
@@ -2111,10 +2128,10 @@ def ws_to_causal_force_data(
         modality = _modality_key(ce)
         color = MODALITY_COLORS.get(modality, EDGE_COLORS["causal"])
         tooltip = (
-            f"<b>{MODALITY_LABELS.get(modality, ce.causality_type)}</b><br/>"
-            f"mechanism: {ce.mechanism}<br/>"
+            f"<b>{html.escape(str(MODALITY_LABELS.get(modality, ce.causality_type)))}</b><br/>"
+            f"mechanism: {html.escape(str(ce.mechanism))}<br/>"
             f"force: {ce.causal_force}<br/>"
-            f"evidence: {ce.evidence_strength}"
+            f"evidence: {html.escape(str(ce.evidence_strength))}"
         )
         # WORLD_\u2192WORLD_ kept dashed so the latent-coupling lattice
         # is readable even where the iris colour overlaps with other
@@ -5463,9 +5480,9 @@ def ws_to_calendar_graph_data(
             },
             "tooltip": {
                 "formatter": (
-                    f"<b>{evt.id}</b><br/>"
+                    f"<b>{html.escape(str(evt.id))}</b><br/>"
                     f"t={evt.fabula_time}<br/>"
-                    f"{evt.description[:60]}"
+                    f"{html.escape((evt.description or '')[:60])}"
                 ),
             },
         })
@@ -6141,7 +6158,7 @@ def ws_to_social_layer_graph(
             "symbolSize": 36,
             "itemStyle": {"color": NODE_COLORS["Entity"]},
             "tooltip": {"formatter": (
-                f"<b>{ent.name}</b><br/>Status: {ent.status}<br/>"
+                f"<b>{html.escape(str(ent.name))}</b><br/>Status: {html.escape(str(ent.status))}<br/>"
                 f"{len(ent.beliefs)} beliefs, {len(ent.concerns)} concerns"
             )},
             "_sl_node_type": "Entity",
@@ -6184,7 +6201,7 @@ def ws_to_social_layer_graph(
                     "borderWidth": border_w,
                 },
                 "tooltip": {"formatter": (
-                    f"<b>{desc}</b><br/>kind: {prop.kind}<br/>"
+                    f"<b>{html.escape(str(desc))}</b><br/>kind: {html.escape(str(prop.kind))}<br/>"
                     f"stakes: {float(stakes):.2f}<br/>"
                     f"audience prior: {prior:.2f}"
                 )},
@@ -6252,11 +6269,11 @@ def ws_to_social_layer_graph(
                         "curveness": -0.18,
                     },
                     "tooltip": {"formatter": (
-                        f"<b>{ent.name}</b> "
+                        f"<b>{html.escape(str(ent.name))}</b> "
                         f"{'desires' if polarity == 'desire' else 'fears'}"
-                        f"<br/>\u2192 {concern.proposition_id}"
+                        f"<br/>\u2192 {html.escape(str(concern.proposition_id))}"
                         f"<br/>salience: {float(salience):.2f}"
-                        f"<br/>kind: {concern.kind or '\u2014'}"
+                        f"<br/>kind: {html.escape(str(concern.kind or '\u2014'))}"
                     )},
                 })
 
@@ -6320,8 +6337,8 @@ def ws_to_social_layer_graph(
                         "curveness": 0.18,
                     },
                     "tooltip": {"formatter": (
-                        f"{ent.name} believes "
-                        f"({conf:.2f}): {b.perceived_state}"
+                        f"{html.escape(str(ent.name))} believes "
+                        f"({conf:.2f}): {html.escape(str(b.perceived_state))}"
                     )},
                 })
 

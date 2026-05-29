@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
@@ -554,6 +555,12 @@ class PipelineResult(BaseModel):
     # ``defer_reextraction`` mode. ``finish_reextraction(result)`` invokes
     # it; UI / MCP wrappers should never touch this attr directly.
     _deferred_reextraction_fn: Optional[Any] = PrivateAttr(default=None)
+    # P6 (2026-05-29 ninth-pass audit): serialize finish_reextraction so
+    # two concurrent callers can't both observe ``reextraction_pending=True``
+    # and double-invoke the closure (which would re-merge the deferred
+    # ingestion onto the world model twice). A per-result re-entrant lock
+    # keeps the pending-check + closure-invoke atomic.
+    _finish_lock: Any = PrivateAttr(default_factory=threading.RLock)
 
 
 # =====================================================================
@@ -571,26 +578,33 @@ def finish_reextraction(result: "PipelineResult") -> "PipelineResult":
     ``result.reextraction_pending`` is False.
 
     Idempotent: a second call after completion is a no-op. Safe to call
-    on a result that was never deferred (returns unchanged).
+    on a result that was never deferred (returns unchanged). Thread-safe:
+    concurrent callers serialize on ``result._finish_lock`` so the closure
+    fires at most once even under contention.
     """
     if not result.reextraction_pending:
         return result
-    fn = result._deferred_reextraction_fn
-    if fn is None:
-        # Pending but no closure — someone deferred without setting up
-        # the closure. Treat as a programming error but stay resilient.
-        result.reextraction_pending = False
-        result.reextraction_failed = True
-        result.reextraction_error = (
-            "finish_reextraction called but no deferred closure was stashed."
-        )
+    with result._finish_lock:
+        # Re-check inside the lock: another caller may have completed
+        # the merge while we were waiting on it.
+        if not result.reextraction_pending:
+            return result
+        fn = result._deferred_reextraction_fn
+        if fn is None:
+            # Pending but no closure — someone deferred without setting up
+            # the closure. Treat as a programming error but stay resilient.
+            result.reextraction_pending = False
+            result.reextraction_failed = True
+            result.reextraction_error = (
+                "finish_reextraction called but no deferred closure was stashed."
+            )
+            return result
+        try:
+            fn()
+        finally:
+            result._deferred_reextraction_fn = None
+            result.reextraction_pending = False
         return result
-    try:
-        fn()
-    finally:
-        result._deferred_reextraction_fn = None
-        result.reextraction_pending = False
-    return result
 
 
 # =====================================================================
@@ -4424,9 +4438,21 @@ def _run_evaluation_branch(
         branch_world_id=_eval_branch_id,
         branch_label=_eval_branch_label,
     )
-    eval_brief.epistemic_gaps = eval_assembler.compute_epistemic_gaps(focus_ids)
+    # A6 (2026-05-29 tenth-pass audit): forward the query's
+    # ``syuzhet_anchor`` to the epistemic-gap and trait-trajectory
+    # computations so the evaluator sees the same reader-position
+    # frame the directive assembler uses. Without this, beliefs and
+    # trait snapshots from the entire timeline (including future
+    # events the reader has not yet encountered) inflate gap
+    # magnitudes and distort reader-effect metrics.
+    _eval_anchor = getattr(query, "syuzhet_anchor", None)
+    eval_brief.epistemic_gaps = eval_assembler.compute_epistemic_gaps(
+        focus_ids, syuzhet_anchor=_eval_anchor,
+    )
     eval_brief.narrative_tensions = eval_assembler.compute_narrative_tension()
-    eval_brief.trait_trajectories = eval_assembler.compute_trait_trajectories(focus_ids)
+    eval_brief.trait_trajectories = eval_assembler.compute_trait_trajectories(
+        focus_ids, syuzhet_anchor=_eval_anchor,
+    )
 
     causal_fb = compute_causal_feedback(None, eval_brief, ws)
     affective_fb = compute_affective_feedback(eval_brief, eval_assembler, focus_ids)

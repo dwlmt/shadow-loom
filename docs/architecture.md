@@ -860,6 +860,20 @@ DAG and yields one summary per branch (root, head, fork-point ancestor,
 version count); `db.promote_branch(version_row_id)` copies a shadow version
 onto a new factual `VersionRow` whose ancestor is the current factual head.
 
+**Engine init is serialised.** `init_db()` runs its bootstrap (engine
+construction, `SQLModel.metadata.create_all`, lightweight migrations,
+optional Postgres partition setup) under a module-level `threading.Lock`
+(D6, thirteenth-pass audit, 2026-05-29). The lock prevents two worker
+threads racing on the first request from clobbering each other's engine
+mid-migration; the body still always rebinds `_engine` so test fixtures
+that call `init_db("sqlite://")` per test continue to get a clean shard.
+
+**Branch traversal is O(versions), not O(branches × versions).**
+`list_branches` pre-indexes `children_by_anc` once before walking the
+DAG (D7, thirteenth-pass audit, 2026-05-29); the previous per-branch
+linear scan of the full row list became visible on long-running
+interactive sessions with dozens of branches and thousands of versions.
+
 Which branch a pipeline run lands on is decided by
 `PipelineConfig.branch_policy: Literal["auto", "mainline", "shadow"]`
 (default `"auto"`). Under `auto`, counterfactual queries fork to a fresh

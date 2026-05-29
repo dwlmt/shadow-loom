@@ -1114,8 +1114,21 @@ def _coerce_legacy_dict(legacy: Dict[str, Any]) -> List[DoTarget]:
                 targets.append(DoProposition(
                     proposition_id=base_key, truth=coerced,
                 ))
-            except Exception:
-                pass
+            except Exception as exc:
+                # D4 (thirteenth-pass audit): surface what would
+                # otherwise be a silent drop. A malformed truth
+                # payload that passes ``coerce_truth`` but trips
+                # pydantic validation (e.g. malformed PROP_ id) used
+                # to produce a no-op counterfactual that *looked*
+                # successful to the caller.
+                import warnings
+                warnings.warn(
+                    f"DoProposition({base_key!r}, truth={coerced!r}) "
+                    f"rejected by validator: {exc}; intervention "
+                    "dropped.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             continue
         # ---- World-trait magnitude clamp: ``WORLD_X.value`` / ``.magnitude`` ----
         if base_key.startswith("WORLD_") and prop in ("value", "magnitude", "strength"):
@@ -1125,8 +1138,14 @@ def _coerce_legacy_dict(legacy: Dict[str, Any]) -> List[DoTarget]:
                 targets.append(DoWorldTrait(
                     world_trait_id=base_key, value=float(value),
                 ))
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as exc:
+                import warnings
+                warnings.warn(
+                    f"DoWorldTrait({base_key!r}, value={value!r}) "
+                    f"rejected: {exc}; intervention dropped.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             continue
         # ---- Object position / ownership: ``OBJ_X.location_id`` / ``.owner_id`` ----
         if base_key.startswith("OBJ_") and prop in ("location_id", "owner_id"):
@@ -1143,8 +1162,14 @@ def _coerce_legacy_dict(legacy: Dict[str, Any]) -> List[DoTarget]:
                     kwargs["new_owner_id"] = str(value)
             try:
                 targets.append(DoNarrativeObject(**kwargs))
-            except Exception:
-                pass
+            except Exception as exc:
+                import warnings
+                warnings.warn(
+                    f"DoNarrativeObject({kwargs!r}) rejected by "
+                    f"validator: {exc}; intervention dropped.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             continue
         # ---- Entity trait clamp: ``ENT_X.traits.<name> = float`` ----
         # Mirrors the dotted shape emitted by ``_lift_do_targets_to_legacy_dict``
@@ -1160,8 +1185,14 @@ def _coerce_legacy_dict(legacy: Dict[str, Any]) -> List[DoTarget]:
                         trait_name=trait_name,
                         value=float(value),
                     ))
-                except (TypeError, ValueError):
-                    pass
+                except (TypeError, ValueError) as exc:
+                    import warnings
+                    warnings.warn(
+                        f"DoTrait({base_key!r}.{trait_name}={value!r}) "
+                        f"rejected: {exc}; intervention dropped.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
                 continue
         # NOTE: ``DoBelief`` and ``DoConcern`` cannot be safely coerced
         # from a single dotted key because they require a (holder, target)

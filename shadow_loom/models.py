@@ -4,6 +4,7 @@
 import logging
 
 from pydantic import BaseModel, Field, model_validator, field_validator
+from pydantic import ValidationInfo
 from typing import Annotated, Any, Iterable, List, Dict, Optional, Literal
 
 _logger = logging.getLogger(__name__)
@@ -216,7 +217,7 @@ class TraitVector(BaseModel):
     )
 
     _coerce_es = field_validator("evidence_strength", mode="before")(
-        lambda v: _coerce_evidence_strength(v)
+        _coerce_evidence_strength
     )
 
 class AmbientVector(BaseModel):
@@ -233,7 +234,7 @@ class AmbientVector(BaseModel):
     )
 
     _coerce_es = field_validator("evidence_strength", mode="before")(
-        lambda v: _coerce_evidence_strength(v)
+        _coerce_evidence_strength
     )
 
 class Affordance(BaseModel):
@@ -287,7 +288,7 @@ class Belief(BaseModel):
     )
 
     _coerce_es = field_validator("evidence_strength", mode="before")(
-        lambda v: _coerce_evidence_strength(v)
+        _coerce_evidence_strength
     )
 
 
@@ -377,6 +378,9 @@ class Proposition(AMWNNode):
     def _normalize_truth_keys(cls, v: Any) -> Any:
         if not isinstance(v, dict):
             return v
+        # Narrow ``v`` for the static checker; the runtime ``isinstance``
+        # guard above already covers correctness.
+        v_dict: Dict[Any, Any] = v
         # 2026-05-29 (deep-audit HIGH): a naive ``bool(val)`` would
         # silently invert ``"false"`` (truthy non-empty string) and
         # convert ``NaN`` to ``True`` — either silently flips a
@@ -387,7 +391,7 @@ class Proposition(AMWNNode):
         _TRUE_TOKENS = {"true", "t", "yes", "y", "1"}
         _FALSE_TOKENS = {"false", "f", "no", "n", "0"}
         out: Dict[int, bool] = {}
-        for k, val in v.items():
+        for k, val in v_dict.items():
             try:
                 ik = int(k)
             except (TypeError, ValueError):
@@ -444,7 +448,9 @@ class Proposition(AMWNNode):
     # are loaded. This is a first-line check; ingestion.py performs the full check.
     @field_validator("inverse_proposition_id")
     @classmethod
-    def _validate_inverse_not_self(cls, v: Optional[str], info) -> Optional[str]:
+    def _validate_inverse_not_self(
+        cls, v: Optional[str], info: ValidationInfo,
+    ) -> Optional[str]:
         """Prevent self-referencing inverse propositions."""
         if v and info.data.get("proposition_id") and v == info.data["proposition_id"]:
             raise ValueError(
@@ -811,12 +817,16 @@ class ConcernSnapshot(BaseModel):
             )
         if len(v) == 2:
             lo, hi = v
-            if not isinstance(lo, int) or isinstance(lo, bool):
+            # ``type(x) is int`` (not ``isinstance``) so a Python ``bool``
+            # — which is an ``int`` subclass — is correctly rejected here;
+            # an isinstance-based check would silently accept ``True`` /
+            # ``False`` as window endpoints.
+            if type(lo) is not int:
                 raise ValueError(
                     f"activation_fabula_window[0] must be int; got "
                     f"{type(lo).__name__}={lo!r}"
                 )
-            if not isinstance(hi, int) or isinstance(hi, bool):
+            if type(hi) is not int:
                 raise ValueError(
                     f"activation_fabula_window[1] must be int; got "
                     f"{type(hi).__name__}={hi!r}"
@@ -887,7 +897,7 @@ class GlobalTrait(AMWNNode):
     )
 
     _coerce_domains = field_validator("affected_domains", mode="before")(
-        lambda v: _coerce_domain_list(v)
+        _coerce_domain_list
     )
 
 
@@ -1313,7 +1323,7 @@ class Channel(AMWNNode):
     )
 
     _coerce_es = field_validator("evidence_strength", mode="before")(
-        lambda v: _coerce_evidence_strength(v)
+        _coerce_evidence_strength
     )
 
 # ==========================================
@@ -1417,10 +1427,10 @@ class CausalEdge(AMWNEdge):
     )
 
     _coerce_es = field_validator("evidence_strength", mode="before")(
-        lambda v: _coerce_evidence_strength(v)
+        _coerce_evidence_strength
     )
     _coerce_mech = field_validator("mechanism", mode="before")(
-        lambda v: _coerce_mechanism(v)
+        _coerce_mechanism
     )
 
     propagation_delay: int = Field(
@@ -1592,7 +1602,7 @@ class RelationshipMetric(BaseModel):
     )
 
     _coerce_es = field_validator("evidence_strength", mode="before")(
-        lambda v: _coerce_evidence_strength(v)
+        _coerce_evidence_strength
     )
 
 
@@ -1606,7 +1616,7 @@ def default_relationship_metrics_dict(
     fabula_time: int = 0,
     evidence_strength: str = "weak",
     inertia: float = 0.3,
-) -> Dict[str, dict]:
+) -> Dict[str, Dict[str, Any]]:
     """Build a fully-populated per-axis ``metrics`` dict for a fallback
     relationship edge created by the physics propagator or surgery.
 
@@ -1873,7 +1883,7 @@ class SpatialEdge(AMWNEdge):
 
 # --- 4. TEMPORAL RECONSTRUCTION ---
 
-def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
+def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> Dict[str, Any]:
     """Reconstruct an entity's mutable state at a given fabula_time.
 
     Starts from the Entity's initial (pre-story) fields and replays
@@ -1995,7 +2005,7 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
     }
 
 
-def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> dict:
+def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> Dict[str, Any]:
     """Reconstruct a world trait's state at a given fabula_time.
 
     Starts from the GlobalTrait's initial magnitude and replays
@@ -2046,7 +2056,7 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> dict:
     }
 
 
-def reconstruct_object_at(obj: "NarrativeObject", fabula_time: int) -> dict:
+def reconstruct_object_at(obj: "NarrativeObject", fabula_time: int) -> Dict[str, Any]:
     """Reconstruct a :class:`NarrativeObject`'s mutable state at a given fabula_time.
 
     Starts from the object's initial fields and replays
@@ -3266,6 +3276,31 @@ class WorldStateV1(BaseModel):
             update["spatial_topology"] = self.spatial_topology_for_branch(
                 branch_world_id, branch_label,
             )
+        # Audit (seventh pass, A6): when a channel is tombstoned on
+        # this branch, every ``Belief.acquired_via_channel_id`` (top
+        # level and per-snapshot ``beliefs_added``) referencing the
+        # dropped channel becomes a dangling provenance pointer on
+        # the projected view. The factual channel-deletion path
+        # already scrubs these (pipeline.py L2612), but the
+        # shadow-tombstone path only suppresses the channel itself.
+        # Walk the projected entities and nullify dangling
+        # ``acquired_via_channel_id`` refs in lockstep so downstream
+        # consumers of the AMWN branch can't read a belief whose
+        # justifying channel doesn't exist on that branch.
+        if removed_channels:
+            base_ents = update.get("entities", self.entities)
+            scrubbed_ents = {}
+            for _eid, _ent in base_ents.items():
+                _ent_copy = _ent.model_copy(deep=True)
+                for _b in (_ent_copy.beliefs or []):
+                    if getattr(_b, "acquired_via_channel_id", None) in removed_channels:
+                        _b.acquired_via_channel_id = None
+                for _snap in (_ent_copy.state_timeline or []):
+                    for _b in (getattr(_snap, "beliefs_added", None) or []):
+                        if getattr(_b, "acquired_via_channel_id", None) in removed_channels:
+                            _b.acquired_via_channel_id = None
+                scrubbed_ents[_eid] = _ent_copy
+            update["entities"] = scrubbed_ents
         return self.model_copy(update=update)
 
     @model_validator(mode="after")

@@ -691,9 +691,19 @@ def compute_suspense_unified(
         # at 19000 — the impending reversal at 20000 keeps it open.
         # Only skip when every commit is at or before the cursor AND
         # there are no future commits left.
-        future_commits = [t for t in prop.truth_at_fabula if t > fabula_t]
+        # Audit (eighth pass, M6): ``truth_at_fabula`` keys are
+        # typed ``int`` but JSON/DB round-trip outside the validator
+        # can leave str keys. ``"19000" > 19000`` raises TypeError
+        # in Python 3; coerce defensively before comparing.
+        _ledger_ticks: List[int] = []
+        for _t in prop.truth_at_fabula:
+            try:
+                _ledger_ticks.append(int(_t))
+            except (TypeError, ValueError):
+                continue
+        future_commits = [t for t in _ledger_ticks if t > fabula_t]
         if not future_commits and any(
-            t <= fabula_t for t in prop.truth_at_fabula
+            t <= fabula_t for t in _ledger_ticks
         ):
             continue
         p_aud = bs.confidence(AUDIENCE_ID, prop.proposition_id, fabula_t)
@@ -776,6 +786,30 @@ def compute_mystery_unified(
     if not known_evt_ids:
         return 0.0
 
+    # Audit (eighth pass, M4): the original "unrevealed" check tested
+    # ``f"PROP_FROM_{a}" not in audience_known`` — a synthetic id
+    # convention used only by the auto-synthesiser. Real example
+    # worlds (``macbeth``, ``gone_girl``, …) attach semantic
+    # proposition ids (``PROP_DUNCAN_DEAD``) that reference event
+    # ids via ``Proposition.referent_ids``, so every authored
+    # ancestor was mis-classified as unrevealed → systematically
+    # inflated mystery entropy. Build the reverse index
+    # ``event_id -> {proposition_id}`` once and treat an ancestor
+    # as revealed iff the audience confidently knows at least one
+    # proposition referencing it.
+    evt_to_prop_ids: Dict[str, Set[str]] = {}
+    for _prop in bs.world.propositions:
+        for _ref in (_prop.referent_ids or []):
+            if isinstance(_ref, str) and _ref.startswith("EVT_"):
+                evt_to_prop_ids.setdefault(_ref, set()).add(_prop.proposition_id)
+
+    def _ancestor_revealed(_evt_id: str) -> bool:
+        _props = evt_to_prop_ids.get(_evt_id) or set()
+        # Synthetic-id fallback for legacy / auto-synthesised worlds.
+        if f"PROP_FROM_{_evt_id}" in audience_known:
+            return True
+        return bool(_props & audience_known)
+
     total = 0.0
     for evt_id in known_evt_ids:
         if evt_id not in g:
@@ -784,7 +818,7 @@ def compute_mystery_unified(
         # Restrict to ancestors NOT yet known to the audience.
         unrevealed = [
             a for a in ancestors
-            if f"PROP_FROM_{a}" not in audience_known
+            if not _ancestor_revealed(a)
         ]
         if len(unrevealed) < 2:
             continue
@@ -837,6 +871,40 @@ def _concern_salience(
     return max((c.salience for c in cs), default=0.0)
 
 
+def _concern_active_at(c: Concern, fabula_t: int) -> bool:
+    """True iff ``c.activation_fabula_window`` (resolved at *fabula_t*)
+    is None (always active) or contains *fabula_t* inclusive.
+    """
+    win = _concern_window_at(c, fabula_t)
+    if not win:
+        return True
+    try:
+        lo, hi = int(win[0]), int(win[1])
+    except (TypeError, ValueError, IndexError):
+        return True
+    return lo <= fabula_t <= hi
+
+
+def _concern_salience_t(
+    world: WorldStateV1, entity_id: str, prop_id: str, fabula_t: int,
+) -> float:
+    """Audit (eighth pass, M3): time-aware variant of
+    :func:`_concern_salience`. Reconstructs each concern at
+    *fabula_t* (so snapshot-driven salience drift counts) and zeroes
+    out concerns whose activation window does not include
+    *fabula_t* (so closed / not-yet-open concerns can't weight
+    affect scores).
+    """
+    cs = _concerns_for(world, entity_id, prop_id)
+    if not cs:
+        return 0.0
+    return max(
+        (_concern_salience_at(c, fabula_t) for c in cs
+         if _concern_active_at(c, fabula_t)),
+        default=0.0,
+    )
+
+
 def _concern_polarity_sign(
     world: WorldStateV1, entity_id: str, prop_id: str,
 ) -> int:
@@ -865,6 +933,43 @@ def _concern_polarity_sign(
             return -1
         else:
             return 0
+    elif desire > fear:
+        return +1
+    elif fear > desire:
+        return -1
+    return 0
+
+
+def _concern_polarity_sign_t(
+    world: WorldStateV1, entity_id: str, prop_id: str, fabula_t: int,
+) -> int:
+    """Audit (eighth pass, M3): time-aware variant of
+    :func:`_concern_polarity_sign`. Snapshot-reconstructs polarity
+    and salience at *fabula_t* and skips concerns whose activation
+    window does not include *fabula_t*.
+    """
+    cs = [
+        c for c in _concerns_for(world, entity_id, prop_id)
+        if _concern_active_at(c, fabula_t)
+    ]
+    if not cs:
+        return 0
+    desire = max(
+        (_concern_salience_at(c, fabula_t) for c in cs
+         if _concern_polarity_at(c, fabula_t) == "desire"),
+        default=0.0,
+    )
+    fear = max(
+        (_concern_salience_at(c, fabula_t) for c in cs
+         if _concern_polarity_at(c, fabula_t) == "fear"),
+        default=0.0,
+    )
+    if desire > 0.0 and fear > 0.0:
+        if desire > fear:
+            return +1
+        elif fear > desire:
+            return -1
+        return 0
     elif desire > fear:
         return +1
     elif fear > desire:
@@ -1006,8 +1111,13 @@ def compute_surprise_breakdown(
         # Polarity (relative to focal). +1 = belief moved toward true.
         movement = +1 if p_now > p_prev else -1
         if focal_id is not None:
-            sign = _concern_polarity_sign(
-                bs.world, focal_id, prop.proposition_id,
+            # Audit (eighth pass, M3): time-aware polarity respects
+            # snapshot drift and activation windows so a concern
+            # closed before ``fabula_t`` (or one whose polarity
+            # flipped via a snapshot) is scored against the right
+            # state instead of the static initial field.
+            sign = _concern_polarity_sign_t(
+                bs.world, focal_id, prop.proposition_id, fabula_t,
             )
             # Aligned: focal desires true & moved toward true; or
             # focal fears true & moved toward false.
@@ -1018,7 +1128,10 @@ def compute_surprise_breakdown(
                     unpleasant += kl
 
         for fid in focals:
-            sal = _concern_salience(bs.world, fid, prop.proposition_id)
+            # Audit (eighth pass, M3): time-aware salience.
+            sal = _concern_salience_t(
+                bs.world, fid, prop.proposition_id, fabula_t,
+            )
             per_focal[fid] = per_focal.get(fid, 0.0) + kl * sal
 
     return SurpriseBreakdown(
@@ -1101,7 +1214,11 @@ def compute_irony_breakdown(
         elif prop.kind in _IRONY_SURPRISE_KINDS:
             sur_irony += kl_a_f
 
-        sal = _concern_salience(bs.world, focal_id, prop.proposition_id)
+        # Audit (eighth pass, M3): time-aware salience so closed /
+        # not-yet-open concerns can't weight irony scores.
+        sal = _concern_salience_t(
+            bs.world, focal_id, prop.proposition_id, fabula_t,
+        )
         concern_weighted += kl_a_f * sal
 
     # Wall gradient: which character is most ironised (relative to audience)?

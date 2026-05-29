@@ -554,20 +554,30 @@ class CausalPhysicsSettings(BaseSettings):
     )
     noisy_or_temperature: float = Field(
         default=0.25,
+        gt=0.0,
+        le=10.0,
         description=(
             "Sigmoid temperature for the noisy-OR per-edge gate. Lower = "
             "sharper (closer to a hard threshold at |w*impulse| == inertia); "
             "higher = softer (more probability mass even when impulse is "
-            "below inertia)."
+            "below inertia). D5 (thirteenth-pass audit): must be > 0 (zero "
+            "triggers a divide-by-zero in the sigmoid) and \u2264 10 (above "
+            "that the gate is effectively uniform random and silently "
+            "breaks every causal-physics regression)."
         ),
     )
     noisy_or_threshold: float = Field(
         default=0.5,
+        ge=0.0,
+        le=1.0,
         description=(
             "Aggregate noisy-OR probability above which the trait is "
             "considered to have shifted in the *deterministic* "
             "propagation_mode='noisy_or' path. Ignored under Monte-Carlo "
-            "sampling, where the noisy-OR probability is drawn directly."
+            "sampling, where the noisy-OR probability is drawn directly. "
+            "D5 (thirteenth-pass audit): bounded to [0, 1] because it is a "
+            "probability \u2014 values outside the unit interval used to "
+            "silently disable the gate (>1) or fire on every edge (<0)."
         ),
     )
 

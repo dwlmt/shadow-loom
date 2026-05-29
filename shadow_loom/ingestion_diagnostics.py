@@ -9,6 +9,7 @@ Backend for Tier 4 #14 in /memories/repo/ingestion-improvements-plan-2026-05-06.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import re
 import threading
@@ -19,6 +20,17 @@ from pydantic import BaseModel, Field
 
 _BRACKET_RE = re.compile(r"^\[([^\]]+)\]")
 _LOGGER_NAME = "shadow_loom.ingestion"
+
+# C2 (twelfth-pass audit): use a ContextVar so concurrent ingestions
+# in different threads / asyncio tasks each see their own active
+# project_id. The previous global LIFO stack cross-attributed
+# diagnostics when two ingestions overlapped (the most recently
+# pushed project_id would absorb all log records from every active
+# scope).
+_current_project: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "shadow_loom_ingestion_diagnostics_current_project",
+    default=None,
+)
 
 
 class IngestionWarning(BaseModel):
@@ -40,7 +52,6 @@ class _DiagnosticsHandler(logging.Handler):
     def __init__(self) -> None:
         super().__init__(level=logging.INFO)
         self._lock = threading.Lock()
-        self._project_stack: List[str] = []
         self._buffers: Dict[str, _ProjectBuffer] = {}
 
     # ----- handler API -----
@@ -53,10 +64,13 @@ class _DiagnosticsHandler(logging.Handler):
         if not m:
             return
         category = m.group(1)
+        # Route by the current context's project_id rather than a
+        # shared LIFO stack, so concurrent scopes don't bleed into
+        # each other.
+        project_id = _current_project.get()
+        if project_id is None:
+            return
         with self._lock:
-            project_id = self._project_stack[-1] if self._project_stack else None
-            if project_id is None:
-                return
             buf = self._buffers.setdefault(project_id, _ProjectBuffer())
             buf.records.append(
                 IngestionWarning(
@@ -67,19 +81,9 @@ class _DiagnosticsHandler(logging.Handler):
             )
 
     # ----- scoping API -----
-    def push(self, project_id: str) -> None:
+    def reset_buffer(self, project_id: str) -> None:
         with self._lock:
-            self._project_stack.append(project_id)
-            # Reset buffer for a fresh ingest run.
             self._buffers[project_id] = _ProjectBuffer()
-
-    def pop(self, project_id: str) -> None:
-        with self._lock:
-            # Best-effort pop — tolerate mismatched nesting.
-            for i in range(len(self._project_stack) - 1, -1, -1):
-                if self._project_stack[i] == project_id:
-                    del self._project_stack[i]
-                    return
 
     def records_for(self, project_id: str) -> List[IngestionWarning]:
         with self._lock:
@@ -117,9 +121,16 @@ class capture_ingestion_warnings:
     def __init__(self, project_id: str) -> None:
         self.project_id = str(project_id)
         self._handler = _get_handler()
+        self._token: Optional[contextvars.Token] = None
+        self._prev_level: Optional[int] = None
 
     def __enter__(self) -> "capture_ingestion_warnings":
-        self._handler.push(self.project_id)
+        # Reset buffer for a fresh ingest run, then bind this scope's
+        # project_id into the current context. ``__exit__`` releases
+        # the binding via the stored token so nested scopes restore
+        # cleanly without relying on a global stack.
+        self._handler.reset_buffer(self.project_id)
+        self._token = _current_project.set(self.project_id)
         # Ensure INFO-level diagnostics actually reach our handler even
         # when the application's root logger is at WARNING.
         ing_logger = logging.getLogger(_LOGGER_NAME)
@@ -129,8 +140,11 @@ class capture_ingestion_warnings:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._handler.pop(self.project_id)
-        logging.getLogger(_LOGGER_NAME).setLevel(self._prev_level)
+        if self._token is not None:
+            _current_project.reset(self._token)
+            self._token = None
+        if self._prev_level is not None:
+            logging.getLogger(_LOGGER_NAME).setLevel(self._prev_level)
 
 
 def get_ingestion_warnings(project_id: str) -> List[IngestionWarning]:

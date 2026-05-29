@@ -34,7 +34,26 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # 0. HELPERS
 # ==========================================
-def _time_slice_relationship_at(rel: Any, t: int) -> Optional[dict]:
+def _default_horizon(world_state: "WorldStateV1") -> Optional[int]:
+    """Return the implicit fabula horizon (max event fabula_time) of the
+    world, used when callers pass ``temporal_anchor=None`` but we still
+    need a defensive upper bound for ``established_at_fabula`` /
+    ``destroyed_at_fabula`` gates.
+
+    Ninth-pass audit (N2/N3): without this, spatial edges and channels
+    whose ``established_at_fabula`` is *past* the world's latest known
+    event leak into the ego graph and into the omniscient extract as if
+    they were already standing — corrupting current-time reachability /
+    epistemic-leakage checks. Returns ``None`` only when the world has
+    no events at all (initial/empty state), in which case no defensive
+    gate fires and current behaviour is preserved.
+    """
+    if not world_state.events:
+        return None
+    return max(int(getattr(evt, "fabula_time", 0)) for evt in world_state.events)
+
+
+def _time_slice_relationship_at(rel: Any, t: int) -> Optional[Dict[str, Any]]:
     """Return a per-axis time-sliced copy of a relationship, or None.
 
     Per the per-axis refactor, each metric carries its own
@@ -76,7 +95,7 @@ def _time_slice_relationship_at(rel: Any, t: int) -> Optional[dict]:
         return None
 
     metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
-    surviving: Dict[str, dict] = {}
+    surviving: Dict[str, Dict[str, Any]] = {}
     for name, m in metrics.items():
         if not isinstance(m, dict):
             continue
@@ -113,18 +132,18 @@ def _time_slice_relationship_at(rel: Any, t: int) -> Optional[dict]:
 # ==========================================
 class EgoGraphPayload(BaseModel):
     """The highly localized JSON payload sent to the LLM."""
-    focus_entities: List[dict]
-    current_locations: List[dict]
-    present_entities: List[dict]
-    present_objects: List[dict]
-    relevant_relationships: List[dict]
-    relevant_causal_edges: List[dict]
-    relevant_spatial_edges: List[dict]
-    relevant_channels: List[dict]
-    relevant_utterance_events: List[dict] = Field(default_factory=list)
-    recent_memory: List[dict]
-    world_traits: List[dict] = Field(default_factory=list)
-    relevant_propositions: List[dict] = Field(
+    focus_entities: List[Dict[str, Any]]
+    current_locations: List[Dict[str, Any]]
+    present_entities: List[Dict[str, Any]]
+    present_objects: List[Dict[str, Any]]
+    relevant_relationships: List[Dict[str, Any]]
+    relevant_causal_edges: List[Dict[str, Any]]
+    relevant_spatial_edges: List[Dict[str, Any]]
+    relevant_channels: List[Dict[str, Any]]
+    relevant_utterance_events: List[Dict[str, Any]] = Field(default_factory=list)
+    recent_memory: List[Dict[str, Any]]
+    world_traits: List[Dict[str, Any]] = Field(default_factory=list)
+    relevant_propositions: List[Dict[str, Any]] = Field(
         default_factory=list,
         description=(
             "Propositions whose ``referent_ids`` intersect the in-scene "
@@ -204,6 +223,12 @@ def extract_ego_graph_from_memory(
     to be included.
     """
     logger.info("Initiating Multi-Ego GraphRAG for: %s", focus_entity_ids)
+
+    # N2/N3 (2026-05-29 ninth-pass audit): derive a defensive horizon for
+    # ``established_at_fabula`` / ``terminated_at_fabula`` gates when no
+    # explicit temporal anchor is passed. Otherwise future-of-narrative
+    # spatial edges and channels leak into the current ego view.
+    _gate_t = temporal_anchor if temporal_anchor is not None else _default_horizon(world_state)
 
     # Use Sets to prevent duplicating nodes if two targets are in the same room
     focus_entities = []
@@ -398,8 +423,9 @@ def extract_ego_graph_from_memory(
     relevant_spatial_edges = []
     for se in world_state.spatial_topology:
         if se.source_id in all_location_ids and se.target_id in all_location_ids:
-            # Skip paths not yet established at the anchor time
-            if temporal_anchor is not None and se.established_at_fabula > temporal_anchor:
+            # Skip paths not yet established at the anchor time (use the
+            # defensive horizon when no anchor was passed; see N2).
+            if _gate_t is not None and se.established_at_fabula > _gate_t:
                 continue
             # Skip destroyed paths (destroyed before or at anchor, or destroyed at all if no anchor)
             if se.destroyed_at_fabula is not None:
@@ -408,13 +434,14 @@ def extract_ego_graph_from_memory(
             relevant_spatial_edges.append(se.model_dump())
 
     # 6. The Channel Filter (standing comms capabilities involving focus entities)
-    relevant_channels: List[dict] = []
+    relevant_channels: List[Dict[str, Any]] = []
     for cid, ch in world_state.channels.items():
         # Participant filter: any focus entity must be a participant
         if not set(ch.participant_ids) & focus_id_set:
             continue
         # Temporal filter: channel must have been established by the anchor
-        if temporal_anchor is not None and ch.established_at_fabula > temporal_anchor:
+        # (use the defensive horizon when no anchor was passed; see N3).
+        if _gate_t is not None and ch.established_at_fabula > _gate_t:
             continue
         if ch.terminated_at_fabula is not None:
             if temporal_anchor is not None and ch.terminated_at_fabula <= temporal_anchor:
@@ -427,7 +454,7 @@ def extract_ego_graph_from_memory(
         relevant_channels.append(ch.model_dump())
 
     # 6b. Utterance events involving focus entities (time-sliced).
-    relevant_utterance_events: List[dict] = []
+    relevant_utterance_events: List[Dict[str, Any]] = []
     for evt in world_state.events:
         if evt.event_type != "utterance":
             continue
@@ -514,7 +541,7 @@ def extract_ego_graph_from_memory(
             relevant_causal_edges.append(edge.model_dump())
 
     # 8. World Traits (always include ALL — they are global, no spatial filtering)
-    world_traits_payload: List[dict] = []
+    world_traits_payload: List[Dict[str, Any]] = []
     for wt_id, wt in world_state.world_traits.items():
         wt_data = wt.model_dump()
         if wt.state_timeline:
@@ -541,7 +568,7 @@ def extract_ego_graph_from_memory(
     # propositional ledger only reaches the prompt as flipped-id
     # lists on rung-2/3 deltas \u2014 the live propositions for the
     # focal scene are invisible.
-    relevant_propositions: List[dict] = []
+    relevant_propositions: List[Dict[str, Any]] = []
     prop_scene_ids = scene_node_ids  # already includes focus + present + locs + memory
     for prop in world_state.propositions:
         refs = prop.referent_ids or []
@@ -591,7 +618,7 @@ def extract_full_world_state(
     world_state: WorldStateV1,
     temporal_anchor: Optional[int] = None,
     syuzhet_anchor: Optional[int] = None,
-) -> dict:
+) -> Dict[str, Any]:
     """
     Serialises the entire WorldStateV1 as a dictionary, optionally
     time-sliced to only include events / topology valid at or before
@@ -625,6 +652,31 @@ def extract_full_world_state(
         dump["events"] = [
             evt for evt in dump["events"] if evt["fabula_time"] <= t
         ]
+        # N4 (2026-05-29 ninth-pass audit): reconstruct entity/object
+        # mutable state at the anchor time. Previously the dump exposed
+        # the *latest* trait/belief/status/location for every entity
+        # (and the latest object snapshot) even when an event-time
+        # anchor was set — so the omniscient view leaked post-anchor
+        # mutations that the renderer / auditor were not supposed to
+        # see.
+        for ent_id, ent_dump in dump.get("entities", {}).items():
+            ent_model = world_state.entities.get(ent_id)
+            if ent_model is None:
+                continue
+            try:
+                recon = reconstruct_entity_at(ent_model, t)
+            except Exception:
+                continue
+            ent_dump.update(recon)
+        for obj_id, obj_dump in dump.get("objects", {}).items():
+            obj_model = world_state.objects.get(obj_id)
+            if obj_model is None or not getattr(obj_model, "state_timeline", None):
+                continue
+            try:
+                recon = reconstruct_object_at(obj_model, t)
+            except Exception:
+                continue
+            obj_dump.update(recon)
         dump["causal_topology"] = [
             ce for ce in dump.get("causal_topology", [])
             if ce.get("fabula_time", 0) <= t
@@ -684,6 +736,29 @@ def extract_full_world_state(
             "(syuzhet_anchor=%d)",
             len(dump["events"]), pre_evt, s,
         )
+        # P5 (2026-05-29 ninth-pass audit): when the syuzhet prune
+        # drops events the omniscient view must also drop any
+        # downstream causal edges that reference those (post-anchor)
+        # events on *either* endpoint. Otherwise the renderer / auditor
+        # walk causal_topology back from a visible event and
+        # immediately land on a dangling cause/effect node that was
+        # surgically removed from the event list.
+        surviving_evt_ids = {evt.get("id") for evt in dump["events"] if evt.get("id")}
+        pre_causal = len(dump.get("causal_topology", []))
+        dump["causal_topology"] = [
+            ce for ce in dump.get("causal_topology", [])
+            if (
+                (not (ce.get("cause_id") or "").startswith("EVT_") or ce.get("cause_id") in surviving_evt_ids)
+                and (not (ce.get("effect_id") or "").startswith("EVT_") or ce.get("effect_id") in surviving_evt_ids)
+            )
+        ]
+        if len(dump["causal_topology"]) < pre_causal:
+            logger.info(
+                "Omniscient Graph syuzhet-prune cascaded to causal edges: "
+                "%d/%d kept (removed %d edges referencing post-anchor events)",
+                len(dump["causal_topology"]), pre_causal,
+                pre_causal - len(dump["causal_topology"]),
+            )
 
     # Drop superseded events from the omniscient view: when a successor
     # event is itself in the surviving set, the older (overridden)
@@ -2001,7 +2076,25 @@ def _apply_affect_to_world(
             _surviving_commits.update(_committed_props_at_local(evt))
 
     # Index existing propositions by id for O(1) lookup.
-    prop_index: Dict[str, Proposition] = {p.proposition_id: p for p in merged.propositions}
+    #
+    # B2 (2026-05-29 eleventh-pass audit): also include the active
+    # shadow sidecar so a later chunk re-emitting a sidecar-held
+    # proposition can be backfilled (without this, the early-out
+    # ``if pid in sidecar: continue`` skipped the A4 backfill).
+    # Sidecar entries override the factual list on id collision so
+    # step 2/3's ``prop_world != world_id`` check sees the correct
+    # in-scope record first; the factual record remains in the
+    # underlying list and is still reachable for cross-branch clone
+    # via :func:`_get_or_clone_shadow_proposition`.
+    prop_index: Dict[str, Proposition] = {
+        p.proposition_id: p for p in merged.propositions
+    }
+    if world_id == "shadow" and branch_label:
+        _active_sidecar = (merged.shadow_propositions or {}).get(
+            branch_label, {},
+        )
+        for _pid, _p in _active_sidecar.items():
+            prop_index[_pid] = _p
 
     # 1. New propositions (genesis) — dedup on proposition_id.
     #
@@ -2012,7 +2105,73 @@ def _apply_affect_to_world(
     # branch (defensive — same fallback as entity routing).
     for pid, prop in topology.new_propositions.items():
         if pid in prop_index:
-            continue
+            # A4 (2026-05-29 tenth-pass audit) + B1/B3 (eleventh):
+            # additive backfill on the existing record. Scope-gated
+            # by ``existing.world_id == world_id`` so a shadow merge
+            # cannot mutate a factual proposition (B1: cross-branch
+            # write leak); the routing path below will materialise a
+            # shadow clone via ``_get_or_clone_shadow_proposition`` on
+            # the next truth-commit step, where the backfill can fire
+            # on the clone in a subsequent merge.
+            existing = prop_index[pid]
+            existing_world = getattr(existing, "world_id", "factual") or "factual"
+            if existing_world != world_id:
+                # Scope mismatch \u2014 skip the early-out branch entirely
+                # so the routing block below clones into the active
+                # sidecar (preserves the same routing path the
+                # pre-A4 code took).
+                pass
+            else:
+                updates: Dict[str, Any] = {}
+                incoming_inverse = getattr(prop, "inverse_proposition_id", None)
+                if incoming_inverse and not getattr(
+                    existing, "inverse_proposition_id", None,
+                ):
+                    updates["inverse_proposition_id"] = incoming_inverse
+                # B3: union new referent ids (additive, preserves order).
+                incoming_refs = list(getattr(prop, "referent_ids", None) or [])
+                existing_refs = list(getattr(existing, "referent_ids", None) or [])
+                if incoming_refs:
+                    seen_refs = set(existing_refs)
+                    merged_refs = list(existing_refs)
+                    for r in incoming_refs:
+                        if r and r not in seen_refs:
+                            merged_refs.append(r)
+                            seen_refs.add(r)
+                    if merged_refs != existing_refs:
+                        updates["referent_ids"] = merged_refs
+                # B3: prefer the longer description when the existing
+                # one is empty or a strict substring of the incoming.
+                incoming_desc = (getattr(prop, "description", "") or "").strip()
+                existing_desc = (getattr(existing, "description", "") or "").strip()
+                if incoming_desc and (
+                    not existing_desc
+                    or (
+                        len(incoming_desc) > len(existing_desc)
+                        and existing_desc in incoming_desc
+                    )
+                ):
+                    updates["description"] = incoming_desc
+                if updates:
+                    try:
+                        for _k, _v in updates.items():
+                            setattr(existing, _k, _v)
+                    except Exception:
+                        # Frozen model fallback: rebuild via model_copy.
+                        rebuilt = existing.model_copy(update=updates)
+                        prop_index[pid] = rebuilt
+                        if world_id == "shadow" and branch_label:
+                            _sc = (merged.shadow_propositions or {}).get(
+                                branch_label, {},
+                            )
+                            if _sc.get(pid) is existing:
+                                _sc[pid] = rebuilt
+                                continue
+                        if existing in merged.propositions:
+                            merged.propositions[
+                                merged.propositions.index(existing)
+                            ] = rebuilt
+                continue
         if world_id == "shadow" and branch_label:
             sidecar = merged.shadow_propositions.setdefault(branch_label, {})
             if pid in sidecar:
@@ -2885,6 +3044,7 @@ def _demote_social_metric_axes(
     *,
     merge_world_id: Literal["factual", "shadow"],
     source: str,
+    remaining_causal_topology: Optional[List[Any]] = None,
 ) -> int:
     """Demote ``RelationshipMetric.evidence_strength`` to ``weak`` on
     every ``(source_entity_id, target_entity_id, axis)`` triple in
@@ -2902,6 +3062,15 @@ def _demote_social_metric_axes(
     "stale / unsupported" signal they get when the canonical
     propagation gate did not fire.
 
+    When ``remaining_causal_topology`` is supplied, ``last_updated_fabula``
+    is also rewound to the most recent surviving ``mutation_social``
+    edge on that axis (or 0 when none remains). Without this,
+    audit (seventh pass, A7), a suppressed mutation leaves the
+    metric appearing freshly-updated at the suppressed event's
+    tick, contradicting the demoted evidence_strength and confusing
+    every downstream consumer that reads the timestamp (snapshot
+    coalescers, brief renderer, social-drift diagnostics).
+
     Parameters
     ----------
     social_topology
@@ -2914,6 +3083,10 @@ def _demote_social_metric_axes(
     source
         Either ``"delete"`` (the ``removed_event_ids`` deletion pass)
         or ``"suppress"`` (the shadow ``suppressed_event_ids`` cascade).
+    remaining_causal_topology
+        Optional post-deletion ``causal_topology``; used to compute the
+        latest-surviving ``mutation_social`` tick per axis when
+        rewinding ``last_updated_fabula``.
 
     Returns the number of axes actually demoted (already-weak axes are
     counted as zero so the warning reflects new information only).
@@ -2922,6 +3095,23 @@ def _demote_social_metric_axes(
         return 0
     demoted = 0
     axes_set = set(axes)
+    # Pre-compute latest surviving mutation_social tick per axis from
+    # the post-deletion causal_topology, when supplied.
+    latest_surviving: Dict[tuple[str, str, str], int] = {}
+    if remaining_causal_topology is not None:
+        for _c in remaining_causal_topology:
+            if getattr(_c, "causality_type", None) != "mutation_social":
+                continue
+            _key = (
+                getattr(_c, "target_id", None),
+                getattr(_c, "rel_counterpart_id", None),
+                getattr(_c, "trait_target", None),
+            )
+            if _key not in axes_set:
+                continue
+            _ft = int(getattr(_c, "fabula_time", 0) or 0)
+            if _ft > latest_surviving.get(_key, -1):
+                latest_surviving[_key] = _ft
     for rel in social_topology:
         # Round-9 audit fix: gate demotion on rel.world_id matching the
         # merge branch. Without this, a shadow-branch merge whose
@@ -2942,6 +3132,13 @@ def _demote_social_metric_axes(
                 if m is not None and m.evidence_strength != "weak":
                     m.evidence_strength = "weak"
                     demoted += 1
+                if m is not None and remaining_causal_topology is not None:
+                    # Rewind to the latest surviving mutation_social
+                    # tick on this axis (or 0 when no surviving
+                    # justification remains).
+                    new_lu = latest_surviving.get((s_ent, t_ent, axis), 0)
+                    if int(getattr(m, "last_updated_fabula", 0) or 0) > new_lu:
+                        m.last_updated_fabula = new_lu
     if demoted:
         logger.warning(
             "[merge\u00b7%s] Demoted evidence_strength to 'weak' on %d "
@@ -3036,6 +3233,7 @@ def _apply_deletions(
                 _drop_social_axes,
                 merge_world_id=merge_world_id,
                 source="delete",
+                remaining_causal_topology=merged.causal_topology,
             )
 
     # --- Shadow suppression (counterfactual / intervention cascade).
@@ -3103,6 +3301,7 @@ def _apply_deletions(
                 _suppressed_social_axes,
                 merge_world_id=merge_world_id,
                 source="suppress",
+                remaining_causal_topology=merged.causal_topology,
             )
         # Cascade: drop entity state_timeline snapshots whose
         # ``triggered_by`` references a suppressed event (the
@@ -4701,6 +4900,21 @@ class VersionedWorldModel(BaseModel):
                 for _rcid in topology.removed_channel_ids:
                     if _rcid not in bucket:
                         bucket.append(_rcid)
+            # Audit (seventh pass, A2): mirror ``removed_event_ids``
+            # into the per-branch sidecar so ``projected_for_branch``
+            # consumers can suppress events the shadow branch
+            # tombstoned. Parity with the channel-tombstone wiring
+            # above; without it the only events filtered at
+            # projection time are those carried in
+            # ``topology.suppressed_event_ids`` (which cascades
+            # through structural-equation closure), leaving
+            # operator-issued ``removed_event_ids`` deletions
+            # invisible to per-branch replay.
+            if topology.removed_event_ids:
+                bucket = merged.shadow_removed_event_ids.setdefault(branch_label, [])
+                for _reid in topology.removed_event_ids:
+                    if _reid not in bucket:
+                        bucket.append(_reid)
 
         next_version = self.version + 1
         new_history = list(self.history) + [

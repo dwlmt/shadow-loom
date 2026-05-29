@@ -146,12 +146,18 @@ class TestPreventedEventConstraints:
         assert build_prevented_event_constraints(ws, syuzhet_anchor=None) == []
 
     def test_anchor_caps_visibility(self):
+        # P2 (2026-05-29 ninth-pass audit): syuzhet_anchor is the
+        # reader's reading-order index; the helper translates it to a
+        # fabula cutoff via the visible events. We give the prevented
+        # event a syuzhet_index so the translation has a basis.
         evt_prev = SimpleNamespace(
             id="EVT_PREV", event_type="prevented", fabula_time=2000,
+            syuzhet_index=2000,
             description="future-only",
         )
         ws = _fake_world(events=[evt_prev])
-        # Anchor before the prevented event → suppressed.
+        # Anchor before the prevented event → suppressed (no event
+        # visible yet → cutoff=None → falls through to fabula gate).
         assert build_prevented_event_constraints(ws, syuzhet_anchor=1500) == []
         # Anchor at/after → surfaced.
         assert len(build_prevented_event_constraints(ws, syuzhet_anchor=2000)) == 1
@@ -192,27 +198,49 @@ class TestFalsePropositionConstraints:
         assert b.evidence == {"false_proposition_ids": ["PROP_F"]}
 
     def test_anchor_caps_visibility(self):
+        # P3 (2026-05-29 ninth-pass audit): truth_at_fabula keys are
+        # fabula_time; the syuzhet_anchor is translated to a fabula
+        # cutoff by inspecting visible events. Provide an anchor event
+        # whose syuzhet/fabula coincide so the translation is concrete.
         prop_f = SimpleNamespace(
             id="PROP_F", description="x",
             truth_at_fabula={2000: False},
         )
-        ws = _fake_world(propositions=[prop_f])
-        # Anchor before commit → no block.
+        anchor_evt = SimpleNamespace(
+            id="EVT_ANCHOR", event_type="outcome",
+            fabula_time=2000, syuzhet_index=2000,
+            description="anchor",
+        )
+        ws = _fake_world(events=[anchor_evt], propositions=[prop_f])
+        # Anchor before commit → no visible event → no block.
         assert build_false_proposition_constraints(ws, syuzhet_anchor=500) == []
-        # Anchor at/after → block.
+        # Anchor at/after → visible event → cutoff=2000 → block.
         assert len(build_false_proposition_constraints(ws, syuzhet_anchor=2000)) == 1
 
     def test_uses_latest_commit(self):
         # If the latest commit at/before the anchor is True, no block;
         # only the latest commit's truth value matters.
+        # P3 (2026-05-29): anchor is syuzhet → translates via visible
+        # events; give two anchor events so the cutoff lands cleanly.
         prop = SimpleNamespace(
             id="PROP_X", description="flip-flopper",
             truth_at_fabula={1000: False, 2000: True},
         )
-        ws = _fake_world(propositions=[prop])
+        evt_mid = SimpleNamespace(
+            id="EVT_MID", event_type="outcome",
+            fabula_time=1500, syuzhet_index=1500,
+            description="between commits",
+        )
+        evt_late = SimpleNamespace(
+            id="EVT_LATE", event_type="outcome",
+            fabula_time=2000, syuzhet_index=2000,
+            description="at/after later commit",
+        )
+        ws = _fake_world(events=[evt_mid, evt_late], propositions=[prop])
+        # No anchor → latest commit (2000:True) → no block.
         assert build_false_proposition_constraints(ws, syuzhet_anchor=None) == []
-        # But anchored before the True overwrite, the False commit
-        # is the latest applicable → block emitted.
+        # Anchor at syuzhet 1500 → cutoff=1500 → latest commit ≤ 1500
+        # is 1000:False → block.
         blocks = build_false_proposition_constraints(ws, syuzhet_anchor=1500)
         assert len(blocks) == 1
 

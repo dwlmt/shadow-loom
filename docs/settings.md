@@ -242,8 +242,8 @@ refactor; defaults preserve previous behaviour for everything except
 | Variable | Default | Notes |
 |---|---|---|
 | `PHYSICS_PROPAGATION_MODE` | `noisy_or` | `deterministic` keeps the legacy weighted-average + `\|impact\| > inertia` gate. `noisy_or` treats each incoming edge as an independent Bernoulli attempt to overcome inertia. |
-| `PHYSICS_NOISY_OR_TEMPERATURE` | `0.25` | Sigmoid temperature for the per-edge gate. Lower = sharper threshold. |
-| `PHYSICS_NOISY_OR_THRESHOLD` | `0.5` | Aggregate noisy-OR probability above which a trait is considered to have shifted (deterministic noisy-OR path). |
+| `PHYSICS_NOISY_OR_TEMPERATURE` | `0.25` | Sigmoid temperature for the per-edge gate. Lower = sharper threshold. **Bounded** `(0, 10]` (D5, thirteenth-pass audit) — zero divides the sigmoid, values above 10 produce a near-uniform gate that silently breaks every causal-physics regression. |
+| `PHYSICS_NOISY_OR_THRESHOLD` | `0.5` | Aggregate noisy-OR probability above which a trait is considered to have shifted (deterministic noisy-OR path). **Bounded** `[0, 1]` (D5, thirteenth-pass audit) — it is a probability; out-of-range values used to silently disable or always-fire the gate. |
 | `PHYSICS_CAUSAL_FORCE_SIGMA_WEAK` | `0.30` | Std-dev (fraction of nominal force) for `evidence_strength="weak"` edges in Monte-Carlo CTF. |
 | `PHYSICS_CAUSAL_FORCE_SIGMA_MODERATE` | `0.15` | Same for `evidence_strength="moderate"`. |
 | `PHYSICS_CAUSAL_FORCE_SIGMA_STRONG` | `0.05` | Same for `evidence_strength="strong"`. |
