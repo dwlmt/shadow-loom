@@ -105,11 +105,13 @@ def test_reconstruct_after_all_mutations_returns_current_values():
 def test_reconstruct_between_mutations_rolls_back_future_only():
     # current affinity = 0.3. At fabula=17000 we are after BETRAYAL
     # (15000) but before RECONCILE (18000) — undo the +0.4 only.
+    # Audit R18-23: rollback is attenuated by per-axis inertia
+    # (default 0.3 → 0.7× effective): 0.3 - 0.4*0.7 = 0.02.
     edge = _edge(affinity_now=0.3)
     state = reconstruct_relationship_at(
         edge, 17000, causal_edges=_causal_edges(), events=_events(),
     )
-    assert state["affinity"] == pytest.approx(-0.1)
+    assert state["affinity"] == pytest.approx(0.02)
 
 
 def test_reconstruct_before_all_mutations_rolls_back_everything():
@@ -117,10 +119,11 @@ def test_reconstruct_before_all_mutations_rolls_back_everything():
     state = reconstruct_relationship_at(
         edge, 1000, causal_edges=_causal_edges(), events=_events(),
     )
-    # affinity: 0.3 - 0.4 - (-0.6) = 0.5
-    assert state["affinity"] == pytest.approx(0.5)
-    # fear: 0.6 - 0.3 = 0.3
-    assert state["fear"] == pytest.approx(0.3)
+    # Audit R18-23: per-axis inertia attenuates each rolled-back delta.
+    # affinity (inertia 0.3 → 0.7×): 0.3 - 0.4*0.7 - (-0.6)*0.7 = 0.44
+    assert state["affinity"] == pytest.approx(0.44)
+    # fear (inertia 0.3 → 0.7×): 0.6 - 0.3*0.7 = 0.39
+    assert state["fear"] == pytest.approx(0.39)
 
 
 def test_reconstruct_clamps_to_axis_ranges():

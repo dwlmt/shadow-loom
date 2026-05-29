@@ -230,11 +230,11 @@ class TestAnnotateProseWithViolationSpans:
 class TestAuditorConfigBudgets:
     def test_max_iterations_default_is_four(self):
         cfg = AuditorConfig()
-        assert cfg.max_iterations == 4
+        assert cfg.max_iterations == 6
 
     def test_regression_retry_budget_default(self):
         cfg = AuditorConfig()
-        assert cfg.regression_retry_budget == 1
+        assert cfg.regression_retry_budget == 2
 
     def test_failed_open_tolerance_default(self):
         cfg = AuditorConfig()
@@ -577,8 +577,8 @@ class TestSettingsRoundTrip:
         # Every round-7 field is present and equals the documented
         # default. If a future Pydantic-default change drops one,
         # this test fails loudly.
-        assert cfg_dict["max_iterations"] == 4
-        assert cfg_dict["regression_retry_budget"] == 1
+        assert cfg_dict["max_iterations"] == 6
+        assert cfg_dict["regression_retry_budget"] == 2
         assert cfg_dict["failed_open_tolerance"] == 2
         assert cfg_dict["enable_deterministic_prose_checks"] is True
         assert cfg_dict["pov_breach_threshold"] == 3
@@ -594,8 +594,8 @@ class TestSettingsRoundTrip:
                 "pov_breach_threshold",
             }
         })
-        assert cfg.max_iterations == 4
-        assert cfg.regression_retry_budget == 1
+        assert cfg.max_iterations == 6
+        assert cfg.regression_retry_budget == 2
         assert cfg.failed_open_tolerance == 2
         assert cfg.enable_deterministic_prose_checks is True
         assert cfg.pov_breach_threshold == 3

@@ -409,6 +409,21 @@ class AuditViolation(BaseModel):
         "pruned_utterance_leak",
         "disabled_channel_leak",
         "blocked_propagation_leak",
+        # Defence-in-depth for do-prevention surgeries: prose stages a
+        # NON-utterance event that the engine erased / cause-broke.
+        # The auditor's other leak checks cover utterance content
+        # (``pruned_utterance_leak``) and channel routing
+        # (``disabled_channel_leak``); this one catches the case where
+        # the renderer still enacts the underlying action / outcome
+        # (e.g. \"Macbeth still stabs Duncan\" after a surgery
+        # erased EVT_LADY_MACBETH_PERSUADES and Step B.6 cascaded the
+        # prune to EVT_DUNCAN_MURDER). High-precision verbatim check
+        # against the event id token and a substring of the event
+        # description; paraphrase cases remain the LLM auditor's
+        # remit. Critical \u2014 the prose contradicts the do-surgery
+        # ledger directly. Fired by
+        # :func:`_prevented_event_reenacted_violations`.
+        "prevented_event_reenacted",
         # Inert-intervention aftermath (round-5 audit fix; the round-9
         # follow-up added the missing Literal value). Fired when the
         # engine flagged the surgery ``intervention_inert=True`` but
@@ -651,7 +666,7 @@ class AuditorConfig(BaseModel):
         description="PydanticAI model string for the generation LLM (re-renders).",
     )
     max_iterations: int = Field(
-        default=4,
+        default=6,
         ge=1,
         le=8,
         description=(
@@ -716,7 +731,7 @@ class AuditorConfig(BaseModel):
         ),
     )
     regression_retry_budget: int = Field(
-        default=1,
+        default=2,
         ge=0,
         description=(
             "How many anti-regression retries the feedback loop is "
@@ -2245,7 +2260,10 @@ def assemble_audit_prompt(
                 f"  Cyclic propagation clusters "
                 f"({len(causal_feedback.cyclic_propagation_clusters)}) "
                 f"— static-topology cycles, NOT miracle steps. "
-                f"Do not flag these as prose problems:"
+                f"The (entity, trait) pairs below CANNOT move in this "
+                f"sandbox; do NOT flag prose for failing to depict any "
+                f"change in them, and do NOT request a mechanism that "
+                f"would move them:"
             )
             for cc in causal_feedback.cyclic_propagation_clusters:
                 sections.append(f"    - {cc}")
@@ -2254,8 +2272,12 @@ def assemble_audit_prompt(
                 f"  Noisy-OR absorbed propagations "
                 f"({len(causal_feedback.noisy_or_absorbed_propagations)}) "
                 f"— probabilistic gate dampened weak impulses (impact ≪ "
-                f"inertia), NOT miracle steps. Do not flag these as prose "
-                f"problems:"
+                f"inertia), NOT miracle steps. The displayed `impact=` "
+                f"number is NOT a required Δ; it is the (insufficient) "
+                f"push the engine rejected. Do NOT flag prose for "
+                f"omitting these changes, do NOT request a mechanism for "
+                f"them, and do NOT cite the impact value as a target "
+                f"delta:"
             )
             for na in causal_feedback.noisy_or_absorbed_propagations:
                 sections.append(f"    - {na}")
@@ -2798,10 +2820,94 @@ def _check_pov_lock_metadata(
     )
 
 
+_MIRACLE_INJECT_CAP = 12
+_BLOCKED_KEY_RE = re.compile(
+    r"(?P<entity>[A-Z][A-Z0-9_]+)\.(?P<trait>[a-zA-Z_][a-zA-Z0-9_]*)"
+)
+
+
+def _engine_blocked_keys(
+    blocked: List[BlockedPropagation],
+    causal_feedback: Optional[CausalPhysicsFeedback] = None,
+) -> set[tuple[str, str]]:
+    """Union of (entity, trait) pairs the engine declared off-limits.
+
+    Combines ``BlockedPropagation`` entries with parsed
+    ``cyclic_propagation_clusters`` / ``noisy_or_absorbed_propagations``
+    so any downstream mechanism injection or auditor-flag matching can
+    drop targets the engine already proved cannot move.
+    """
+    keys: set[tuple[str, str]] = set()
+    for b in blocked or []:
+        if getattr(b, "node_id", None) and getattr(b, "trait", None):
+            keys.add((str(b.node_id), str(b.trait)))
+    if causal_feedback is not None:
+        for entry in (
+            list(causal_feedback.cyclic_propagation_clusters or [])
+            + list(causal_feedback.noisy_or_absorbed_propagations or [])
+        ):
+            m = _BLOCKED_KEY_RE.search(str(entry))
+            if m:
+                keys.add((m.group("entity"), m.group("trait")))
+    return keys
+
+
+def _violation_targets_blocked_key(
+    v: AuditViolation,
+    blocked_keys: set[tuple[str, str]],
+) -> bool:
+    """Best-effort check that a miracle_step violation is talking about
+    a blocked propagation (so we should NOT inject a contradicting
+    mechanism for it).
+
+    Matching is deliberately conservative: only drop the violation when
+    the auditor's text mentions the entity and trait in close proximity
+    or in the canonical ``ENT_FOO.trait`` form. Loose "both words appear
+    somewhere in the feedback" matching would silently suppress
+    legitimate miracle-steps about an unrelated trait of the same
+    entity, which is itself a regression. When in doubt, keep the
+    injected directive — the cap (``_MIRACLE_INJECT_CAP``) bounds the
+    blast radius if our match is too permissive.
+    """
+    if not blocked_keys:
+        return False
+    haystack = " ".join(
+        [
+            v.feedback or "",
+            getattr(v, "evidence_quote", "") or "",
+            v.description or "",
+        ]
+    )
+    if not haystack:
+        return False
+    haystack_lower = haystack.lower()
+    for ent, trait in blocked_keys:
+        ent_l = ent.lower()
+        trait_l = trait.lower()
+        # 1) Canonical dotted form (``ENT_FOO.guilt``) — unambiguous.
+        if f"{ent_l}.{trait_l}" in haystack_lower:
+            return True
+        # 2) Both tokens appear within 80 chars of each other AND the
+        # trait word is bracketed by non-alphanumeric chars (so
+        # ``guilt`` matches but ``guilty`` / ``guiltless`` don't, and
+        # an unrelated paragraph mention of the entity doesn't drag in
+        # a stray trait collision).
+        ent_idx = haystack_lower.find(ent_l)
+        if ent_idx < 0:
+            continue
+        # Use word-boundary regex for the trait to avoid partial-word
+        # false positives.
+        for m in re.finditer(rf"\b{re.escape(trait_l)}\b", haystack_lower):
+            if abs(m.start() - ent_idx) <= 80:
+                return True
+    return False
+
+
 def _inject_miracle_step_mechanisms(
     brief: CreativeBrief,
     blocked: List[BlockedPropagation],
     violations: List[AuditViolation],
+    causal_feedback: Optional[CausalPhysicsFeedback] = None,
 ) -> int:
     """Append :class:`InterventionMechanism` entries to *brief* for every
     miracle-step the engine or auditor flagged.
@@ -2825,11 +2931,24 @@ def _inject_miracle_step_mechanisms(
         (m.node_id, m.new_state) for m in brief.intervention_mechanisms
     }
     added = 0
+    # Cap total mechanism count so multi-iteration runs cannot accumulate
+    # contradictory "stage a beat for X" directives that flip-flop with
+    # later auditor passes. Mirrors ``_MIRACLE_INJECT_CAP``.
+    cap_remaining = max(0, _MIRACLE_INJECT_CAP - len(brief.intervention_mechanisms))
+    # Engine ledger of (entity, trait) pairs the propagator already
+    # declared off-limits (cycles, noisy-OR-absorbed, etc.). We must
+    # NOT inject mechanism hints that ask the renderer to depict these
+    # — that's the source of auditor↔engine contradictions.
+    engine_blocked_keys = _engine_blocked_keys(blocked, causal_feedback)
 
     for b in blocked:
+        if cap_remaining <= 0:
+            break
         if b.reason != "inertia":
-            # Spatial / cycle blocks aren't narrative miracles \u2014
-            # their fix is in the world topology, not in the prose.
+            # Spatial / cycle / noisy_or_absorbed blocks aren't narrative
+            # miracles — their fix is in the world topology, not in the
+            # prose. Injecting a mechanism for them creates a contradiction
+            # with the brief's BLOCKED PROPAGATIONS (HARD) block.
             continue
         key = (b.node_id, f"{b.trait}\u2191" if b.impact > 0 else f"{b.trait}\u2193")
         if key in existing_keys:
@@ -2851,11 +2970,21 @@ def _inject_miracle_step_mechanisms(
         ))
         existing_keys.add(key)
         added += 1
+        cap_remaining -= 1
 
     # The LLM auditor may also flag miracle-steps the engine missed
     # (e.g. an off-graph trait the renderer changed without justification).
     for v in violations:
+        if cap_remaining <= 0:
+            break
         if v.violation_type != "miracle_step":
+            continue
+        # Drop auditor-flagged miracle-steps whose subject overlaps
+        # with engine-blocked propagations. Otherwise we'd be telling
+        # the renderer to "stage a mechanism for X" while simultaneously
+        # telling it (via BLOCKED PROPAGATIONS HARD) that X cannot
+        # change — the loop never converges.
+        if _violation_targets_blocked_key(v, engine_blocked_keys):
             continue
         # Synthetic key so the auditor-only flag still becomes a directive.
         key = ("AUDITOR", v.feedback[:40])
@@ -2873,6 +3002,7 @@ def _inject_miracle_step_mechanisms(
         ))
         existing_keys.add(key)
         added += 1
+        cap_remaining -= 1
 
     return added
 
@@ -3757,23 +3887,109 @@ def _cascade_exclusion_leak_violations(
                         ),
                     ))
 
-    # 3. Blocked-propagation leak: REMOVED.
+    # 3. Blocked-propagation leak: NARROW RESTORATION (R2-3, 2026-05-29).
     #
-    # The renderer is *required* by the brief's BLOCKED PROPAGATIONS
-    # block to mention every (node, trait) pair on-page and depict
-    # the resistance (force, inertia, affordance constraint). The
-    # previous per-sentence node+trait co-mention scan flagged exactly
-    # the prose the brief asked for — e.g. "Ken's stutter stayed
-    # silent, the expected hesitation swallowed by his controlled
-    # breathing" — because the substring "stutter" co-occurs with
-    # "Ken". A deterministic scanner cannot tell "rendered as resisted"
-    # apart from "rendered as propagated" without parsing negation
-    # scope; mis-firing forces the refinement loop to chase its tail
-    # and produces a `passed=False` ledger that contradicts the LLM
-    # auditor's `passed=True` verdict (observed in the live trace as
-    # `[+1 ctf-calculus exclusion leak(s)]` post-mutation). Trust the
-    # LLM auditor to triage this category; it has the full BLOCKED
-    # PROPAGATIONS block in its prompt and can read negation scope.
+    # The original per-sentence node+trait co-mention scan was removed
+    # because it false-positived on prose the brief explicitly asked
+    # for (e.g. "Ken's stutter stayed silent, swallowed by his
+    # controlled breathing"). The renderer is required to depict the
+    # blocked propagation on-page; the deterministic scanner could
+    # not distinguish "rendered as resisted" from "rendered as
+    # propagated".
+    #
+    # The narrow restoration only fires when ALL of the following hold
+    # in the same sentence:
+    #   (a) the node identifier (ENT_/OBJ_/LOC_ id, OR its
+    #       canonical name) appears, AND
+    #   (b) the trait token appears, AND
+    #   (c) NO resistance / negation marker appears anywhere in the
+    #       sentence (a closed lexicon of high-precision tokens that
+    #       the BLOCKED PROPAGATIONS directive instructs the renderer
+    #       to use when staging resistance).
+    # Severity is held at "minor" so even a mis-fire never blocks
+    # refinement; the LLM auditor remains the source of truth for
+    # this category.
+    if blocked_pairs:
+        prose_sentences = re.split(r"(?<=[.!?])\s+", prose)
+        # High-precision resistance / negation lexicon. Any of these
+        # in a sentence flips it to "rendered as resisted" and the
+        # leak is suppressed.
+        _RESISTANCE_MARKERS = (
+            " not ", " no ", " never ", " none ", " n't ", " nor ",
+            "without", "absent", "lacking",
+            # explicit resistance verbs
+            "resist", "withstood", "withstand", "swallow", "swallowed",
+            "suppress", "suppressed", "controlled", "contained",
+            "kept ", "stayed ", "remained ", "held ", "steady",
+            "unchang", "unmoved", "unshaken", "unfaltering",
+            "calm", "calmly", "still ", "silent",
+        )
+        # Build a node-id \u2192 lowercased canonical name lookup so a
+        # sentence that mentions the name (not the raw id) still
+        # qualifies as "mentions the node".
+        ents = getattr(world_state, "entities", {}) or {}
+        objs = getattr(world_state, "objects", {}) or {}
+        locs = getattr(world_state, "locations", {}) or {}
+        node_names: Dict[str, str] = {}
+        for _m in (ents, objs, locs):
+            if not isinstance(_m, dict):
+                continue
+            for _nid, _node in _m.items():
+                _nm = getattr(_node, "name", None)
+                if isinstance(_nm, str) and len(_nm.strip()) >= 3:
+                    node_names[_nid] = _nm.strip().lower()
+        seen_pairs: set[str] = set()
+        for pair in blocked_pairs:
+            if not isinstance(pair, str) or "." not in pair or pair in seen_pairs:
+                continue
+            node_id, _, trait = pair.partition(".")
+            if not (node_id and trait) or len(trait) < 4:
+                # Trait tokens shorter than 4 chars are too noisy
+                # ("on", "in", "up", etc.) — skip rather than risk
+                # mis-firing on common English words.
+                continue
+            trait_low = trait.lower()
+            node_low = node_id.lower()
+            name_low = node_names.get(node_id)
+            for sentence in prose_sentences:
+                sent_low = sentence.lower()
+                # (a) node mention — either id or canonical name.
+                mentions_node = (node_low in sent_low) or (
+                    name_low is not None and name_low in sent_low
+                )
+                if not mentions_node:
+                    continue
+                # (b) trait mention.
+                if trait_low not in sent_low:
+                    continue
+                # (c) ANY resistance / negation marker \u2192 suppress.
+                padded = f" {sent_low} "
+                if any(m in padded for m in _RESISTANCE_MARKERS):
+                    continue
+                seen_pairs.add(pair)
+                issues.append(AuditViolation(
+                    violation_type="blocked_propagation_leak",
+                    severity="minor",
+                    description=(
+                        f"Prose co-mentions {node_id} and trait "
+                        f"\"{trait}\" without any resistance / negation "
+                        f"marker; the engine's BLOCKED PROPAGATIONS "
+                        f"directive says this (node, trait) pair "
+                        f"resisted the cascade and must be depicted as "
+                        f"unchanged. The LLM auditor can override this "
+                        f"if the sentence in fact stages resistance."
+                    ),
+                    evidence_quote=sentence.strip()[:200],
+                    feedback=(
+                        f"Render {node_id}'s {trait} as visibly RESISTED "
+                        f"or UNCHANGED in this sentence (e.g. \"stayed\", "
+                        f"\"held\", \"unmoved\", \"did not\"). The "
+                        f"propagation was blocked by the engine, so the "
+                        f"on-page depiction must show the resistance, "
+                        f"not the propagation."
+                    ),
+                ))
+                break
 
     return issues
 
@@ -4136,6 +4352,120 @@ def _unjustified_introduction_violations(
                         f"\"{sname} the Younger\")."
                     ),
                 ))
+
+    return issues
+
+
+def _prevented_event_reenacted_violations(
+    prose: str,
+    brief: CreativeBrief,
+    world_state: Optional[WorldStateV1],
+) -> List[AuditViolation]:
+    """Deterministic defence-in-depth for do-prevention surgeries.
+
+    For every event id surfaced by the brief in
+    ``pruned_utterance_event_ids`` whose ``EventNode.event_type`` is
+    NOT ``"utterance"`` (utterance content leaks are already covered
+    by :func:`_cascade_exclusion_leak_violations`), flag the prose
+    if it either:
+
+      * mentions the event's id token verbatim
+        (e.g. ``EVT_DUNCAN_MURDER``), OR
+      * verbatim-quotes a high-signal substring (\u2265 18 chars) of
+        the event's ``description``.
+
+    Paraphrase / pronoun cases remain the LLM auditor's remit. The
+    check fires at ``critical`` severity because the prose is
+    directly contradicting the engine's do-surgery ledger \u2014 the
+    same event the brief lists under ``SEVERED CAUSAL CHAINS``
+    is being staged on the page.
+
+    Catches three failure modes:
+
+      * Brief bug \u2014 a closure gap escapes Step B.6 in
+        :mod:`shadow_loom.causal_physics`.
+      * Renderer hallucination \u2014 the LLM ignores the SEVERED
+        block.
+      * Fixture data bug \u2014 a sufficient-cause edge that should
+        have been a precondition keeps the descendant alive.
+    """
+    if not prose or brief is None or world_state is None:
+        return []
+
+    pruned_ids: set[str] = set()
+    for c in (brief.constraints or []):
+        ev = getattr(c, "evidence", None) or {}
+        if not isinstance(ev, dict):
+            continue
+        for eid in (ev.get("pruned_utterance_event_ids", []) or []):
+            if isinstance(eid, str):
+                pruned_ids.add(eid)
+    if not pruned_ids:
+        return []
+
+    events_by_id = {e.id: e for e in getattr(world_state, "events", []) or []}
+    prose_lower = prose.lower()
+    issues: List[AuditViolation] = []
+    seen: set[str] = set()
+
+    for eid in pruned_ids:
+        evt = events_by_id.get(eid)
+        if evt is None:
+            continue
+        # Utterance leaks are owned by _cascade_exclusion_leak_violations.
+        if getattr(evt, "event_type", None) == "utterance":
+            continue
+        if eid in seen:
+            continue
+
+        # Check 1: verbatim id token.
+        if eid.lower() in prose_lower:
+            seen.add(eid)
+            issues.append(AuditViolation(
+                violation_type="prevented_event_reenacted",
+                severity="critical",
+                description=(
+                    f"Prose references do-surgery-pruned event {eid} by "
+                    f"its id token; the event was severed by the "
+                    f"do-calculus surgery (and the chain_reaction "
+                    f"descendant closure) and must not appear staged "
+                    f"in this branch."
+                ),
+                evidence_quote=eid,
+                feedback=(
+                    f"Remove the reference to {eid}. The event was "
+                    f"erased by the do-surgery; if downstream "
+                    f"characters need an explanation for the absence, "
+                    f"render the gap (the action not happening, the "
+                    f"frustrated plan) rather than the event itself."
+                ),
+            ))
+            continue
+
+        # Check 2: verbatim substring of the event description.
+        desc = (getattr(evt, "description", None) or "").strip()
+        if len(desc) < 18:
+            continue
+        needle = desc.lower()
+        if needle in prose_lower:
+            seen.add(eid)
+            issues.append(AuditViolation(
+                violation_type="prevented_event_reenacted",
+                severity="critical",
+                description=(
+                    f"Prose verbatim quotes the description of "
+                    f"do-surgery-pruned event {eid}; the event was "
+                    f"severed by the do-calculus surgery and must not "
+                    f"be staged in this branch."
+                ),
+                evidence_quote=desc[:200],
+                feedback=(
+                    f"Remove or rewrite the passage that stages {eid}. "
+                    f"The event was erased by the do-surgery; render "
+                    f"the consequence of its non-occurrence (the gap, "
+                    f"the absence) rather than the event itself."
+                ),
+            ))
 
     return issues
 
@@ -4711,6 +5041,23 @@ def run_audit(
         audit.audit_summary = (
             f"{audit.audit_summary} [+{len(cascade_leaks)} ctf-calculus "
             f"exclusion leak(s)]"
+        ).strip()
+
+    # Defence-in-depth check for do-prevention surgeries that span
+    # non-utterance events. The cascade-leak pass above covers
+    # utterance content + channels; this one catches outcome / choice
+    # events that the renderer staged despite being severed by the
+    # do-surgery (or by the Step B.6 chain_reaction descendant
+    # closure in :mod:`shadow_loom.causal_physics`).
+    reenact_issues = _prevented_event_reenacted_violations(
+        prose, brief, world_state,
+    )
+    if reenact_issues:
+        audit.violations = list(audit.violations) + reenact_issues
+        audit.passed = False
+        audit.audit_summary = (
+            f"{audit.audit_summary} [+{len(reenact_issues)} prevented "
+            f"event re-enacted]"
         ).strip()
 
     # Deterministic event co-presence / spatial-anchor check (PR 4 of
@@ -5555,6 +5902,7 @@ def run_feedback_loop(
             engine_blocked = list(physics_result.blocked)
         injected_mechanisms = _inject_miracle_step_mechanisms(
             brief, engine_blocked, audit.violations,
+            causal_feedback=cycle_causal,
         )
         if injected_mechanisms:
             logger.info(

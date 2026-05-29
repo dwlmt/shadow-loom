@@ -159,11 +159,12 @@ class ParsedQuery(BaseModel):
         default=None,
         description=(
             "Phase-6 typed Pearl-rung do-targets. Each item is a flat "
-            "record with a ``target_kind`` discriminator (event, trait, "
-            "belief, concern, proposition) plus the kind-specific fields. "
-            "When set, the pipeline lifts these into a typed "
-            ":class:`DoTarget` union on the resulting "
-            "``InterventionQuery.do_targets`` / "
+            "record with a ``target_kind`` discriminator. Supported "
+            "kinds: event, trait, belief, concern, proposition, "
+            "world_trait, object, channel, relationship, causal_edge, "
+            "spatial_edge, entity_delete, object_delete. When set, the "
+            "pipeline lifts these into a typed :class:`DoTarget` union "
+            "on the resulting ``InterventionQuery.do_targets`` / "
             "``CounterfactualQuery.historical_do_targets``. The legacy "
             "dotted-key dicts above remain accepted as a fallback."
         ),
@@ -735,7 +736,9 @@ def _build_do_target_item_model(world_state: WorldStateV1):
     """Phase 6 — per-call Pydantic model for a single typed Pearl-rung
     do-target.
 
-    Eleven discriminated kinds via ``target_kind``:
+    Thirteen discriminated kinds via ``target_kind`` (eleven mutation
+    kinds plus two deletion kinds; see
+    :class:`DoEntityDelete` / :class:`DoNarrativeObjectDelete`):
 
       * ``event``        — DoEvent(event_id, occurred?, new_at_location_id?)
       * ``trait``        — DoTrait(entity_id, trait_name, trait_value)
@@ -775,13 +778,36 @@ def _build_do_target_item_model(world_state: WorldStateV1):
         typed["entity_ids"] + typed["object_ids"]
     )
     chn_lit = _make_id_literal(typed.get("channel_ids", []))
-    # Causal-edge endpoints span EVT/ENT/OBJ/LOC/WORLD. Spatial-edge
-    # endpoints are LOC-only. We share a single ``edge_source_id`` /
-    # ``edge_target_id`` field pair, constrained to the broader union;
-    # the converter validates spatial-edge endpoints downstream.
+    # 2026-05-29 round-3 HIGH: ``DoBelief.target_id`` in
+    # ``shadow_loom/query_models.py`` accepts ENT_/EVT_/OBJ_/LOC_/WORLD_
+    # (a belief can be ABOUT any node in the world \u2014 e.g. Edmund's
+    # belief about WORLD_PROPHECY_FOUR_THRONES in LWW, or Poirot's
+    # belief about EVT_LINNETS_DEATH in Death on the Nile). The
+    # pre-fix dynamic parser model only allowed ENT_/OBJ_ in
+    # ``target_id``, so any belief surgery whose subject was an
+    # event / location / world-trait was silently dropped at
+    # ``_do_target_items_to_typed`` and the legacy parser was free
+    # to substitute a different surgery set.
+    belief_target_lit = _make_id_literal(
+        typed["entity_ids"] + typed["object_ids"] + typed["event_ids"]
+        + typed["location_ids"] + typed.get("world_trait_ids", [])
+    )
+    # Causal-edge endpoints span EVT/ENT/OBJ/LOC/WORLD/CHN \u2014
+    # ``world_schema_audit`` explicitly permits channel endpoints
+    # (see ``shadow_loom/world_schema_audit.py`` causal-edge block:
+    # ``known = entity_ids | object_ids | location_ids | event_ids |
+    # channel_ids``), so the typed parser must mirror that union.
+    # The pre-fix literal omitted CHN_*, so a causal_edge surgery
+    # rooted at a channel (e.g. ``causal_edge from CHN_DUTY_PHONE to
+    # EVT_SAFE_HOUSE_AMBUSH`` in Tinker Tailor) was silently dropped.
+    # Spatial-edge endpoints are LOC-only; we share a single
+    # ``edge_source_id`` / ``edge_target_id`` field pair constrained
+    # to the broader union and the converter validates spatial-edge
+    # endpoints downstream.
     edge_endpoint_lit = _make_id_literal(
         typed["event_ids"] + typed["entity_ids"] + typed["object_ids"]
         + typed["location_ids"] + typed.get("world_trait_ids", [])
+        + typed.get("channel_ids", [])
     )
 
     return create_model(
@@ -828,8 +854,12 @@ def _build_do_target_item_model(world_state: WorldStateV1):
         # belief
         holder_id=(Optional[ent_lit], Field(default=None,
             description="For target_kind='belief' or 'concern': ENT_ id of the holder.")),
-        target_id=(Optional[any_actor_lit], Field(default=None,
-            description="For target_kind='belief': ENT_/OBJ_ id the belief is *about*.")),
+        target_id=(Optional[belief_target_lit], Field(default=None,
+            description="For target_kind='belief': ENT_/OBJ_/EVT_/LOC_/WORLD_ "
+                        "id the belief is *about*. Mirrors ``DoBelief.target_id`` "
+                        "in ``shadow_loom/query_models.py`` \u2014 a belief can "
+                        "be ABOUT any node in the world (entity, object, event, "
+                        "location, or world-trait), not just other actors.")),
         proposition_id=(Optional[prop_lit], Field(default=None,
             description="For target_kind='belief' or 'proposition': PROP_ id. "
                         "Optional for beliefs — leave null when the user clamps "
@@ -1889,6 +1919,16 @@ Each item is ``{{target_kind, …kind-specific fields}}``. Pick at most one
   - ``spatial_edge``: edge_source_id (LOC_), edge_target_id (LOC_),
                       action (add|sever|lock|unlock); for ``add``:
                       [connection_type], [bidirectional], [barrier_item_id]
+  - ``entity_delete``: entity_id — surgically remove an entity from
+                      the world (cascades severed relationships,
+                      cascaded belief invalidation, and erased
+                      participation in events). Use for queries like
+                      "what if X had never existed?".
+  - ``object_delete``: object_id — surgically remove a narrative
+                      object (cascades severed ownership/location
+                      links and invalidates events that referenced
+                      it). Use for "what if the dagger had never
+                      been forged?".
 
 ### `target_node_ids` (optional but RECOMMENDED)
 

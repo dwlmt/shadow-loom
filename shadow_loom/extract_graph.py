@@ -189,6 +189,7 @@ def extract_ego_graph_from_memory(
     memory_limit: int = 5,
     syuzhet_anchor: Optional[int] = None,
     shadow_path_seed_ids: Optional[Set[str]] = None,
+    evidence_entity_seed_ids: Optional[Set[str]] = None,
 ) -> EgoGraphPayload:
     
     """
@@ -313,6 +314,39 @@ def extract_ego_graph_from_memory(
                 obj_data["owner_id"] = effective_owner
                 obj_data["properties"] = recon["properties"]
             present_objects.append(obj_data)
+
+    # 2b. Evidence-entity injection (Pearl-rung abduction support).
+    # The counterfactual brief declares entities (and their traits)
+    # as ``AbductionTruth`` evidence even when they're nowhere near
+    # the focus's room. Without injecting them here, the
+    # CausalPhysicsEngine logs "Evidence node X not in sandbox.
+    # Skipping" 24x per MC sweep and the abduction posterior is
+    # silently discarded. Admit declared evidence entities as
+    # present (with their reconstructed state at the anchor) so
+    # the engine can actually condition on them.
+    if evidence_entity_seed_ids:
+        for ent_id in evidence_entity_seed_ids:
+            if ent_id in focus_id_set or ent_id in present_entity_ids:
+                continue
+            entity = world_state.entities.get(ent_id)
+            if entity is None:
+                continue
+            ent_data = entity.model_dump()
+            if temporal_anchor is not None and entity.state_timeline:
+                reconstructed = reconstruct_entity_at(entity, temporal_anchor)
+                ent_data["traits"] = reconstructed["traits"]
+                ent_data["beliefs"] = reconstructed["beliefs"]
+                ent_data["status"] = reconstructed["status"]
+                ent_data["location_id"] = reconstructed["location_id"]
+            present_entities.append(ent_data)
+            present_entity_ids.add(ent_id)
+        if evidence_entity_seed_ids:
+            logger.info(
+                "[EgoGraph] Evidence-entity injection: +%d entities "
+                "admitted into sandbox for abduction conditioning.",
+                len(evidence_entity_seed_ids & set(world_state.entities.keys())
+                    - focus_id_set),
+            )
 
     # 3. The Relational Filter
     relevant_relationships = []
@@ -4403,13 +4437,58 @@ class VersionedWorldModel(BaseModel):
             # Rewrite stale via_channel_id on every event in the merged
             # world AND on belief provenance carried by the incoming
             # entity_updates so the snapshots created below pick up the
-            # canonical id.
+            # canonical id. Also rewrite already-baked beliefs on
+            # ``merged.entities`` (both top-level ``beliefs`` and
+            # per-snapshot ``state_timeline[*].beliefs_added``) so a
+            # later chunk that flips the canonical channel id does not
+            # leave dangling ``acquired_via_channel_id`` references on
+            # entities that were committed by an earlier chunk.
             _apply_channel_forwarding(channel_forwarding, events=merged.events)
             _apply_channel_forwarding(
                 channel_forwarding,
                 events=[],
                 entity_updates=topology.entity_updates,
             )
+            _apply_channel_forwarding(
+                channel_forwarding,
+                events=[],
+                entities=merged.entities,
+            )
+            # Shadow-branch sidecars (AMWN split copies) carry their
+            # own ``beliefs`` / ``state_timeline`` and must be
+            # rewritten in lockstep, otherwise a clone materialised
+            # before the channel dedup retains the stale alias on
+            # its provenance.
+            for _sidecar in (merged.shadow_entities or {}).values():
+                _apply_channel_forwarding(
+                    channel_forwarding,
+                    events=[],
+                    entities=_sidecar,
+                )
+            # Audit (sixth pass, F2): per-branch channel tombstones
+            # are stored as raw id strings in
+            # ``shadow_removed_channel_ids``. When the dedup
+            # forwards an alias whose id was previously enqueued
+            # for tombstoning, the bucket still references the now
+            # non-existent alias and ``projected_for_branch`` fails
+            # to suppress the canonical id the AMWN do-surgery
+            # actually meant to remove. Rewrite the buckets in
+            # lockstep with the events/beliefs forwarding above.
+            for _branch_label, _bucket in (
+                (merged.shadow_removed_channel_ids or {}).items()
+            ):
+                if not _bucket:
+                    continue
+                rewritten: List[str] = []
+                seen: set = set()
+                for _cid in _bucket:
+                    canonical = channel_forwarding.get(_cid, _cid)
+                    if canonical in seen:
+                        continue
+                    seen.add(canonical)
+                    rewritten.append(canonical)
+                if rewritten != _bucket:
+                    merged.shadow_removed_channel_ids[_branch_label] = rewritten
         changeset.information_edges_added = len(merged.channels) - pre_info
 
         # --- Social edges ---

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 David Rae Wilmot
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 import logging
 
 import networkx as nx
@@ -300,6 +300,27 @@ def _typed_target_payload(
         getattr(m, "proposition_id", None) for m in pm
         if getattr(m, "proposition_id", None)
     })
+    # Round-20 fix: a new/altered event can resolve, assert, or deny a
+    # proposition without producing a ProposalMutation row (the
+    # event's structural fields carry the link). The renderer and
+    # auditor read ``affected_propositions`` to know which truth
+    # values the prose must reflect; if we only key off
+    # ``proposition_mutations`` we silently strand event-driven
+    # proposition resolutions and the audit then flags the scene for
+    # "missing proposition update" the engine never asked us to make.
+    _event_prop_ids: set[str] = set()
+    for em_evt in evm:
+        for pid in (getattr(em_evt, "resolves_proposition_ids", None) or []):
+            if pid:
+                _event_prop_ids.add(pid)
+        for attr in ("asserts_proposition_id", "denies_proposition_id"):
+            pid = getattr(em_evt, attr, None)
+            if pid:
+                _event_prop_ids.add(pid)
+    if _event_prop_ids:
+        out["affected_propositions"] = sorted(
+            set(out["affected_propositions"]) | _event_prop_ids
+        )
     # Belief mutations key off (holder_id, target_id) — surface as
     # "ENT_X→ENT_Y" so the renderer can phrase epistemic shifts.
     out["affected_beliefs"] = sorted({
@@ -789,10 +810,22 @@ def calculate_narrative_physics(
         }
         ctf_seeds.update(eid for eid in (request.evidence_node_ids or []) if eid)
         ctf_seeds |= _do_target_seed_ids(typed_historical_do_targets)
+        # Evidence-entity seeds: any ``ENT_*`` evidence id must be
+        # forced into the sandbox even when off-focus, otherwise the
+        # engine's abduction step logs ``Evidence node X not in
+        # sandbox`` and discards the posterior. ``ctf_seeds`` carries
+        # the same ids but ``extract_ego_graph_from_memory`` only
+        # admits *events* via the shadow-path expansion; entities
+        # need the dedicated injection slot added in Fix #3.
+        evidence_entity_seeds: set = {
+            eid for eid in (request.evidence_node_ids or [])
+            if eid and isinstance(eid, str) and eid.startswith("ENT_")
+        }
         ego_graph = extract_ego_graph_from_memory(
             global_world_state, focus_ids, past_anchor,
             syuzhet_anchor=syuzhet_anchor,
             shadow_path_seed_ids=ctf_seeds,
+            evidence_entity_seed_ids=evidence_entity_seeds,
         )
         shadow_graph = AMWNInstantiator.create_sandbox(ego_graph.model_dump(), "counterfactual")
         # Phase-2: surface the audience-side utility layer onto the
@@ -2203,9 +2236,17 @@ def apply_intervention(
         }
 
     focus_ids = _resolve_focus_from_do_targets(do_targets, global_world_state)
+    # Mirror the counterfactual handler: project the do-target entity
+    # ids through the ego-graph as shadow-path seeds so the sandbox
+    # contains them even if they fall outside the syuzhet anchor's
+    # neighbourhood. Without this, an intervention on an entity not
+    # currently "on stage" would extract an ego-graph missing the very
+    # target the auditor will later ask about.
+    seed_ids: Set[str] = {fid for fid in focus_ids if isinstance(fid, str)}
     ego_graph = extract_ego_graph_from_memory(
         global_world_state, focus_ids, fabula_anchor,
         syuzhet_anchor=syuzhet_anchor,
+        shadow_path_seed_ids=seed_ids or None,
     )
     shadow_graph = AMWNInstantiator.create_sandbox(ego_graph.model_dump(), "intervention")
     _stamp_utility_layer(shadow_graph, global_world_state, fabula_anchor=fabula_anchor)

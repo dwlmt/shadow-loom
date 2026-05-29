@@ -51,6 +51,10 @@ from shadow_loom.auditor import (
     _finalize_narrative_order,
     render_and_audit,
 )
+from shadow_loom.causal_closure import (
+    chain_reaction_parents_from_world_state,
+    expand_chain_reaction_closure,
+)
 from shadow_loom.directive_assembly import CreativeBrief, DirectiveAssembler
 from shadow_loom.extract_graph import (
     VersionedWorldModel,
@@ -1139,6 +1143,42 @@ def _compute_factual_contrast(
     return None
 
 
+def _inert_aware_auditor_config(
+    base_cfg: Optional["AuditorConfig"],
+    physics_result: Dict[str, Any],
+) -> Optional["AuditorConfig"]:
+    """When the engine has marked the intervention inert (all
+    propagations absorbed by inertia / cycles / noisy-OR), there is
+    nothing for the auditor to chase: any "missing downstream Δ"
+    violation would directly contradict the engine. Cap iterations and
+    disallow miracle-step injection so we don't burn LLM calls grinding
+    against absorbed cascades. The renderer's HARD inert constraint
+    still produces the resistance prose; this just stops the refinement
+    loop from over-revising it.
+
+    Returns a (possibly modified) AuditorConfig. Pass-through when the
+    intervention is *not* inert so the normal audit budget applies.
+    """
+    if not physics_result:
+        return base_cfg
+    if not physics_result.get("intervention_inert"):
+        return base_cfg
+    try:
+        from shadow_loom.auditor import AuditorConfig as _AC
+    except Exception:
+        return base_cfg
+    cfg = base_cfg.model_copy(deep=True) if base_cfg is not None else _AC()
+    # One render + one audit pass is enough — the inert outcome is a
+    # short scene of attempt + resistance and shouldn't be rewritten.
+    if cfg.max_iterations > 2:
+        cfg.max_iterations = 2
+    cfg.regression_retry_budget = 0
+    # Block miracle-step injection: by definition every downstream Δ
+    # the auditor might want has been absorbed.
+    cfg.max_miracle_steps = 0
+    return cfg
+
+
 def _stamp_brief_full(
     brief: Optional["CreativeBrief"],
     vwm: Optional[VersionedWorldModel],
@@ -1239,6 +1279,7 @@ def _render_engine_priors(
     mutations = physics_result.get("mutations") or []
     hidden = physics_result.get("hidden_deltas") or {}
     social_muts = physics_result.get("social_mutations") or []
+    event_muts = physics_result.get("event_mutations") or []
     blocked = physics_result.get("blocked") or []
     intervened = physics_result.get("intervened_nodes") or []
     inert = bool(physics_result.get("intervention_inert"))
@@ -1302,6 +1343,33 @@ def _render_engine_priors(
                     break
             if count >= max_items_per_section:
                 break
+        sections.append("\n".join(lines))
+
+    if event_muts:
+        # 2026-05-29 (Reingest priors gap): surface DoEvent surgeries
+        # (relocation / time_shift / averted / forced) so the
+        # extractors don't re-extract the pre-surgery event location
+        # or timing from the prose. Mirrors the deterministic
+        # event-mutation bridge applied later in topology.
+        lines = [
+            "Event mutations declared by the engine (do NOT re-extract "
+            "the pre-surgery event location / fabula_time from the prose):"
+        ]
+        for em in event_muts[:max_items_per_section]:
+            ekind = _coerce_field(em, "kind") or "?"
+            eid = _coerce_field(em, "event_id") or "?"
+            bits: List[str] = [f"{ekind} {eid}"]
+            new_loc = _coerce_field(em, "new_at_location_id")
+            if new_loc:
+                bits.append(f"\u2192 {new_loc}")
+            new_ft = _coerce_field(em, "new_fabula_time")
+            if new_ft is not None:
+                bits.append(f"@t={new_ft}")
+            lines.append("  - " + " ".join(bits))
+        if len(event_muts) > max_items_per_section:
+            lines.append(
+                f"  ... (+{len(event_muts) - max_items_per_section} more)"
+            )
         sections.append("\n".join(lines))
 
     if social_muts:
@@ -1411,40 +1479,11 @@ def _compute_shadow_prune_closure(
 ) -> set[str]:
     """Expand a do-surgery prune set to its causal descendant closure.
 
-    Pearl's structural-equation semantics: under do(X), a downstream
-    variable Y is recomputed from its parents in the modified SCM.
-    Without explicit conjunctive / disjunctive annotations on edges
-    (Shadow Loom's ``CausalEdge`` carries ``causality_type`` but not
-    boolean function semantics), the principled default is the
-    *disjunctive* reading on direct-causation edges:
-
-      An event Y is pruned ⇔ Y has at least one ``chain_reaction``
-      incoming edge AND every such parent is in the pruned set OR
-      cause-disconnected set.
-
-    The optional ``cause_disconnected_event_ids`` set holds events
-    whose *outcome / event_type was do-flipped* (the event still
-    occurs but its causal payload is no longer the one that drove
-    downstream chain reactions). These events are treated as broken
-    parents for the disjunctive descendant rule but are NOT added to
-    the returned closure — the do-flipped event itself stays in
-    the persisted shadow world; only its now-unsupported descendants
-    are suppressed.
-
-    This preserves over-determined effects (the Halpern-Pearl "actual
-    causation" intuition: Mrs Coady can die of *something else* if
-    that something else's preconditions still hold), and never prunes
-    exogenous events (no incoming chain_reaction parents → outside the
-    closure by definition).
-
-    ``enables`` / ``affordance_gate`` / ``ambient_propagation`` /
-    ``mutation`` edges are modifiers, not sufficient causes, so they
-    do not participate in the prune rule. The ``mutation`` family
-    represents an event's *effect* on state, not an event-to-event
-    causal precondition; an event causally downstream of a pruned
-    one transitively along chain_reaction is the right closure.
-
-    Iterates to fixpoint (closure is monotone in the prune set).
+    Thin wrapper around
+    :func:`shadow_loom.causal_closure.expand_chain_reaction_closure` —
+    see that module for the full Pearl / Halpern-Pearl rationale.
+    Retained here for call-site stability and to keep the
+    ``Optional[set[str]]`` signature the merge-time bridge expects.
 
     Returns the *expanded* prune set (includes the original roots).
     Safe to call with an empty root set (returns empty).
@@ -1452,41 +1491,12 @@ def _compute_shadow_prune_closure(
     if not root_event_ids and not cause_disconnected_event_ids:
         return set()
 
-    cause_broken = set(cause_disconnected_event_ids or [])
-
-    # Build adjacency: child_event_id -> list of chain_reaction parent ids.
-    # Only Event→Event chain_reaction edges count for the disjunctive
-    # rule; everything else is a modifier.
-    parents_of: dict[str, list[str]] = {}
-    for edge in world_state.causal_topology or []:
-        if getattr(edge, "causality_type", None) != "chain_reaction":
-            continue
-        parents_of.setdefault(edge.target_id, []).append(edge.source_id)
-
-    event_ids = {e.id for e in world_state.events or []}
-    pruned = set(root_event_ids) & event_ids
-    # Seed roots even if not in event_ids (callers may pass stale IDs;
-    # they're harmless on the deletion pass).
-    pruned |= set(root_event_ids)
-
-    changed = True
-    while changed:
-        changed = False
-        for eid, parents in parents_of.items():
-            if eid in pruned or eid in cause_broken:
-                # Cause-disconnected roots are NOT pruned themselves.
-                continue
-            # Disjunctive rule: prune only when every chain_reaction
-            # parent is already pruned OR cause-disconnected. An event
-            # with no chain_reaction parents is exogenous and never
-            # pruned.
-            if parents and all(
-                (p in pruned) or (p in cause_broken) for p in parents
-            ):
-                pruned.add(eid)
-                changed = True
-
-    return pruned
+    parents_of = chain_reaction_parents_from_world_state(world_state)
+    return expand_chain_reaction_closure(
+        parents_of,
+        root_event_ids,
+        cause_disconnected_ids=cause_disconnected_event_ids,
+    )
 
 
 def _augment_topology_with_sandbox_deltas(
@@ -2287,13 +2297,22 @@ def _augment_topology_with_sandbox_deltas(
                 # but cheap to be additive).
                 existing = set(topology.suppressed_event_ids or [])
                 topology.suppressed_event_ids = sorted(existing | closure)
+                # Telemetry for redundancy auditing: since the
+                # post-2026-05-29 work, ``CausalPhysicsEngine.execute_interventions``
+                # Step B.6 already expands the chain_reaction
+                # descendant closure at intervention time and surfaces
+                # the result in ``pruned_utterance_event_ids``. The
+                # merge-time pass below remains as belt-and-braces;
+                # tagging which branch ran lets us audit how often
+                # the engine-side closure was complete on its own.
+                already_closed = closure <= (prune_roots | cause_broken)
                 logger.info(
                     "[Bridge\u00b7shadow-prune] query_type=%s expanded %d "
                     "physics-pruned + %d cause-disconnected event "
                     "root(s) \u2192 %d-event deletion closure for "
-                    "shadow merge: %s",
+                    "shadow merge (closure_already_complete=%s): %s",
                     query_type, len(prune_roots), len(cause_broken),
-                    len(closure), sorted(closure),
+                    len(closure), already_closed, sorted(closure),
                 )
 
     # ROUND-15 (H-6): bridge ``edge_mutations`` (DoCausalEdge /
@@ -2835,6 +2854,36 @@ def run_pipeline(
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
     )
+    # CC-3 (2026-05-29): advisory world-schema pre-pass for ALL query
+    # types. Surfaces dangling references / location plausibility /
+    # temporal-coherence defects into the history ledger before
+    # physics so the MCP envelope, the UI, and post-mortem audits see
+    # the same warnings regardless of query type. Logged at INFO so
+    # the pre-pass is visible in pipeline traces without blocking.
+    try:
+        from shadow_loom.world_schema_audit import (
+            audit_world_schema as _audit_world_schema,
+        )
+        _pre_warnings = _audit_world_schema(ws)
+        if _pre_warnings:
+            history.record(
+                "world_schema_audit",
+                {
+                    "warning_count": len(_pre_warnings),
+                    "warnings": _pre_warnings[:50],
+                    "truncated": len(_pre_warnings) > 50,
+                },
+            )
+            logger.info(
+                "[Pipeline\u00b7schema\u00b7pre] %d world-schema warning(s) "
+                "surfaced before physics (advisory).",
+                len(_pre_warnings),
+            )
+    except Exception:
+        logger.exception(
+            "[Pipeline\u00b7schema\u00b7pre] World-schema pre-pass "
+            "failed; continuing."
+        )
     physics_result = calculate_narrative_physics(
         request=query,
         global_world_state=ws,
@@ -2901,16 +2950,26 @@ def run_pipeline(
                 interrogate_posterior as _interrogate_posterior,
                 audit_posterior_consistency as _audit_posterior_consistency,
             )
-            _ft = getattr(query, "fabula_time", None)
+            # R1-2 (2026-05-29): use the *resolved* temporal anchor
+            # (``eff_temporal`` from ``_resolve_query_anchors``) so
+            # interrogate / general posterior reads the truth table
+            # in force at the user's requested anchor, not the latest
+            # tick. ``query.fabula_time`` does not exist on the query
+            # model — the field is ``temporal_anchor`` — so the old
+            # ``getattr(query, 'fabula_time', None)`` always returned
+            # ``None`` and silently fell back to the latest truth
+            # bucket.
+            _ft = eff_temporal
             _posterior = _interrogate_posterior(ws, fabula_time=_ft)
             physics_result["posterior"] = _posterior
             physics_result["posterior_warnings"] = (
                 _audit_posterior_consistency(_posterior)
             )
             logger.info(
-                "[Pipeline·posterior] %d propositions ranked; %d warnings.",
+                "[Pipeline·posterior] %d propositions ranked; %d warnings (anchor=%s).",
                 len(_posterior),
                 len(physics_result["posterior_warnings"]),
+                _ft,
             )
         except Exception:
             logger.exception(
@@ -2925,7 +2984,7 @@ def run_pipeline(
                 compute_affective_scorers as _compute_affective_scorers,
             )
             physics_result["affective_scorers"] = _compute_affective_scorers(
-                ws, fabula_time=getattr(query, "fabula_time", None),
+                ws, fabula_time=eff_temporal,
             )
         except Exception:
             logger.exception(
@@ -2945,6 +3004,31 @@ def run_pipeline(
             logger.exception(
                 "[Pipeline\u00b7constants] Failed to surface entity "
                 "constants; continuing without them."
+            )
+        # CC-2 (2026-05-29): lightweight deterministic schema audit for
+        # readonly query types. Without this pass, an interrogate /
+        # general query reads the posterior off a world whose
+        # dangling-reference / temporal-coherence defects only surface
+        # later as silent empty results. Advisory-only: surfaces a
+        # capped list of human-readable warnings into the physics
+        # result so the answer template, the MCP envelope, and the UI
+        # can show them; never blocks the answer step.
+        try:
+            from shadow_loom.world_schema_audit import (
+                audit_world_schema as _audit_world_schema,
+            )
+            _schema_warnings = _audit_world_schema(ws)
+            physics_result["world_schema_warnings"] = list(_schema_warnings)
+            if _schema_warnings:
+                logger.info(
+                    "[Pipeline\u00b7schema] %d world-schema warning(s) "
+                    "surfaced for readonly query (advisory).",
+                    len(_schema_warnings),
+                )
+        except Exception:
+            logger.exception(
+                "[Pipeline\u00b7schema] World-schema audit failed for "
+                "readonly query; continuing without warnings."
             )
         try:
             _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
@@ -3180,7 +3264,7 @@ def run_pipeline(
             feedback = render_and_audit(
                 brief=brief,
                 world_state=ws,
-                auditor_config=cfg.auditor_config,
+                auditor_config=_inert_aware_auditor_config(cfg.auditor_config, physics_result),
                 generation_config=cfg.generation_config,
                 query_type=query.query_type,
                 physics_state=physics_state,
@@ -3213,7 +3297,7 @@ def run_pipeline(
                 initial_scene=initial_scene,
                 brief=brief,
                 world_state=ws,
-                auditor_config=cfg.auditor_config,
+                auditor_config=_inert_aware_auditor_config(cfg.auditor_config, physics_result),
                 generation_config=cfg.generation_config,
                 query_type=query.query_type,
                 physics_state=physics_state,
@@ -3510,6 +3594,31 @@ async def run_pipeline_async(
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
     )
+    # CC-3 (2026-05-29): mirror sync pre-pass.
+    try:
+        from shadow_loom.world_schema_audit import (
+            audit_world_schema as _audit_world_schema,
+        )
+        _pre_warnings = _audit_world_schema(ws)
+        if _pre_warnings:
+            history.record(
+                "world_schema_audit",
+                {
+                    "warning_count": len(_pre_warnings),
+                    "warnings": _pre_warnings[:50],
+                    "truncated": len(_pre_warnings) > 50,
+                },
+            )
+            logger.info(
+                "[Pipeline\u00b7Async\u00b7schema\u00b7pre] %d "
+                "world-schema warning(s) surfaced before physics.",
+                len(_pre_warnings),
+            )
+    except Exception:
+        logger.exception(
+            "[Pipeline\u00b7Async\u00b7schema\u00b7pre] World-schema "
+            "pre-pass failed; continuing."
+        )
     # Round-12 R12-01: ``calculate_narrative_physics`` is the heaviest
     # CPU-bound step in the pipeline (Monte-Carlo propagation, causal-
     # engine resolution, lattice sweeps). Calling it directly from the
@@ -3572,7 +3681,10 @@ async def run_pipeline_async(
                 interrogate_posterior as _interrogate_posterior,
                 audit_posterior_consistency as _audit_posterior_consistency,
             )
-            _ft = getattr(query, "fabula_time", None)
+            # R1-2 (2026-05-29): mirror sync path — use resolved
+            # ``eff_temporal`` not the non-existent
+            # ``query.fabula_time`` attribute.
+            _ft = eff_temporal
             _posterior = _interrogate_posterior(ws, fabula_time=_ft)
             physics_result["posterior"] = _posterior
             physics_result["posterior_warnings"] = (
@@ -3589,7 +3701,7 @@ async def run_pipeline_async(
                 compute_affective_scorers as _compute_affective_scorers,
             )
             physics_result["affective_scorers"] = _compute_affective_scorers(
-                ws, fabula_time=getattr(query, "fabula_time", None),
+                ws, fabula_time=eff_temporal,
             )
         except Exception:
             logger.exception(
@@ -3606,6 +3718,26 @@ async def run_pipeline_async(
             logger.exception(
                 "[Pipeline\u00b7Async\u00b7constants] Failed to surface "
                 "entity constants."
+            )
+        # CC-2 (2026-05-29): mirror the readonly-query schema audit
+        # in the async path so MCP / UI surfaces see schema warnings
+        # regardless of which pipeline orchestrator served the query.
+        try:
+            from shadow_loom.world_schema_audit import (
+                audit_world_schema as _audit_world_schema,
+            )
+            _schema_warnings = _audit_world_schema(ws)
+            physics_result["world_schema_warnings"] = list(_schema_warnings)
+            if _schema_warnings:
+                logger.info(
+                    "[Pipeline\u00b7Async\u00b7schema] %d world-schema "
+                    "warning(s) surfaced for readonly query (advisory).",
+                    len(_schema_warnings),
+                )
+        except Exception:
+            logger.exception(
+                "[Pipeline\u00b7Async\u00b7schema] World-schema audit "
+                "failed; continuing without warnings."
             )
         try:
             _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
@@ -3788,7 +3920,7 @@ async def run_pipeline_async(
             feedback = await asyncio.to_thread(
                 render_and_audit,
                 brief=brief, world_state=ws,
-                auditor_config=cfg.auditor_config,
+                auditor_config=_inert_aware_auditor_config(cfg.auditor_config, physics_result),
                 generation_config=cfg.generation_config,
                 query_type=query.query_type,
                 physics_state=physics_state,
@@ -3819,7 +3951,7 @@ async def run_pipeline_async(
             feedback = await asyncio.to_thread(
                 run_feedback_loop,
                 initial_scene=initial_scene, brief=brief, world_state=ws,
-                auditor_config=cfg.auditor_config,
+                auditor_config=_inert_aware_auditor_config(cfg.auditor_config, physics_result),
                 generation_config=cfg.generation_config,
                 query_type=query.query_type,
                 physics_state=physics_state,
@@ -4073,6 +4205,19 @@ def _run_answer_step(
         event_mutations=list(physics_result.get("event_mutations") or []) or None,
         blocked=list(physics_result.get("blocked") or []) or None,
         causal_chain=list(physics_result.get("causal_chain") or []) or None,
+        # 2026-05-29 deep-audit HIGH-1: the pipeline computes these
+        # deterministic diagnostics on every call (see writes to
+        # ``physics_result["posterior_warnings"]`` and
+        # ``physics_result["world_schema_warnings"]`` in
+        # ``calculate_narrative_physics`` / its async sibling) but
+        # they were never forwarded. Surface them so the answer
+        # agent cannot contradict the engine's own audit.
+        posterior_warnings=(
+            list(physics_result.get("posterior_warnings") or []) or None
+        ),
+        world_schema_warnings=(
+            list(physics_result.get("world_schema_warnings") or []) or None
+        ),
     )
 
     physics_result["answer"] = card.answer

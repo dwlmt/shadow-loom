@@ -142,6 +142,14 @@ VIOLATION_EXPLANATIONS: Dict[str, str] = {
         "resisted, but the prose co-asserts both. Either drop the "
         "trait reference or surface the resistance explicitly."
     ),
+    "prevented_event_reenacted": (
+        "Counterfactual surgery erased a non-utterance event (or "
+        "the chain_reaction descendant closure pruned it as "
+        "unsupported), but the prose still stages it on the page "
+        "\u2014 referencing the event id or quoting its description "
+        "verbatim. Remove the staged event; render the gap or its "
+        "absence instead of the action itself."
+    ),
     "inert_intervention_aftermath": (
         "The engine flagged the requested do-surgery as inert "
         "(every target Rule-3 pruned or absorbed by inertia / "

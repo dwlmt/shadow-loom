@@ -606,6 +606,37 @@ def pov_visible_event_ids(
     return visible
 
 
+def _strip_shadow_sidecars(ws: WorldStateV1) -> None:
+    """Clear every ``shadow_*`` sidecar on ``ws`` in-place.
+
+    Round-4 audit helper. ``filter_world_state_for_pov`` operates on
+    the factual surface only; any populated shadow sidecar carried
+    through ``model_copy(deep=True)`` would leak the entire
+    counterfactual world (entities, objects, propositions, channels,
+    events, locations, world traits, the three topologies, and the
+    deletion tombstone lists) past the POV boundary unfiltered.
+    """
+    for attr in (
+        "shadow_entities",
+        "shadow_objects",
+        "shadow_propositions",
+        "shadow_world_traits",
+        "shadow_social_topology",
+        "shadow_events",
+        "shadow_channels",
+        "shadow_locations",
+        "shadow_causal_topology",
+        "shadow_spatial_topology",
+        "shadow_removed_entity_ids",
+        "shadow_removed_object_ids",
+        "shadow_removed_channel_ids",
+        "shadow_removed_event_ids",
+        "shadow_removed_location_ids",
+    ):
+        if hasattr(ws, attr):
+            setattr(ws, attr, {})
+
+
 def filter_world_state_for_pov(
     ws: WorldStateV1,
     pov_entity_id: Optional[str],
@@ -657,6 +688,7 @@ def filter_world_state_for_pov(
         empty.objects = {}
         empty.locations = {}
         empty.world_traits = {}
+        _strip_shadow_sidecars(empty)
         return empty
     visible_evt_ids = pov_visible_event_ids(
         ws, pov_entity_id,
@@ -820,5 +852,16 @@ def filter_world_state_for_pov(
                 snap for snap in prop.state_timeline
                 if snap.fabula_time in visible_fabula_ticks
             ]
+
+    # Round-4 audit: clear all shadow_* sidecars from the POV slice.
+    # ``filter_world_state_for_pov`` is defined on the factual
+    # surface; leaving the deep-copied shadow collections intact
+    # leaks the entire counterfactual world (shadow_entities,
+    # shadow_propositions, shadow_events, shadow_channels, shadow
+    # topology, deletion tombstones, …) unfiltered through the POV
+    # boundary. Callers that need a POV view of a counterfactual
+    # branch must ``projected_for_branch`` first, then filter the
+    # already-merged projection through this function.
+    _strip_shadow_sidecars(filtered)
 
     return filtered

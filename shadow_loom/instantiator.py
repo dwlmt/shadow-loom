@@ -196,6 +196,7 @@ class AMWNInstantiator:
                     evidence_strength=strength,
                     causal_force=force,
                     causality_type=ctype,
+                    necessity=ce.get("necessity", "sufficient"),
                     propagation_delay=delay,
                     fabula_time=ft,
                     world_id=target_world_id,

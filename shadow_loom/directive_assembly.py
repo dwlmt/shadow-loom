@@ -24,6 +24,11 @@ import networkx as nx
 from pydantic import BaseModel, Field
 
 from shadow_loom.models import WorldStateV1, NarrativeStyle, reconstruct_entity_at, reconstruct_object_at, reconstruct_world_trait_at, event_location_at
+from shadow_loom.causal_closure import (
+    chain_reaction_parents_from_world_state,
+    edges_within_closure,
+    expand_chain_reaction_closure,
+)
 from shadow_loom.query_models import DirectiveQuery, DoTarget
 from shadow_loom.settings import (
     DirectiveAssemblySettings,
@@ -339,6 +344,22 @@ class CounterfactualBranch(BaseModel):
             "DoTrait). Lets the renderer pick rung-aware phrasing."
         ),
     )
+    do_targets: List[DoTarget] = Field(
+        default_factory=list,
+        description=(
+            "R3-2 (2026-05-29): the FULL list of typed Rung-3 surgeries "
+            "in this brief. ``do_target`` above is the *primary* surgery "
+            "(usually the first); ``do_targets`` carries every clamp so "
+            "joint counterfactuals (\"if Macbeth had not killed Duncan "
+            "AND Lady Macbeth had not goaded him\") can be rendered "
+            "without silently dropping all but the first clamp. The "
+            "renderer / auditor should consult this list when "
+            "``len(do_targets) > 1`` and treat each entry as a "
+            "simultaneous Pearl-3 surgery applied at the divergence "
+            "point. Empty list means the brief came from the legacy "
+            "untyped path."
+        ),
+    )
     do_target_gloss: Optional[str] = Field(
         default=None,
         description=(
@@ -561,6 +582,19 @@ class CounterfactualBranch(BaseModel):
             "dramatise the resistance rather than skip the node."
         ),
     )
+    event_cascade_detail: List[str] = Field(
+        default_factory=list,
+        description=(
+            "EventMutation detail lines from DoEventNode surgeries "
+            "(spawn / suppress / time-shift of EventNodes), and from "
+            "chain_reaction descendant closure (events marked "
+            "``pruned=True`` by ``causal_physics`` Step B.6 after a "
+            "do-surgery prevents their parent). The renderer must "
+            "narrate each pruned descendant as not having occurred; "
+            "the auditor's ``prevented_event_reenacted`` violation "
+            "check is grounded in this list."
+        ),
+    )
     causal_chain: List[str] = Field(
         default_factory=list,
         description=(
@@ -721,6 +755,7 @@ class ThreatProximity(BaseModel):
     entity_delete_cascade_detail: List[str] = Field(default_factory=list)
     object_delete_cascade_detail: List[str] = Field(default_factory=list)
     blocked_propagations_detail: List[str] = Field(default_factory=list)
+    event_cascade_detail: List[str] = Field(default_factory=list)
     causal_chain: List[str] = Field(default_factory=list)
     causal_chain_descriptions: List[str] = Field(
         default_factory=list,
@@ -843,6 +878,7 @@ class InterventionBranch(BaseModel):
     entity_delete_cascade_detail: List[str] = Field(default_factory=list)
     object_delete_cascade_detail: List[str] = Field(default_factory=list)
     blocked_propagations_detail: List[str] = Field(default_factory=list)
+    event_cascade_detail: List[str] = Field(default_factory=list)
     causal_chain: List[str] = Field(default_factory=list)
     causal_chain_descriptions: List[str] = Field(
         default_factory=list,
@@ -2192,48 +2228,21 @@ def _expand_chain_reaction_closure(
     world_state: WorldStateV1,
     root_event_ids: List[str],
 ) -> tuple[set[str], List[tuple[str, str, str]]]:
-    """Walk ``chain_reaction`` Event\u2192Event edges from a prune-root set
-    and return (closure_event_ids, edges_in_closure).
+    """Return ``(closure_event_ids, edges_in_closure)`` for the
+    disjunctive chain_reaction descendant rule.
 
-    Local duplicate of :func:`shadow_loom.pipeline._compute_shadow_prune_closure`
-    plus edge-tracking: avoids a directive_assembly \u2192 pipeline import
-    cycle. Pearl's disjunctive structural-equation rule: an event Y
-    joins the closure iff every ``chain_reaction`` parent of Y is
-    already in the closure (over-determined effects with a surviving
-    sufficient cause are preserved).
-
-    Returned edges are ``(parent_id, child_id, mechanism)`` triples
-    for every chain_reaction edge whose target is in the closure
-    (so the renderer sees the full \"originally caused\" tree, not
-    just the leaves).
+    Thin wrapper around
+    :func:`shadow_loom.causal_closure.expand_chain_reaction_closure`
+    and :func:`shadow_loom.causal_closure.edges_within_closure`.
+    Retained as a local helper so the two call-sites below stay
+    readable; the heavy lifting lives in ``causal_closure``.
     """
     roots = set(root_event_ids or [])
     if not roots:
         return set(), []
-    parents_of: dict[str, list[tuple[str, str]]] = {}
-    for edge in getattr(world_state, "causal_topology", None) or []:
-        if getattr(edge, "causality_type", None) != "chain_reaction":
-            continue
-        mech = getattr(edge, "mechanism", "") or ""
-        parents_of.setdefault(edge.target_id, []).append((edge.source_id, mech))
-    closure = set(roots)
-    changed = True
-    while changed:
-        changed = False
-        for eid, parents in parents_of.items():
-            if eid in closure:
-                continue
-            if parents and all(p in closure for p, _ in parents):
-                closure.add(eid)
-                changed = True
-    edges: List[tuple[str, str, str]] = []
-    for child, parents in parents_of.items():
-        if child not in closure:
-            continue
-        for parent, mech in parents:
-            if parent in closure:
-                edges.append((parent, child, mech))
-    return closure, edges
+    parents_of = chain_reaction_parents_from_world_state(world_state)
+    closure = expand_chain_reaction_closure(parents_of, roots)
+    return closure, edges_within_closure(parents_of, closure)
 
 
 def build_prune_cascade_context_constraints(

@@ -31,6 +31,64 @@ from typing import Any, Dict, List, Optional
 from shadow_loom.models import WorldStateV1
 
 
+# 2026-05-29 (deep-audit MED): module-level negation lexicon and helper
+# so unit tests can exercise polarity resolution without driving a
+# whole posterior pass. The lexicon is broader than the original (R1-1)
+# inline tuple \u2014 it now includes lexical negators that show up in
+# real example_worlds perceived_state strings: denies/refuses/refused/
+# failed to/absent/lacking/devoid/without/unable/unwilling.
+_NEGATION_TOKENS = (
+    " not ", " no ", " never ", " none ", " n't ", " cannot ", " can't ",
+    "isn't", "aren't", "wasn't", "weren't", "didn't", "doesn't",
+    "don't", "hasn't", "haven't", "hadn't", "won't", "wouldn't",
+    "shouldn't", "couldn't", "mustn't",
+    # Lexical negators beyond contractions \u2014 these are common in the
+    # consequences_extraction.md prompt's perceived_state outputs.
+    " denies ", " denied ", " deny ",
+    " refuses ", " refused ", " refuse ",
+    " failed to ", " fails to ", " fail to ",
+    " absent ", " lacking ", " lacks ", " devoid ",
+    " without ", " unable to ", " unwilling to ",
+    " rejects ", " rejected ", " reject ",
+    " disbelieves ", " disbelieved ", " doubt ", " doubts ", " doubted ",
+)
+
+
+def _module_has_negation(text: str) -> bool:
+    """True when *text* contains any token from :data:`_NEGATION_TOKENS`.
+
+    Padded with spaces on both sides so token boundaries match at
+    string edges (e.g. ``\"not safe\"`` becomes ``\" not safe \"``).
+    """
+    if not text:
+        return False
+    haystack = f" {text.lower().strip()} "
+    return any(tok in haystack for tok in _NEGATION_TOKENS)
+
+
+def _module_resolve_polarity(
+    perceived: str,
+    prop_desc: Optional[str],
+    canonical_truth: Optional[bool],
+) -> bool:
+    """Module-level polarity resolver (testable equivalent of the
+    inner ``_resolve_polarity`` in :func:`interrogate_posterior`).
+
+    Returns True when *perceived* supports *canonical_truth* relative
+    to *prop_desc*. Empty / falsy *perceived* is treated as legacy
+    endorsement of canonical truth so silent beliefs do not flip the
+    posterior.
+    """
+    if not perceived:
+        return True
+    perceived_negated = _module_has_negation(perceived)
+    prop_negated = _module_has_negation(prop_desc or "")
+    belief_asserts_surface = perceived_negated == prop_negated
+    if canonical_truth is None:
+        return belief_asserts_surface
+    return belief_asserts_surface == bool(canonical_truth)
+
+
 @dataclass
 class PosteriorRow:
     proposition_id: str
@@ -73,7 +131,11 @@ def interrogate_posterior(
     propositions = list(world_state.propositions or [])
 
     # Index beliefs by proposition_id so we touch each entity only once.
-    belief_index: Dict[str, List[tuple[str, float, bool]]] = {}
+    # Each row carries the holder's free-form ``perceived_state`` so
+    # the per-proposition bucketing loop below can detect explicit
+    # negation/affirmation polarity rather than collapsing every
+    # belief onto the canonical truth (R1-1, 2026-05-29).
+    belief_index: Dict[str, List[tuple[str, float, str]]] = {}
     for ent_id, ent in (world_state.entities or {}).items():
         for b in (ent.beliefs or []):
             pid = getattr(b, "proposition_id", None)
@@ -85,11 +147,22 @@ def interrogate_posterior(
             # high-confidence transient belief still ranks below a
             # high-confidence sticky one.
             weight = max(0.0, min(1.0, 0.5 * (conf + inertia)))
-            # Polarity convention: a belief is "supporting" the
-            # proposition's canonical truth. If the canonical truth at
-            # query is False, the same belief becomes "contradicting".
-            # We resolve polarity per-proposition below.
-            belief_index.setdefault(pid, []).append((ent_id, weight, True))
+            perceived = str(getattr(b, "perceived_state", "") or "")
+            belief_index.setdefault(pid, []).append((ent_id, weight, perceived))
+
+    # R1-1 (2026-05-29): lexical-polarity detector for ``perceived_state``.
+    # ``Belief`` carries no first-class affirm/deny boolean, but most
+    # perceived_state strings are short declarative clauses (e.g.
+    # "Cup is safe" vs "Cup is NOT safe", "Macbeth killed Duncan" vs
+    # "Macbeth did not kill Duncan"). We try to decide each belief's
+    # polarity against the proposition's canonical description; on
+    # mismatch or absence the legacy canonical-truth bucketing rule
+    # is used as the fallback. The helpers are module-level so they
+    # can be unit-tested directly (2026-05-29 deep-audit refactor).
+
+    _has_negation = _module_has_negation
+    _resolve_polarity = _module_resolve_polarity
+
 
     for prop in propositions:
         pid = prop.proposition_id
@@ -123,13 +196,14 @@ def interrogate_posterior(
         contradict_w = 0.0
         supporters: List[str] = []
         contradictors: List[str] = []
-        for ent_id, weight, _polarity in belief_index.get(pid, []):
-            # A belief endorses the proposition's perceived_state.
-            # Without explicit polarity on Belief, we treat the
-            # belief as endorsing whatever the proposition's
-            # canonical truth currently is — flipping the
-            # contributor bucket if the canonical truth is False.
-            if truth_at_query is True or truth_at_query is None:
+        prop_desc = getattr(prop, "description", None)
+        for ent_id, weight, perceived in belief_index.get(pid, []):
+            # R1-1 (2026-05-29): bucket by lexical polarity of the
+            # holder's perceived_state against the proposition's
+            # description, then XOR against the canonical truth.
+            # Falls back to the legacy "endorse canonical" rule when
+            # perceived_state is empty.
+            if _resolve_polarity(perceived, prop_desc, truth_at_query):
                 support_w += weight
                 supporters.append(ent_id)
             else:

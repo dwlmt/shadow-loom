@@ -954,6 +954,18 @@ def answer_question(
     event_mutations: Optional[List[Dict[str, Any]]] = None,
     blocked: Optional[List[Dict[str, Any]]] = None,
     causal_chain: Optional[List[str]] = None,
+    # 2026-05-29 deep-audit HIGH-1: the pipeline computes deterministic
+    # posterior diagnostics and world-schema warnings on every rung-1
+    # call (``physics_result["posterior_warnings"]`` /
+    # ``physics_result["world_schema_warnings"]``), but the call site
+    # at ``shadow_loom/pipeline.py`` previously only forwarded
+    # ``physics_state``. The warnings stayed buried inside the physics
+    # result and never reached the answer-LLM, so the AnswerCard could
+    # confidently contradict the engine's own diagnostics. Accept them
+    # here so the rung-1 / rung-2 / rung-3 answer prompts can surface
+    # them in a dedicated DIAGNOSTICS block.
+    posterior_warnings: Optional[List[str]] = None,
+    world_schema_warnings: Optional[List[str]] = None,
 ) -> AnswerCard:
     """Answer a Q&A question using the supplied world-state slice.
 
@@ -999,6 +1011,37 @@ def answer_question(
     if query_type == "interrogate":
         user_msg_parts.append(
             f"Require causal proof: {'yes' if require_proof else 'no'}"
+        )
+
+    # 2026-05-29 deep-audit HIGH-1: surface deterministic posterior +
+    # schema diagnostics so the answer agent cannot contradict them.
+    # These come from the pipeline's rung-1 posterior computer and
+    # world-schema auditor; both produce structured warning strings
+    # that the renderer / auditor already see. Mirroring them on the
+    # Q&A prompt keeps all three surfaces (renderer, auditor, Q&A)
+    # consistent.
+    if posterior_warnings:
+        user_msg_parts.append("")
+        user_msg_parts.append("=== POSTERIOR DIAGNOSTICS (deterministic) ===")
+        for _w in posterior_warnings[:50]:
+            user_msg_parts.append(f"  - {_w}")
+        user_msg_parts.append(
+            "Treat each diagnostic above as authoritative; do not "
+            "contradict it in the answer. If the diagnostic narrows "
+            "or rules out a hypothesis the question raises, reflect "
+            "that in the answer + caveats."
+        )
+    if world_schema_warnings:
+        user_msg_parts.append("")
+        user_msg_parts.append("=== WORLD-SCHEMA WARNINGS (engine audit) ===")
+        for _w in world_schema_warnings[:50]:
+            user_msg_parts.append(f"  - {_w}")
+        user_msg_parts.append(
+            "These warnings describe structural gaps in the world "
+            "state (missing referents, orphaned ids, malformed "
+            "truth-keys). If a warning intersects the question's "
+            "subject matter, mention the uncertainty in caveats "
+            "rather than guessing past it."
         )
 
     # Phase-9: surface typed Pearl-rung surgery metadata so the
@@ -1323,6 +1366,63 @@ def answer_question(
                             ):
                                 if id_key in entry and entry[id_key]:
                                     known_ids.add(str(entry[id_key]))
+            # R20: also fold in canonical ``world_state`` ids when
+            # available. Counterfactual / intervention answer paths
+            # often render a *thin* shadow projection that omits
+            # spectator entities, ambient events, and unchanged
+            # propositions — the agent then cites a perfectly valid
+            # canonical id and the grounding check drops it as
+            # "unsupported", collapsing the AnswerCard confidence
+            # to ~0. We trust the parent world_state as ground truth
+            # and let the branch-tombstone subtraction below remove
+            # any ids the shadow has explicitly excised.
+            if world_state is not None:
+                for ent in (getattr(world_state, "entities", None) or {}).keys():
+                    known_ids.add(str(ent))
+                for ev in (getattr(world_state, "events", None) or []):
+                    eid = getattr(ev, "id", None) or getattr(ev, "event_id", None)
+                    if eid:
+                        known_ids.add(str(eid))
+                for loc in (getattr(world_state, "locations", None) or {}).keys():
+                    known_ids.add(str(loc))
+                for obj in (getattr(world_state, "objects", None) or {}).keys():
+                    known_ids.add(str(obj))
+                for ch in (getattr(world_state, "channels", None) or {}).keys():
+                    known_ids.add(str(ch))
+                # 2026-05-29 round-3 HIGH: ``WorldStateV1.propositions`` is
+                # a ``List[Proposition]`` (not a dict); ``beliefs`` /
+                # ``concerns`` do NOT live on WorldStateV1 at all
+                # (they hang off ``Entity.beliefs`` /
+                # ``Entity.concerns``). The pre-fix ``.keys()`` loops
+                # would either ``AttributeError`` against any world
+                # with non-empty propositions (Death on the Nile,
+                # Macbeth, every shipped example) or silently
+                # short-circuit through ``{}`` and leave the
+                # corresponding id namespace ungrounded \u2014 so a
+                # perfectly valid PROP_/CCN_ citation in
+                # ``evidence_node_ids`` was demoted to "unsupported"
+                # and the AnswerCard confidence dropped to ~0.
+                for p in (getattr(world_state, "propositions", None) or []):
+                    pid = getattr(p, "proposition_id", None) or getattr(p, "id", None)
+                    if pid:
+                        known_ids.add(str(pid))
+                for _ent in (getattr(world_state, "entities", None) or {}).values():
+                    for _b in (getattr(_ent, "beliefs", None) or []):
+                        _bpid = getattr(_b, "proposition_id", None)
+                        if _bpid:
+                            known_ids.add(str(_bpid))
+                        _btgt = getattr(_b, "target_id", None)
+                        if _btgt:
+                            known_ids.add(str(_btgt))
+                    for _c in (getattr(_ent, "concerns", None) or []):
+                        _cid = getattr(_c, "concern_id", None)
+                        if _cid:
+                            known_ids.add(str(_cid))
+                        _cpid = getattr(_c, "proposition_id", None)
+                        if _cpid:
+                            known_ids.add(str(_cpid))
+                for wt in (getattr(world_state, "world_traits", None) or {}).keys():
+                    known_ids.add(str(wt))
             unsupported = [eid for eid in evidence if str(eid) not in known_ids]
             # R19-H8: when answering on a shadow branch, subtract any
             # ids the branch has tombstoned. ``physics_state`` may

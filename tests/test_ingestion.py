@@ -907,6 +907,84 @@ class TestNormalizeFabulaTimes:
         result = _normalize_fabula_times(ws, spacing=100)
         assert result.entities["ENT_X"].beliefs[0].established_at_fabula == 0
 
+    def test_rescales_nested_beliefs_added_in_state_timeline(self):
+        """G1: Belief.established_at_fabula nested inside
+        EntityStateSnapshot.beliefs_added must be remapped alongside the
+        snapshot's own fabula_time. Without this, downstream readers
+        walking ``ent.state_timeline[*].beliefs_added`` see ticks pinned
+        to the pre-normalisation timeline."""
+        from shadow_loom.models import EntityStateSnapshot
+
+        ws = _minimal_ws(events=[
+            EventNode(id="EVT_1", fabula_time=1, syuzhet_index=0,
+                      event_type="choice", description="a"),
+            EventNode(id="EVT_2", fabula_time=2, syuzhet_index=1,
+                      event_type="outcome", description="b"),
+        ])
+        nested_belief = Belief(
+            target_id="ENT_X", perceived_state="learned",
+            confidence=0.8, inertia=0.5, established_at_fabula=2,
+        )
+        snap = EntityStateSnapshot(
+            fabula_time=2, triggered_by="EVT_2", beliefs_added=[nested_belief],
+        )
+        ent = ws.entities["ENT_X"]
+        updated_ent = ent.model_copy(update={"state_timeline": [snap]})
+        ws = ws.model_copy(update={"entities": {"ENT_X": updated_ent}})
+        result = _normalize_fabula_times(ws, spacing=100)
+        out_snap = result.entities["ENT_X"].state_timeline[0]
+        assert out_snap.fabula_time == 200
+        assert out_snap.beliefs_added[0].established_at_fabula == 200
+
+    def test_rescales_object_state_timeline(self):
+        """G2: NarrativeObject.state_timeline[*].fabula_time must be
+        remapped so reconstruct_object_at(cursor) returns the right
+        mutation tick after normalisation."""
+        from shadow_loom.models import ObjectStateSnapshot
+
+        ws = _minimal_ws(events=[
+            EventNode(id="EVT_1", fabula_time=1, syuzhet_index=0,
+                      event_type="choice", description="a"),
+            EventNode(id="EVT_2", fabula_time=2, syuzhet_index=1,
+                      event_type="outcome", description="b"),
+        ])
+        obj = NarrativeObject(
+            id="OBJ_DAGGER", name="Dagger", description="a dagger",
+            location_id="LOC_A", owner_id=None, affordances=[],
+            state_timeline=[
+                ObjectStateSnapshot(
+                    fabula_time=2, triggered_by="EVT_2",
+                    properties_set={"state": "bloodied"},
+                ),
+            ],
+        )
+        ws = ws.model_copy(update={"objects": {"OBJ_DAGGER": obj}})
+        result = _normalize_fabula_times(ws, spacing=100)
+        assert result.objects["OBJ_DAGGER"].state_timeline[0].fabula_time == 200
+
+    def test_rescales_relationship_edge_lifecycle(self):
+        """G3: RelationshipEdge.established_at_fabula and .ended_at_fabula
+        must be remapped so social-edge time-slicing stays in sync."""
+        ws = _minimal_ws(
+            events=[
+                EventNode(id="EVT_1", fabula_time=1, syuzhet_index=0,
+                          event_type="choice", description="a"),
+                EventNode(id="EVT_2", fabula_time=2, syuzhet_index=1,
+                          event_type="outcome", description="b"),
+            ],
+            social_topology=[
+                RelationshipEdge(
+                    source_entity_id="ENT_X", target_entity_id="ENT_X",
+                    affinity=0.5, last_updated_fabula=2,
+                    established_at_fabula=1, ended_at_fabula=2,
+                ),
+            ],
+        )
+        result = _normalize_fabula_times(ws, spacing=100)
+        edge = result.social_topology[0]
+        assert edge.established_at_fabula == 100
+        assert edge.ended_at_fabula == 200
+
 
 # =====================================================================
 # Tightened actor/target validation

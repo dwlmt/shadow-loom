@@ -377,6 +377,38 @@ def build_causal_diagram(
                     g.add_edge(evt.id, aid)
 
     # ------------------------------------------------------------------
+    # Event → target direct-effect edges.
+    #
+    # An EventNode's ``target_ids`` expresses the entities the event
+    # acts ON (e.g. EVT_DUNCAN_MURDER has target_ids=["ENT_DUNCAN"]).
+    # The hand-authored ``causal_topology`` may or may not include an
+    # explicit ``Event → target`` mutation row for the status change;
+    # without one the diagram declares do(EVT_DUNCAN_MURDER=prevented)
+    # vacuous w.r.t. ENT_DUNCAN under Rule 3 — even though the event's
+    # whole purpose is to act on Duncan. Auto-wire the direct-effect
+    # edge so structural reachability reflects the event's narrative
+    # role.
+    #
+    # We deliberately do NOT auto-wire ``actor_ids``: an actor is the
+    # entity *performing* the event, not necessarily one *affected* by
+    # it ("Alice greets Bob" → Bob is the target, but pruning the
+    # greeting should not propagate to Alice's state). Rule 3
+    # exclusion only needs ancestor-of-query reachability, which the
+    # target edge alone supplies for the do(EVT)/query(ENT) shape.
+    # Self-modifying acts (e.g. mutation events) are already wired
+    # through their explicit ``causal_topology`` rows.
+    #
+    # We skip utterance events (their information flow is already
+    # routed through speaker/channel/addressee above) and idempotently
+    # skip edges that already exist.
+    for evt in world_state.events:
+        if getattr(evt, "event_type", None) == "utterance":
+            continue
+        for tid in (getattr(evt, "target_ids", []) or []):
+            if g.has_node(tid) and tid != evt.id and not g.has_edge(evt.id, tid):
+                g.add_edge(evt.id, tid)
+
+    # ------------------------------------------------------------------
     # Phase-4 utility-layer lift: PROP::, CCN::, and belief→PROP edges.
     #
     # Propositions and concerns are audience-side / utility-layer nodes

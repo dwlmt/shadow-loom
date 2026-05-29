@@ -121,6 +121,34 @@ def audit_world_schema(world_state: WorldStateV1) -> List[str]:
                     f"[schema\u00b7dangling] EVT {evt.id} object_id "
                     f"={obj_ref!r} is unknown."
                 )
+        # 2026-05-29 round-3 MED: ``Event.target_ids`` (the set of
+        # entities / objects / events the event acts upon \u2014 see
+        # ``shadow_loom/models.py::Event.target_ids``) was previously
+        # never validated. A malformed ingest (e.g. typo
+        # ``ENT_KURTS`` for ``ENT_KURTZ`` in Apocalypse Now) would
+        # pass schema audit silently, then break target-dependent
+        # queries downstream ("who was targeted in
+        # EVT_WILLARD_KILLS_KURTZ?") because the resolver finds no
+        # such entity. Mirror the actor_ids / object_ids checks.
+        # Valid target_ids span entity / object / event / location /
+        # world_trait / channel ids \u2014 utterances commonly reference
+        # WORLD_ traits (e.g. a curse, a kingdom-level rule) and
+        # locations (e.g. "the throne room is in chaos"), and
+        # channel-targeted events (e.g. severing a comm line) are
+        # legitimate. Restricting to ENT/OBJ/EVT only flagged
+        # hand-authored fixtures that referenced WORLD_ targets and
+        # treated them as dangling.
+        _evt_target_known = (
+            entity_ids | object_ids | event_ids
+            | location_ids | world_trait_ids | channel_ids
+        )
+        for tgt_ref in (getattr(evt, "target_ids", None) or []):
+            if tgt_ref not in _evt_target_known:
+                issues.append(
+                    f"[schema\u00b7dangling] EVT {evt.id} target_id "
+                    f"={tgt_ref!r} is unknown (expected an ENT_ / "
+                    f"OBJ_ / EVT_ / LOC_ / WORLD_ / CHN_ id)."
+                )
         for pid_attr in ("asserts_proposition_id", "denies_proposition_id"):
             pid = getattr(evt, pid_attr, None)
             if pid and pid not in proposition_ids:
@@ -616,3 +644,75 @@ def audit_world_schema(world_state: WorldStateV1) -> List[str]:
 
 
 __all__ = ["audit_world_schema"]
+
+
+# ---------------------------------------------------------------------
+# CC-3 (2026-05-29): tiny CLI for ad-hoc operator use.
+# ``python -m shadow_loom.world_schema_audit path/to/world.json``
+# loads a serialized WorldStateV1 and prints the warning list (one
+# per line). Exit code 1 when any warning is present so CI / shell
+# pipelines can gate on it. Kept deliberately minimal so the audit
+# function itself stays the single source of truth.
+# ---------------------------------------------------------------------
+def _main() -> int:
+    import argparse
+    import json
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog="python -m shadow_loom.world_schema_audit",
+        description=(
+            "Run the deterministic world-schema audit against a "
+            "serialized WorldStateV1 JSON file. Exits 1 if any "
+            "warnings are produced."
+        ),
+    )
+    parser.add_argument(
+        "world_file",
+        help="Path to a JSON file containing a serialized WorldStateV1.",
+    )
+    parser.add_argument(
+        "--strict",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Exit non-zero on warnings (default). Pass --no-strict to "
+            "always exit 0 regardless of warning count."
+        ),
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress the per-warning lines; only print the count.",
+    )
+    args = parser.parse_args()
+
+    try:
+        with open(args.world_file, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except OSError as exc:
+        print(f"[schema-audit] could not read {args.world_file!r}: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"[schema-audit] invalid JSON in {args.world_file!r}: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        ws = WorldStateV1.model_validate(payload)
+    except Exception as exc:  # noqa: BLE001 — surface validation errors clearly
+        print(f"[schema-audit] WorldStateV1 validation failed: {exc}", file=sys.stderr)
+        return 2
+
+    warnings = audit_world_schema(ws)
+    if not args.quiet:
+        for w in warnings:
+            print(w)
+    print(f"[schema-audit] {len(warnings)} warning(s).", file=sys.stderr)
+    if warnings and args.strict:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover — exercised via CLI
+    raise SystemExit(_main())
+

@@ -10615,13 +10615,33 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         if se.destroyed_at_fabula is not None:
             all_times.add(se.destroyed_at_fabula)
     for re_edge in ws.social_topology:
+        # G3: edge-level lifecycle ticks (alliance start, marriage rupture)
+        # must also flow through the time_map so social-edge time-slicing
+        # stays in sync with rescaled events / channels / metrics.
+        if re_edge.established_at_fabula is not None:
+            all_times.add(re_edge.established_at_fabula)
+        if re_edge.ended_at_fabula is not None:
+            all_times.add(re_edge.ended_at_fabula)
         for m in re_edge.metrics.values():
             all_times.add(m.last_updated_fabula)
+    # G2: NarrativeObject state-timeline fabula_times. Without this, after
+    # normalisation ``reconstruct_object_at(obj, cursor)`` would query a
+    # rescaled cursor against pre-rescaled snapshot ticks and miss every
+    # mutation (movement, ownership transfer, property flip).
+    for obj in ws.objects.values():
+        for snap in obj.state_timeline:
+            all_times.add(snap.fabula_time)
     for ent in ws.entities.values():
         for b in ent.beliefs:
             all_times.add(b.established_at_fabula)
         for snap in ent.state_timeline:
             all_times.add(snap.fabula_time)
+            # G1: nested Belief.established_at_fabula on snap.beliefs_added
+            # normally equals snap.fabula_time, but is not guaranteed to —
+            # collect explicitly so any divergent values participate in
+            # the time_map (and the remap loop below restamps them).
+            for b in snap.beliefs_added:
+                all_times.add(b.established_at_fabula)
         for c in ent.concerns:
             if c.activation_fabula_window:
                 for t in c.activation_fabula_window:
@@ -10678,7 +10698,15 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
             })
             for name, m in re_edge.metrics.items()
         }
-        new_social.append(re_edge.model_copy(update={"metrics": new_metrics}))
+        edge_updates: dict = {"metrics": new_metrics}
+        # G3: edge-level lifecycle. Optional fields — keep None as-is.
+        if re_edge.established_at_fabula is not None:
+            edge_updates["established_at_fabula"] = (
+                _map(re_edge.established_at_fabula) or re_edge.established_at_fabula
+            )
+        if re_edge.ended_at_fabula is not None:
+            edge_updates["ended_at_fabula"] = _map(re_edge.ended_at_fabula)
+        new_social.append(re_edge.model_copy(update=edge_updates))
     new_spatial = [
         se.model_copy(update={
             "established_at_fabula": _map(se.established_at_fabula) or se.established_at_fabula,
@@ -10696,10 +10724,28 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
             })
             for b in ent.beliefs
         ]
-        new_timeline = [
-            snap.model_copy(update={"fabula_time": _map(snap.fabula_time) or snap.fabula_time})
-            for snap in ent.state_timeline
-        ]
+        # G1: when restamping each EntityStateSnapshot.fabula_time, also
+        # restamp the nested ``beliefs_added[*].established_at_fabula``.
+        # The snapshot's tick is rewritten via _map but the inner Belief
+        # objects would otherwise still cite the pre-rescaling tick,
+        # leaving every counterfactual / time-slice reader that walks
+        # the snapshot belief silently desynced from the new timeline.
+        new_timeline = []
+        for snap in ent.state_timeline:
+            snap_updates: dict = {
+                "fabula_time": _map(snap.fabula_time) or snap.fabula_time,
+            }
+            if snap.beliefs_added:
+                snap_updates["beliefs_added"] = [
+                    b.model_copy(update={
+                        "established_at_fabula": (
+                            _map(b.established_at_fabula)
+                            or b.established_at_fabula
+                        ),
+                    })
+                    for b in snap.beliefs_added
+                ]
+            new_timeline.append(snap.model_copy(update=snap_updates))
         # Remap Concern.activation_fabula_window + each ConcernSnapshot
         # so per-character concerns track the rescaled timeline. Without
         # this, concerns originally activated at fabula=2 would still
@@ -10742,6 +10788,20 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         len(nonzero_sorted), median_diff, spacing,
     )
 
+    # G2: Remap NarrativeObject state-timeline fabula_times.
+    new_objects = {}
+    for oid, obj in ws.objects.items():
+        if obj.state_timeline:
+            new_obj_timeline = [
+                snap.model_copy(update={
+                    "fabula_time": _map(snap.fabula_time) or snap.fabula_time,
+                })
+                for snap in obj.state_timeline
+            ]
+            new_objects[oid] = obj.model_copy(update={"state_timeline": new_obj_timeline})
+        else:
+            new_objects[oid] = obj
+
     # Remap world trait snapshot fabula_times
     new_world_traits = {}
     for wid, wt in ws.world_traits.items():
@@ -10776,7 +10836,7 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
 
     return WorldStateV1(
         locations=ws.locations,
-        objects=ws.objects,
+        objects=new_objects,
         entities=new_entities,
         events=new_events,
         world_traits=new_world_traits,
@@ -11172,6 +11232,7 @@ def _apply_channel_forwarding(
     *,
     events: List[EventNode],
     entity_updates: Optional[List["EntityUpdate"]] = None,
+    entities: Optional[Dict[str, "Entity"]] = None,
 ) -> None:
     """Rewrite ``via_channel_id`` and ``Belief.acquired_via_channel_id`` in place.
 
@@ -11179,6 +11240,14 @@ def _apply_channel_forwarding(
     ``entity_updates[*].new_beliefs`` lists are mutated; their
     container objects are replaced via ``model_copy`` so we don't rely
     on Pydantic's mutability semantics for nested models.
+
+    When ``entities`` is supplied (incremental-merge path) we also
+    rewrite already-baked belief provenance on
+    ``entities[*].beliefs`` and on every
+    ``entities[*].state_timeline[*].beliefs_added`` so a canonical
+    channel id flip from a later chunk doesn't leave the merged
+    world holding dangling ``acquired_via_channel_id`` references
+    that point at the deduplicated-away alias.
     """
     if not forwarding:
         return
@@ -11205,6 +11274,30 @@ def _apply_channel_forwarding(
                     rebuilt.append(b)
             if replaced_any:
                 entity_updates[j] = eu.model_copy(update={"new_beliefs": rebuilt})
+    if entities:
+        for ent in entities.values():
+            # Top-level beliefs list.
+            beliefs = getattr(ent, "beliefs", None) or []
+            for k, b in enumerate(beliefs):
+                if (
+                    getattr(b, "acquired_via_channel_id", None)
+                    and b.acquired_via_channel_id in forwarding
+                ):
+                    beliefs[k] = b.model_copy(update={
+                        "acquired_via_channel_id": forwarding[b.acquired_via_channel_id],
+                    })
+            # Per-snapshot beliefs_added on the state timeline.
+            timeline = getattr(ent, "state_timeline", None) or []
+            for snap in timeline:
+                snap_beliefs = getattr(snap, "beliefs_added", None) or []
+                for k, b in enumerate(snap_beliefs):
+                    if (
+                        getattr(b, "acquired_via_channel_id", None)
+                        and b.acquired_via_channel_id in forwarding
+                    ):
+                        snap_beliefs[k] = b.model_copy(update={
+                            "acquired_via_channel_id": forwarding[b.acquired_via_channel_id],
+                        })
 
 
 # Public aliases for reuse outside the ingestion pipeline

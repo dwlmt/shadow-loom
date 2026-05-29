@@ -1244,6 +1244,140 @@ def _format_do_target_causal_context(
             else:
                 lines.append(f"  object {obj_id} not found in ledger")
 
+        elif target_kind == "entity_delete":
+            # R3-3 (2026-05-29): The factual canon around a do-deleted
+            # entity is the very thing the renderer needs to know what
+            # the world LOSES under the surgery: every relationship,
+            # belief, concern, and event reference that depended on
+            # the ENT_ id. Without this section the renderer would
+            # have to guess at the entity's narrative footprint.
+            ent_id = getattr(do_target, "entity_id", None)
+            lines.append(
+                f"DO-TARGET CAUSAL CONTEXT (factual canon around deleted entity {ent_id}):"
+            )
+            ent = entities_map.get(ent_id) if ent_id else None
+            if ent is not None:
+                nm = (getattr(ent, "name", None) or "").strip()
+                head = f"  {ent_id}"
+                if nm:
+                    head += f" — {nm}"
+                lines.append(head)
+                # Outgoing + incoming relationships involving this entity.
+                # 2026-05-29 round-3 MED: ``RelationshipEdge`` uses
+                # ``source_entity_id`` / ``target_entity_id`` and a
+                # ``metrics`` Dict[str, ...] payload (see
+                # ``shadow_loom/models.py::RelationshipEdge``). The
+                # pre-fix walker read ``source_id`` / ``target_id`` /
+                # ``metric`` / ``value`` (CausalEdge keys) and so
+                # always produced an empty ``rel_rows`` list, even
+                # for entities at the centre of dense social graphs
+                # (e.g. Linnet in Death on the Nile, Jacqueline's
+                # severed jealousy / love metrics under an
+                # entity_delete counterfactual).
+                rel_rows: List[str] = []
+                for edge in social_edges:
+                    src = getattr(edge, "source_entity_id", None)
+                    tgt = getattr(edge, "target_entity_id", None)
+                    metrics_payload = getattr(edge, "metrics", None) or {}
+                    if src == ent_id and tgt:
+                        for _mname, _mval in metrics_payload.items():
+                            rel_rows.append(
+                                f"      {ent_id}\u2192{_ent_name(tgt)}.{_mname}={_mval}"
+                            )
+                        if not metrics_payload:
+                            rel_rows.append(
+                                f"      {ent_id}\u2192{_ent_name(tgt)} (no metrics)"
+                            )
+                    elif tgt == ent_id and src:
+                        for _mname, _mval in metrics_payload.items():
+                            rel_rows.append(
+                                f"      {_ent_name(src)}\u2192{ent_id}.{_mname}={_mval}"
+                            )
+                        if not metrics_payload:
+                            rel_rows.append(
+                                f"      {_ent_name(src)}\u2192{ent_id} (no metrics)"
+                            )
+                if rel_rows:
+                    lines.append("    severed relationships:")
+                    lines.extend(rel_rows[:max_neighbours])
+                    if len(rel_rows) > max_neighbours:
+                        lines.append(f"      \u2026 (+{len(rel_rows) - max_neighbours} more)")
+                # Beliefs held BY this entity and beliefs held ABOUT this entity.
+                belief_rows: List[str] = []
+                for b in getattr(ent, "beliefs", None) or []:
+                    pid = getattr(b, "proposition_id", "?")
+                    state = getattr(b, "perceived_state", "")
+                    belief_rows.append(
+                        f"      {ent_id} believed '{state}' about {pid}"
+                    )
+                # 2026-05-29 round-3 MED: ``Belief`` has no ``belief_id``
+                # attribute (see ``shadow_loom/models.py::Belief``). The
+                # pre-fix detector used a substring check
+                # ``f"\u2192{ent_id}" in bid`` against a non-existent
+                # field, so ``bid`` was always ``""`` and incoming
+                # beliefs were never reported. The Lion / The Witch /
+                # The Wardrobe counterfactual "if ENT_WHITE_WITCH had
+                # never existed" would therefore lose every
+                # betrayal-belief Edmund holds about her. Switch to
+                # the canonical ``b.target_id`` comparison.
+                for other_id, other in entities_map.items():
+                    if other_id == ent_id:
+                        continue
+                    for b in getattr(other, "beliefs", None) or []:
+                        if getattr(b, "target_id", None) == ent_id:
+                            pid = getattr(b, "proposition_id", "?")
+                            state = getattr(b, "perceived_state", "")
+                            belief_rows.append(
+                                f"      {_ent_name(other_id)} believed "
+                                f"'{state}' about {ent_id} ({pid})"
+                            )
+                if belief_rows:
+                    lines.append("    cascaded beliefs:")
+                    lines.extend(belief_rows[:max_neighbours])
+                    if len(belief_rows) > max_neighbours:
+                        lines.append(f"      \u2026 (+{len(belief_rows) - max_neighbours} more)")
+                # Events this entity acted in or was targeted by.
+                evt_rows: List[str] = []
+                for ev in events_list:
+                    actors = list(getattr(ev, "actor_ids", None) or [])
+                    targets = list(getattr(ev, "target_ids", None) or [])
+                    if ent_id in actors or ent_id in targets:
+                        evt_rows.append(_evt_line(ev.id, indent="      "))
+                if evt_rows:
+                    lines.append("    erased events (actor or target):")
+                    lines.extend(evt_rows[:max_neighbours])
+                    if len(evt_rows) > max_neighbours:
+                        lines.append(f"      \u2026 (+{len(evt_rows) - max_neighbours} more)")
+            else:
+                lines.append(f"  entity {ent_id} not found in ledger")
+
+        elif target_kind == "object_delete":
+            # R3-3 (2026-05-29): Mirror of entity_delete for objects.
+            obj_id = getattr(do_target, "object_id", None)
+            lines.append(
+                f"DO-TARGET CAUSAL CONTEXT (factual canon around deleted object {obj_id}):"
+            )
+            obj = objects_map.get(obj_id) if obj_id else None
+            if obj is not None:
+                nm = (getattr(obj, "name", None) or "").strip()
+                head = f"  {obj_id}"
+                if nm:
+                    head += f" — {nm}"
+                lines.append(head)
+                # Events that touched this object.
+                evt_rows: List[str] = []
+                for ev in events_list:
+                    targets = list(getattr(ev, "target_ids", None) or [])
+                    if obj_id in targets:
+                        evt_rows.append(_evt_line(ev.id, indent="      "))
+                if evt_rows:
+                    lines.append("    erased events (object as target):")
+                    lines.extend(evt_rows[:max_neighbours])
+                    if len(evt_rows) > max_neighbours:
+                        lines.append(f"      \u2026 (+{len(evt_rows) - max_neighbours} more)")
+            else:
+                lines.append(f"  object {obj_id} not found in ledger")
+
         else:
             # Unknown kind — defensive fallthrough.
             return None
@@ -1893,7 +2027,14 @@ def _format_event_mutation_lines(
 def _format_blocked_propagation_lines(
     blocked: Optional[List[Dict[str, Any]]],
 ) -> List[str]:
-    """Render BlockedPropagation dicts as ``ENT_X.fear blocked by inertia (impact=0.10, inertia=0.85)``."""
+    """Render BlockedPropagation dicts as ``ENT_X.fear blocked by inertia (impact=0.10, inertia=0.85)``.
+
+    Important: ``impact`` here is the *attempted* push the engine
+    computed before inertia / cycle / noisy-OR absorption rejected it.
+    It is **not** a delta the prose should depict as achieved. The
+    surrounding header copy and HARD constraint block tell the
+    renderer to stage resistance, not change.
+    """
     if not blocked:
         return []
     out: List[str] = []
@@ -1903,10 +2044,10 @@ def _format_blocked_propagation_lines(
         reason = b.get("reason", "unknown")
         impact = b.get("impact")
         inertia = b.get("inertia")
-        line = f"  {node}.{trait} blocked by {reason}"
+        line = f"  {node}.{trait} blocked by {reason} \u2014 do NOT depict as reaching the new value"
         if impact is not None and inertia is not None:
             try:
-                line += f" (impact={float(impact):.2f}, inertia={float(inertia):.2f})"
+                line += f" (attempted_impact={float(impact):.2f}, inertia={float(inertia):.2f})"
             except (TypeError, ValueError):
                 pass
         out.append(line)
@@ -1978,6 +2119,8 @@ def _emit_downstream_cascade_lines(branch: Any, lines: List[str]) -> None:
          "  ENTITY DELETION CASCADES (existence-counterfactual excisions \u2014 character was never present; everything that depended on them must be re-grounded):"),
         ("object_delete_cascade_detail",
          "  OBJECT DELETION CASCADES (existence-counterfactual excisions \u2014 prop was never present; ownership / location / channel hooks must not be referenced):"),
+        ("event_cascade_detail",
+         "  EVENT CASCADES (DoEventNode surgeries + chain_reaction descendants pruned by Pearl closure \u2014 each listed EVT_ id MUST be narrated as not having occurred in this branch; do not let it re-enact via a different actor / object / time):"),
         ("blocked_propagations_detail",
          "  BLOCKED PROPAGATIONS (resistance prevented full cascade \u2014 honour the BLOCKED PROPAGATIONS (HARD) constraint block's directive: stage one concrete resistance beat per entry when the list is short, treat as stable when the list is long; do NOT depict any listed (node, trait) as having reached the new value):"),
     ]
@@ -2012,6 +2155,21 @@ def _emit_downstream_cascade_lines(branch: Any, lines: List[str]) -> None:
             "a concrete on-page event, utterance, sensory cue, or "
             "behavioural shift \u2014 silently dropping a cascade will be "
             "flagged as a miracle step by the auditor."
+        )
+    else:
+        # Round-20 fix: when no cascade attribute fires, be explicit
+        # rather than silent. Otherwise the renderer (and the auditor
+        # reading the same brief) is left to infer "no cascade" from
+        # absence — and may invent one. State the absence plainly so
+        # the audit's "missing downstream Δ" check has a positive
+        # signal that nothing was meant to follow.
+        lines.append(
+            "  DOWNSTREAM CASCADES: the engine produced no downstream "
+            "trait, relationship, proposition, belief, concern, object, "
+            "world-trait, or edge propagation from this surgery. The "
+            "prose must NOT invent any second-order effect; the scene "
+            "depicts the immediate surgery only. This is the engine's "
+            "ground truth, not a gap to fill."
         )
 
 
@@ -2127,6 +2285,36 @@ def _format_intervention_branch(ib: InterventionBranch) -> str:
                 f"(location={getattr(do_target, 'new_location_id', None)}, "
                 f"owner={getattr(do_target, 'new_owner_id', None)}). "
                 f"Render the object in its new location / ownership."
+            )
+        elif kind == "entity_delete":
+            # R2-4 (2026-05-29): Entity-delete is a bag-and-baggage
+            # Rung-2 surgery — every belief, relationship, social edge,
+            # concern, proposition referent, and causal edge that
+            # referenced the ENT_ id is cascaded out by the merge layer
+            # (``removed_entity_ids`` in extract_graph.merge). The
+            # renderer must depict a world in which the entity
+            # NEVER EXISTED — not one in which they died or are absent.
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: entity_delete \u2014 ENT "
+                f"{getattr(do_target, 'entity_id', '?')} was excised "
+                f"from the world (never existed). Every relationship, "
+                f"belief, concern, and event reference that depended on "
+                f"this entity has been cascaded out. Render a world in "
+                f"which this character was never present \u2014 not one in "
+                f"which they died or are off-stage."
+            )
+        elif kind == "object_delete":
+            # R2-4 (2026-05-29): Object-delete mirror of entity_delete.
+            # ObjectMutation entries, inventory snapshots, beliefs, and
+            # causal edges that referenced the OBJ_ id are pruned by
+            # the merge layer's ``removed_object_ids`` set.
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: object_delete \u2014 OBJ "
+                f"{getattr(do_target, 'object_id', '?')} was excised "
+                f"from the world (never existed). Every event, belief, "
+                f"and inventory reference that depended on this object "
+                f"has been cascaded out. Render a world in which this "
+                f"object was never present."
             )
 
     if ib.do_target_context:
@@ -2614,6 +2802,45 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
                     f"This is a *prop* counterfactual: the object's "
                     f"availability or affordances were different."
                 )
+        elif kind == "entity_delete":
+            # R3-3 (2026-05-29): Pearl Rung-3 existence counterfactual
+            # for entities. Distinct from killing the entity mid-story
+            # (a trait clamp or event surgery); this excises the
+            # entity entirely. The merge layer (``removed_entity_ids``
+            # in extract_graph.merge) cascades every belief,
+            # relationship, social edge, concern, proposition referent,
+            # and causal edge that referenced the ENT_ id.
+            ent_id = getattr(do_target, "entity_id", None)
+            if ent_id:
+                ent_label = _gloss or ent_id
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: entity_delete — render as \"had "
+                    f"{ent_label} never existed\". This is an *existence* "
+                    f"counterfactual: the entity was excised bag-and-baggage "
+                    f"from the world. Render a scene in which the character "
+                    f"was never present \u2014 not one in which they died, "
+                    f"left, or are off-stage. Every relationship, belief, "
+                    f"and event reference that depended on them has been "
+                    f"cascaded out."
+                )
+        elif kind == "object_delete":
+            # R3-3 (2026-05-29): Mirror of entity_delete for narrative
+            # objects. Cascades via ``removed_object_ids`` so every
+            # ObjectMutation, inventory snapshot, belief, and causal
+            # edge that referenced the OBJ_ id is pruned.
+            obj_id = getattr(do_target, "object_id", None)
+            if obj_id:
+                obj_label = _gloss or obj_id
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: object_delete — render as \"had "
+                    f"{obj_label} never existed\". This is an *existence* "
+                    f"counterfactual: the object was excised bag-and-baggage "
+                    f"from the world. Render a scene in which the object "
+                    f"was never present \u2014 not one in which it was lost, "
+                    f"hidden, or unavailable. Every event, belief, and "
+                    f"inventory reference that depended on it has been "
+                    f"cascaded out."
+                )
 
         if len(lines) == _pre_len:
             # No branch emitted a hint — either ``kind`` was unknown
@@ -2629,6 +2856,94 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
 
     if cf.do_target_context:
         lines.append("  " + cf.do_target_context.replace("\n", "\n  "))
+
+    # R3-2 (2026-05-29): joint counterfactual — surface additional clamps
+    # beyond the primary ``do_target`` so the renderer doesn't write the
+    # scene under only one surgery when the engine applied several.
+    _extra_do_targets = list(getattr(cf, "do_targets", None) or [])[1:]
+    if _extra_do_targets:
+        lines.append(
+            f"  ADDITIONAL RUNG-3 SURGERIES ({len(_extra_do_targets)} further "
+            "clamp(s) applied simultaneously at the divergence point):"
+        )
+        for _t in _extra_do_targets[:20]:
+            _kind = getattr(_t, "target_kind", "?")
+            if _kind == "event":
+                _verb = "occurred" if getattr(_t, "occurred", None) else "did NOT occur"
+                lines.append(
+                    f"    \u2022 EVT {getattr(_t, 'event_id', '?')} {_verb}"
+                )
+            elif _kind == "proposition":
+                lines.append(
+                    f"    \u2022 PROP {getattr(_t, 'proposition_id', '?')}"
+                    f" = {getattr(_t, 'truth', '?')}"
+                )
+            elif _kind == "belief":
+                lines.append(
+                    f"    \u2022 {getattr(_t, 'holder_id', '?')}'s belief about "
+                    f"PROP {getattr(_t, 'proposition_id', '?')} clamped to "
+                    f"confidence {getattr(_t, 'confidence', '?')}"
+                )
+            elif _kind == "concern":
+                lines.append(
+                    f"    \u2022 {getattr(_t, 'holder_id', '?')}'s CCN "
+                    f"{getattr(_t, 'concern_id', '?')} clamped"
+                )
+            elif _kind == "trait":
+                lines.append(
+                    f"    \u2022 {getattr(_t, 'holder_id', '?')}."
+                    f"{getattr(_t, 'trait_name', '?')}={getattr(_t, 'value', '?')}"
+                )
+            elif _kind == "world_trait":
+                lines.append(
+                    f"    \u2022 WT {getattr(_t, 'world_trait_id', '?')}="
+                    f"{getattr(_t, 'value', '?')}"
+                )
+            elif _kind == "channel":
+                lines.append(
+                    f"    \u2022 CHN {getattr(_t, 'channel_id', '?')} active="
+                    f"{getattr(_t, 'active', '?')}"
+                )
+            elif _kind == "relationship":
+                lines.append(
+                    f"    \u2022 {getattr(_t, 'source_entity_id', '?')}\u2192"
+                    f"{getattr(_t, 'target_entity_id', '?')}."
+                    f"{getattr(_t, 'metric', '?')}={getattr(_t, 'value', '?')}"
+                )
+            elif _kind == "causal_edge":
+                lines.append(
+                    f"    \u2022 causal-edge {getattr(_t, 'source_id', '?')}\u2192"
+                    f"{getattr(_t, 'target_id', '?')} {getattr(_t, 'action', '?')}"
+                )
+            elif _kind == "spatial_edge":
+                lines.append(
+                    f"    \u2022 spatial-edge {getattr(_t, 'source_id', '?')}\u2192"
+                    f"{getattr(_t, 'target_id', '?')} {getattr(_t, 'action', '?')}"
+                )
+            elif _kind == "object":
+                lines.append(
+                    f"    \u2022 OBJ {getattr(_t, 'object_id', '?')}"
+                )
+            elif _kind == "entity_delete":
+                lines.append(
+                    f"    \u2022 ENT {getattr(_t, 'entity_id', '?')} excised"
+                )
+            elif _kind == "object_delete":
+                lines.append(
+                    f"    \u2022 OBJ {getattr(_t, 'object_id', '?')} excised"
+                )
+            else:
+                lines.append(f"    \u2022 {_kind}: {_t!r}")
+        if len(_extra_do_targets) > 20:
+            lines.append(
+                f"    \u2026 (+{len(_extra_do_targets) - 20} further surgeries)"
+            )
+        lines.append(
+            "    Rule: each surgery above is applied SIMULTANEOUSLY at the "
+            "divergence point. The simulated outcome reflects their joint "
+            "consequences \u2014 render the scene under ALL of them at once, "
+            "not just the primary surgery."
+        )
 
     if cf.affected_propositions:
         lines.append(
@@ -4946,6 +5261,21 @@ def _build_cascade_exclusion_constraints(
     proposition_mutations: Optional[List[Dict[str, Any]]] = None,
     belief_mutations: Optional[List[Dict[str, Any]]] = None,
     concern_mutations: Optional[List[Dict[str, Any]]] = None,
+    # 2026-05-29 (deep-audit HIGH-2): the renderer-facing branch payload
+    # carries object / world-trait / edge / entity-delete / object-delete /
+    # event mutation streams, but the pre-fix exclusion bound counted
+    # only the five "classic" cascade categories. When a Rung-2 / Rung-3
+    # surgery produced (e.g.) an object relocation or a world-trait
+    # shift, the HARD bound prompt said "exactly N effects" where N was
+    # silently under-counting the actual surfaced cascade. The auditor
+    # then flagged the renderer for either omitting the surfaced
+    # mutation OR for fabricating beats it was actually told to render.
+    object_mutations: Optional[List[Dict[str, Any]]] = None,
+    world_trait_mutations: Optional[List[Dict[str, Any]]] = None,
+    edge_mutations: Optional[List[Dict[str, Any]]] = None,
+    entity_delete_mutations: Optional[List[Dict[str, Any]]] = None,
+    object_delete_mutations: Optional[List[Dict[str, Any]]] = None,
+    event_mutations: Optional[List[Dict[str, Any]]] = None,
     rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
     world_label: str,
     rung_label: str,
@@ -4994,12 +5324,18 @@ def _build_cascade_exclusion_constraints(
     cascade_present = bool(
         mutations or social_mutations or proposition_mutations
         or belief_mutations or concern_mutations
+        or object_mutations or world_trait_mutations or edge_mutations
+        or entity_delete_mutations or object_delete_mutations
+        or event_mutations
     )
     blocked_only = bool(blocked) and not cascade_present
     if cascade_present or blocked_only:
         n_total = sum(len(x or []) for x in (
             mutations, social_mutations, proposition_mutations,
             belief_mutations, concern_mutations,
+            object_mutations, world_trait_mutations, edge_mutations,
+            entity_delete_mutations, object_delete_mutations,
+            event_mutations,
         ))
         if blocked_only:
             _instr = (
@@ -5020,14 +5356,15 @@ def _build_cascade_exclusion_constraints(
                 f"=== CASCADE-BOUNDED CONSEQUENCES (HARD) === \u2014 the "
                 f"{rung_label} surgery propagated exactly {n_total} "
                 f"downstream effect(s) listed under DOWNSTREAM TRAIT / "
-                f"RELATIONSHIP / PROPOSITION / BELIEF / CONCERN CASCADES "
-                f"in the {world_label} sandbox payload. That list is "
-                f"AUTHORITATIVE: render every cascade as a concrete "
-                f"on-page beat AND do NOT invent additional downstream "
-                f"effects beyond it. Any consequence the engine did not "
-                f"propagate would be a miracle step \u2014 the auditor "
-                f"flags both omitted cascades and invented consequences "
-                f"by counting the gap against this list."
+                f"RELATIONSHIP / PROPOSITION / BELIEF / CONCERN / OBJECT / "
+                f"WORLD-TRAIT / EDGE / ENTITY-DELETE / OBJECT-DELETE / "
+                f"EVENT CASCADES in the {world_label} sandbox payload. "
+                f"That list is AUTHORITATIVE: render every cascade as a "
+                f"concrete on-page beat AND do NOT invent additional "
+                f"downstream effects beyond it. Any consequence the "
+                f"engine did not propagate would be a miracle step \u2014 "
+                f"the auditor flags both omitted cascades and invented "
+                f"consequences by counting the gap against this list."
             )
         blocks.append(ConstraintBlock(
             constraint_type="mathematical",
@@ -5040,6 +5377,12 @@ def _build_cascade_exclusion_constraints(
                 "proposition_count": len(proposition_mutations or []),
                 "belief_count": len(belief_mutations or []),
                 "concern_count": len(concern_mutations or []),
+                "object_count": len(object_mutations or []),
+                "world_trait_count": len(world_trait_mutations or []),
+                "edge_count": len(edge_mutations or []),
+                "entity_delete_count": len(entity_delete_mutations or []),
+                "object_delete_count": len(object_delete_mutations or []),
+                "event_count": len(event_mutations or []),
                 "blocked_count": len(blocked or []),
             },
         ))
@@ -5590,6 +5933,14 @@ def build_intervention_brief(
         proposition_mutations=proposition_mutations,
         belief_mutations=belief_mutations,
         concern_mutations=concern_mutations,
+        # 2026-05-29 deep-audit HIGH-2: pass through the rest of the
+        # cascade rails so the HARD bound matches the surfaced payload.
+        object_mutations=object_mutations,
+        world_trait_mutations=world_trait_mutations,
+        edge_mutations=edge_mutations,
+        entity_delete_mutations=entity_delete_mutations,
+        object_delete_mutations=object_delete_mutations,
+        event_mutations=event_mutations,
         rule3_pruning_mode=rule3_pruning_mode,
         world_label="intervened",
         rung_label="Rung-2 intervention",
@@ -5770,11 +6121,22 @@ def build_intervention_brief(
             or affected_propositions
             or affected_beliefs
             or affected_concerns
+            or affected_objects
+            or affected_world_traits
+            or affected_edges
+            or affected_entity_deletes
+            or affected_object_deletes
             or mutations
             or social_mutations
             or proposition_mutations
             or belief_mutations
             or concern_mutations
+            or object_mutations
+            or world_trait_mutations
+            or edge_mutations
+            or entity_delete_mutations
+            or object_delete_mutations
+            or event_mutations
             or blocked
         ) else None,
         scene_context=(
@@ -5974,14 +6336,95 @@ def build_counterfactual_brief(
         _divergence_event_id = getattr(_cf_do_target, "event_id", None)
     if not _divergence_event_id and hist_keys:
         _divergence_event_id = hist_keys[0].split(".")[0]
-    cf_branch = CounterfactualBranch(
-        actual_outcome="Events as they occurred in the established record.",
-        simulated_outcome=(
+
+    # R3-1 (2026-05-29): Source the simulated-outcome summary from the
+    # typed ``_hist_do_targets`` rather than ``query.historical_interventions``.
+    # The legacy dict round-trips ints to floats and stringifies enums
+    # to repr, so a clamp like ``{'EVT_42.occurred': False}`` reaches
+    # the renderer as the bare ``str(dict)`` representation. Building
+    # from the typed list lets us emit a readable per-target line and
+    # preserve ``DoEntityDelete`` / ``DoObjectDelete`` etc. that have
+    # no representation in the legacy dotted-key dict at all.
+    if _hist_do_targets:
+        def _describe_do_target(t: Any) -> str:
+            kind = getattr(t, "target_kind", "?")
+            if kind == "event":
+                occurred = getattr(t, "occurred", None)
+                verb = "occurred" if occurred else "did NOT occur"
+                return f"EVT {getattr(t, 'event_id', '?')} {verb}"
+            if kind == "proposition":
+                return (
+                    f"PROP {getattr(t, 'proposition_id', '?')} "
+                    f"= {getattr(t, 'truth', '?')}"
+                )
+            if kind == "belief":
+                return (
+                    f"{getattr(t, 'holder_id', '?')} \u2192 "
+                    f"PROP {getattr(t, 'proposition_id', '?')} "
+                    f"confidence={getattr(t, 'confidence', '?')}"
+                )
+            if kind == "concern":
+                return (
+                    f"{getattr(t, 'holder_id', '?')}'s "
+                    f"CCN {getattr(t, 'concern_id', '?')} clamped"
+                )
+            if kind == "trait":
+                return (
+                    f"{getattr(t, 'holder_id', '?')}."
+                    f"{getattr(t, 'trait_name', '?')}={getattr(t, 'value', '?')}"
+                )
+            if kind == "world_trait":
+                return f"WT {getattr(t, 'world_trait_id', '?')}={getattr(t, 'value', '?')}"
+            if kind == "channel":
+                return f"CHN {getattr(t, 'channel_id', '?')} active={getattr(t, 'active', '?')}"
+            if kind == "relationship":
+                return (
+                    f"{getattr(t, 'source_entity_id', '?')}\u2192"
+                    f"{getattr(t, 'target_entity_id', '?')}."
+                    f"{getattr(t, 'metric', '?')}={getattr(t, 'value', '?')}"
+                )
+            if kind == "causal_edge":
+                return (
+                    f"causal-edge {getattr(t, 'source_id', '?')}\u2192"
+                    f"{getattr(t, 'target_id', '?')} {getattr(t, 'action', '?')}"
+                )
+            if kind == "spatial_edge":
+                return (
+                    f"spatial-edge {getattr(t, 'source_id', '?')}\u2192"
+                    f"{getattr(t, 'target_id', '?')} {getattr(t, 'action', '?')}"
+                )
+            if kind == "object":
+                return (
+                    f"OBJ {getattr(t, 'object_id', '?')} "
+                    f"(loc={getattr(t, 'new_location_id', None)}, "
+                    f"owner={getattr(t, 'new_owner_id', None)})"
+                )
+            if kind == "entity_delete":
+                return f"ENT {getattr(t, 'entity_id', '?')} excised"
+            if kind == "object_delete":
+                return f"OBJ {getattr(t, 'object_id', '?')} excised"
+            return f"{kind}: {t!r}"
+
+        _sim_summary = "; ".join(_describe_do_target(t) for t in _hist_do_targets)
+        _simulated_outcome = (
+            f"Events as they unfold under the changed conditions: {_sim_summary}"
+        )
+    else:
+        # Legacy dotted-key fallback — only reached when neither typed
+        # surface populated ``_hist_do_targets``.
+        _simulated_outcome = (
             f"Events as they unfold under the changed conditions: "
             f"{query.historical_interventions}"
-        ),
+        )
+
+    cf_branch = CounterfactualBranch(
+        actual_outcome="Events as they occurred in the established record.",
+        simulated_outcome=_simulated_outcome,
         divergence_event_id=_divergence_event_id,
         do_target=_cf_do_target,
+        # R3-2 (2026-05-29): expose the FULL clamp list so multi-target
+        # counterfactuals don't silently collapse to the first surgery.
+        do_targets=list(_hist_do_targets),
         do_target_gloss=_resolve_do_target_gloss(world_state, _cf_do_target),
         do_target_context=_format_do_target_causal_context(world_state, _cf_do_target),
         affected_propositions=list(affected_propositions or []),
@@ -6146,6 +6589,14 @@ def build_counterfactual_brief(
         proposition_mutations=proposition_mutations,
         belief_mutations=belief_mutations,
         concern_mutations=concern_mutations,
+        # 2026-05-29 deep-audit HIGH-2: pass the new cascade rails so
+        # the rung-3 bound stays consistent with the surfaced payload.
+        object_mutations=object_mutations,
+        world_trait_mutations=world_trait_mutations,
+        edge_mutations=edge_mutations,
+        entity_delete_mutations=entity_delete_mutations,
+        object_delete_mutations=object_delete_mutations,
+        event_mutations=event_mutations,
         rule3_pruning_mode=rule3_pruning_mode,
         world_label="counterfactual",
         rung_label="Rung-3 counterfactual",

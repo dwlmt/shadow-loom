@@ -126,6 +126,26 @@ VALIDATION: {'PASS' if report.is_valid else 'FAIL'}
     # Also dump summary to file
     (out / f"{stem}_summary.txt").write_text(summary, encoding="utf-8")
 
+    # CC-3 (2026-05-29): run the deterministic world-schema audit on
+    # the freshly ingested world and dump warnings beside the summary.
+    # Advisory only; never blocks the pipeline run.
+    try:
+        from shadow_loom.world_schema_audit import audit_world_schema
+
+        schema_warnings = audit_world_schema(ws)
+        schema_path = out / f"{stem}_schema_warnings.txt"
+        schema_path.write_text(
+            "\n".join(schema_warnings) + ("\n" if schema_warnings else ""),
+            encoding="utf-8",
+        )
+        print(
+            f"\n[schema-audit] {len(schema_warnings)} warning(s) "
+            f"\u2192 {schema_path}",
+            file=sys.stderr,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort diagnostic
+        print(f"[schema-audit] failed: {exc}", file=sys.stderr)
+
     return ws, report
 
 

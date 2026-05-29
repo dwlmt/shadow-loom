@@ -362,6 +362,57 @@ class Proposition(AMWNNode):
             "the truth value is undetermined for surprise-scoring purposes."
         ),
     )
+
+    # R1-3 (2026-05-29): JSON / DB / MCP round-trips can return the
+    # ``truth_at_fabula`` keys as strings (e.g. ``{"1000": True}``) even
+    # though the field is typed ``Dict[int, bool]``. Pydantic's strict
+    # int coercion happens at field validation time but a model rebuilt
+    # from a non-validated source (``model_construct``, ``model_copy``
+    # with ``update={...}``, a raw dict assignment) can slip past it.
+    # Normalize keys to int once at construction so every downstream
+    # ``sorted(truth_at_fabula.keys())`` / ``truth_at_fabula.get(int)``
+    # / ``int(k) <= ft`` site succeeds without re-coercing.
+    @field_validator("truth_at_fabula", mode="before")
+    @classmethod
+    def _normalize_truth_keys(cls, v: Any) -> Any:
+        if not isinstance(v, dict):
+            return v
+        # 2026-05-29 (deep-audit HIGH): a naive ``bool(val)`` would
+        # silently invert ``"false"`` (truthy non-empty string) and
+        # convert ``NaN`` to ``True`` — either silently flips a
+        # ground-truth commitment when a JSON / DB round-trip serializes
+        # booleans as strings. Use strict parsing instead and DROP
+        # un-parseable values (the model field is ``Dict[int, bool]``
+        # so the downstream sites .get() defensively).
+        _TRUE_TOKENS = {"true", "t", "yes", "y", "1"}
+        _FALSE_TOKENS = {"false", "f", "no", "n", "0"}
+        out: Dict[int, bool] = {}
+        for k, val in v.items():
+            try:
+                ik = int(k)
+            except (TypeError, ValueError):
+                continue
+            # Strict boolean parsing.
+            if isinstance(val, bool):
+                out[ik] = val
+            elif isinstance(val, int):  # 0/1
+                out[ik] = bool(val)
+            elif isinstance(val, float):
+                # NaN is the canonical "unknown" — do not silently
+                # commit it as True.
+                if val != val:  # NaN check
+                    continue
+                out[ik] = bool(val)
+            elif isinstance(val, str):
+                tok = val.strip().lower()
+                if tok in _TRUE_TOKENS:
+                    out[ik] = True
+                elif tok in _FALSE_TOKENS:
+                    out[ik] = False
+                # Unknown string — skip.
+            # Any other type — skip (was previously bool(val) which
+            # could lie about the commitment).
+        return out
     inverse_proposition_id: Optional[str] = Field(
         default=None,
         description=(
@@ -1327,6 +1378,44 @@ class CausalEdge(AMWNEdge):
         description="Statistical confidence for Bayes variance: weak=high variance, strong=low variance.",
     )
 
+    necessity: Literal["sufficient", "necessary", "contributory"] = Field(
+        default="sufficient",
+        description=(
+            "INUS-style modality of the causal contribution (Mackie 1965; "
+            "Halpern-Pearl actual-causation framework). Drives the "
+            "disjunctive-closure rule in "
+            ":func:`shadow_loom.causal_closure.expand_chain_reaction_closure` "
+            "for do-prevention surgeries:\n\n"
+            "  * ``sufficient`` (default, backwards-compatible) \u2014 this "
+            "parent on its own is enough to produce the effect. The "
+            "descendant survives under disjunctive closure as long as "
+            "at least one ``sufficient`` parent survives. Use for "
+            "true sufficient causes (the persuasion that drives the "
+            "murder; the spark that lights the powder).\n"
+            "  * ``necessary`` \u2014 the effect cannot occur without this "
+            "parent, regardless of how many sufficient parents survive. "
+            "Pruning a ``necessary`` parent forces the descendant into "
+            "the closure. Use for true preconditions (the victim must "
+            "be co-located with the killer; the witness must be alive "
+            "to testify; the seal must be unbroken for the curse to "
+            "fire). Modelling a precondition as ``sufficient`` is the "
+            "bug-pattern surfaced by the Macbeth Duncan-murder audit "
+            "(2026-05-29): a surviving precondition keeps an "
+            "over-determined-alive descendant on the page even when "
+            "every real cause was erased.\n"
+            "  * ``contributory`` \u2014 this parent influences the effect "
+            "(adds force, raises probability) but is neither necessary "
+            "nor sufficient. Treated as a modifier for closure "
+            "purposes \u2014 does NOT keep descendants alive and does NOT "
+            "force descendants into the closure. Use for ambient "
+            "pressures and background conditions whose presence shapes "
+            "the event but whose absence would not block it.\n\n"
+            "Only consulted on ``chain_reaction`` edges (other "
+            "causality_types are modifiers w.r.t. event\u2192event closure). "
+            "Default ``sufficient`` preserves pre-flag behaviour."
+        ),
+    )
+
     _coerce_es = field_validator("evidence_strength", mode="before")(
         lambda v: _coerce_evidence_strength(v)
     )
@@ -2213,10 +2302,21 @@ def reconstruct_proposition_at(prop: "Proposition", fabula_time: int) -> dict:
             description = snap.description
 
     truth_at: Optional[bool] = None
-    for t in sorted(prop.truth_at_fabula.keys()):
+    # R1-3 (2026-05-29): ``truth_at_fabula`` is typed ``Dict[int, bool]``
+    # but DB / JSON / MCP round-trips can yield string keys (e.g.
+    # ``{"1000": True}``). Sorting with mixed key types raises
+    # ``TypeError: '<' not supported between instances of 'str' and 'int'``,
+    # and direct lookup with an int key silently misses. Normalize the
+    # keys once before the sort+lookup so the reconstruction stays
+    # correct across every serialization boundary.
+    try:
+        truth_map = {int(k): v for k, v in (prop.truth_at_fabula or {}).items()}
+    except (TypeError, ValueError):
+        truth_map = {}
+    for t in sorted(truth_map.keys()):
         if t > fabula_time:
             break
-        truth_at = prop.truth_at_fabula[t]
+        truth_at = truth_map[t]
 
     return {
         "stakes": stakes,

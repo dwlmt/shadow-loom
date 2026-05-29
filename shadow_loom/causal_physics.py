@@ -31,6 +31,10 @@ import networkx as nx
 from pydantic import BaseModel, Field
 
 from shadow_loom.amwn import CtfCalculusReport, apply_ctf_calculus
+from shadow_loom.causal_closure import (
+    chain_reaction_parents_from_sandbox,
+    expand_chain_reaction_closure,
+)
 from shadow_loom.instantiator import AMWNInstantiator
 from shadow_loom.models import (
     WorldStateV1,
@@ -2549,6 +2553,25 @@ class CausalPhysicsEngine:
                             _b.established_at_fabula = new_ft
                         except Exception:
                             pass
+                    # Audit (sixth pass, F4): ``ConcernSnapshot``
+                    # auto-close in ingestion Phase C sets
+                    # ``activation_fabula_window = [lo, commit_fab]``
+                    # where ``commit_fab`` is the triggering event's
+                    # fabula_time. Shifting the event without
+                    # remapping the window leaves the closure tick
+                    # dangling at the old tick, so
+                    # ``reconstruct_concern_at`` reports the concern
+                    # as still-open at the now-vacated old tick and
+                    # still-closed at the new tick.
+                    _win = getattr(snap, "activation_fabula_window", None)
+                    if _win:
+                        try:
+                            snap.activation_fabula_window = [
+                                new_ft if int(t) == old_ft else int(t)
+                                for t in _win
+                            ]
+                        except Exception:
+                            pass
                     n += 1
             if n:
                 timeline.sort(key=lambda s: s.fabula_time)
@@ -2580,6 +2603,31 @@ class CausalPhysicsEngine:
             for concern in (getattr(ent, "concerns", None) or []):
                 cascaded += _restamp_timeline(concern, "state_timeline")
 
+        # Audit (sixth pass, F8): ``_apply_do_belief`` writes
+        # top-level ``Entity.beliefs`` (outside any state_timeline
+        # snapshot) with ``acquired_via_event_id=triggered_by`` and
+        # ``established_at_fabula=trigger_ft`` (causal_physics.py
+        # L1957/L1974). ``affect_unification`` and merge-time
+        # reconcilers similarly stamp ``acquired_via_event_id``.
+        # The snapshot loop above only catches beliefs nested inside
+        # state_timeline; standalone top-level beliefs keep the old
+        # tick after a DoEventTimeShift. Walk top-level beliefs and
+        # restamp ``established_at_fabula`` when the belief was
+        # acquired via the shifted event.
+        beliefs_restamped = 0
+        for ent in (entities.values() if isinstance(entities, dict) else (entities or [])):
+            for b in (getattr(ent, "beliefs", None) or []):
+                if getattr(b, "acquired_via_event_id", None) != target.event_id:
+                    continue
+                if int(getattr(b, "established_at_fabula", -1)) != old_ft:
+                    continue
+                try:
+                    b.established_at_fabula = new_ft
+                    beliefs_restamped += 1
+                except Exception:
+                    pass
+        cascaded += beliefs_restamped
+
         # Re-stamp CausalEdge.fabula_time on outgoing edges of the
         # shifted event so the causal_topology stays ordered.
         edges_restamped = 0
@@ -2587,6 +2635,105 @@ class CausalPhysicsEngine:
             if getattr(cedge, "source_id", None) == target.event_id:
                 cedge.fabula_time = new_ft
                 edges_restamped += 1
+
+        # Audit (fifth pass, M5): the propagation-delay gate at the
+        # top of ``propagate`` reads ``d.get("fabula_time", 0)`` from
+        # sandbox edge attrs, not from the canonical CausalEdge. Mirror
+        # the restamp onto every outgoing sandbox edge of the shifted
+        # event so the gate's ``edge_ft + delay`` arithmetic uses the
+        # new tick. Without this, a Do-EventTimeShift that moves an
+        # event LATER silently re-fires its (now-prematurely-released)
+        # downstream effects, and one that moves it EARLIER fails to
+        # release effects whose delay was already satisfied.
+        if self.sandbox.has_node(target.event_id):
+            for _src, _tgt, _key, _data in list(
+                self.sandbox.out_edges(target.event_id, keys=True, data=True)
+            ):
+                if _data.get("edge_type") == "causal":
+                    self.sandbox[_src][_tgt][_key]["fabula_time"] = new_ft
+
+        # Audit (sixth pass, F1): ``Proposition.truth_at_fabula`` is
+        # a ``Dict[int, bool]`` keyed by the committing event's
+        # ``fabula_time`` (extract_graph reconciler folds Affect
+        # commits with ``prop.truth_at_fabula[commit.fabula_time] =
+        # commit.truth``; affect_unification synthesises new propos
+        # with ``{evt.fabula_time: True}``). If we shift an event
+        # that commits a proposition without relocating the key,
+        # ``reconstruct_proposition_at(new_ft)`` reports the prop as
+        # still-open at the moment the event now fires and
+        # ``reconstruct_proposition_at(old_ft)`` reports a phantom
+        # commit at a tick when the event no longer occurs. Walk
+        # propositions, detect ones this event commits (via
+        # ``resolves_proposition_ids`` / ``asserts_proposition_id``
+        # / ``denies_proposition_id``), and relocate the ledger key.
+        def _evt_commits_prop(_e: Any, _pid: str) -> bool:
+            if _pid in (getattr(_e, "resolves_proposition_ids", None) or []):
+                return True
+            if getattr(_e, "asserts_proposition_id", None) == _pid:
+                return True
+            if getattr(_e, "denies_proposition_id", None) == _pid:
+                return True
+            return False
+
+        truth_relocated = 0
+        for prop in (self.world_state.propositions or []):
+            _pid = getattr(prop, "proposition_id", None) or getattr(prop, "id", None)
+            if _pid is None or not _evt_commits_prop(evt, _pid):
+                continue
+            ledger = getattr(prop, "truth_at_fabula", None)
+            if not ledger or old_ft not in ledger:
+                continue
+            truth_value = ledger[old_ft]
+            # If another event at old_ft also commits this prop the
+            # old-tick entry still has an anchor — copy forward but
+            # do NOT delete the old key.
+            other_committer_at_old = False
+            for _other in (self.world_state.events or []):
+                if _other.id == evt.id:
+                    continue
+                if int(getattr(_other, "fabula_time", -1)) != old_ft:
+                    continue
+                if _evt_commits_prop(_other, _pid):
+                    other_committer_at_old = True
+                    break
+            existing_at_new = ledger.get(new_ft)
+            if existing_at_new is not None and existing_at_new != truth_value:
+                logger.warning(
+                    "[CausalPhysics\u00b7do_event_time_shift] Prop %s already "
+                    "has truth_at_fabula[%d]=%s conflicting with shifted "
+                    "event %s commit %s; leaving ledger untouched.",
+                    _pid, new_ft, existing_at_new, target.event_id, truth_value,
+                )
+                continue
+            ledger[new_ft] = truth_value
+            if not other_committer_at_old and new_ft != old_ft:
+                del ledger[old_ft]
+            truth_relocated += 1
+
+            # Audit (sixth pass, F6): the ingestion post-pass
+            # ``_post_pass_synthesize_audience_beliefs`` keys each
+            # synthesised audience belief on ``min(prop.truth_at_fabula)``,
+            # i.e. the earliest commit tick. When that tick is now
+            # shifted away from ``old_ft``, every belief whose
+            # ``proposition_id == _pid`` and
+            # ``established_at_fabula == old_ft`` is left pointing at
+            # a tick when the prop is no longer committed. Walk all
+            # entities (not just AUDIENCE — extractor or affect-pass
+            # beliefs can carry the same provenance) and restamp the
+            # nested belief tick in lockstep. Only the old_ft entry
+            # is touched; beliefs already keyed on a different tick
+            # (e.g. a second commit at another time) are left alone.
+            if not other_committer_at_old and new_ft != old_ft:
+                for _ent in (self.world_state.entities or {}).values():
+                    for _b in (getattr(_ent, "beliefs", None) or []):
+                        if getattr(_b, "proposition_id", None) != _pid:
+                            continue
+                        try:
+                            if int(getattr(_b, "established_at_fabula", -1)) == old_ft:
+                                _b.established_at_fabula = new_ft
+                                cascaded += 1
+                        except (TypeError, ValueError):
+                            continue
 
         # Best-effort: bump RelationshipMetric.last_updated_fabula on
         # any axis whose most-recent mutation_social edge is the
@@ -2618,9 +2765,9 @@ class CausalPhysicsEngine:
         logger.info(
             "[CausalPhysics\u00b7do_event_time_shift] Event %s shifted "
             "%d\u2192%d; cascaded %d snapshot(s), %d causal edge(s), "
-            "%d social metric(s).",
+            "%d social metric(s), %d truth ledger entry(ies).",
             target.event_id, old_ft, new_ft,
-            cascaded, edges_restamped, metrics_restamped,
+            cascaded, edges_restamped, metrics_restamped, truth_relocated,
         )
         self._event_mutations.append(EventMutation(
             event_id=target.event_id,
@@ -2628,7 +2775,7 @@ class CausalPhysicsEngine:
             fabula_time=new_ft,
             old_fabula_time=old_ft,
             new_fabula_time=new_ft,
-            cascaded_snapshot_restamps=cascaded,
+            cascaded_snapshot_restamps=cascaded + truth_relocated,
             cascaded_edge_restamps=edges_restamped + metrics_restamped,
             triggered_by=getattr(target, "triggered_by", None),
         ))
@@ -3126,12 +3273,45 @@ class CausalPhysicsEngine:
                 if new_locked and target.barrier_item_id:
                     attrs["barrier_item_id"] = target.barrier_item_id
             canonical_hit = False
+            forward_was_bidi = False
             for e in (self.world_state.spatial_topology or []):
                 if e.source_id == target.source_id and e.target_id == target.target_id:
                     e.is_locked = new_locked
                     if new_locked and target.barrier_item_id:
                         e.barrier_item_id = target.barrier_item_id
                     canonical_hit = True
+                    if getattr(e, "bidirectional", False):
+                        forward_was_bidi = True
+            # Round-4 audit: mirror lock/unlock onto the reverse
+            # canonical edge when the forward edge is bidirectional.
+            # The ``sever`` branch above already mirrors removal for
+            # bidirectional connections; without mirroring lock-state
+            # too, locking a bidirectional passage (e.g. Macbeth's
+            # LOC_INVERNESS_CASTLE ↔ LOC_FORRES_COURT after the
+            # murder, sealed by a guard cordon) leaves B→A traversable
+            # while A→B is sealed, contradicting the renderer's view
+            # of a symmetric barrier.
+            reverse_hit = False
+            if forward_was_bidi:
+                for rev_e in (self.world_state.spatial_topology or []):
+                    if (rev_e.source_id == target.target_id
+                            and rev_e.target_id == target.source_id):
+                        rev_e.is_locked = new_locked
+                        if new_locked and target.barrier_item_id:
+                            rev_e.barrier_item_id = target.barrier_item_id
+                        reverse_hit = True
+                # Mirror the sandbox lock-state too so propagation
+                # within the same step sees the symmetric barrier.
+                if sb.has_edge(target.target_id, target.source_id):
+                    rev_keys = [
+                        k for k, attrs in sb[target.target_id][target.source_id].items()
+                        if attrs.get("edge_type") == "connected_to"
+                    ]
+                    for k in rev_keys:
+                        rev_attrs = sb[target.target_id][target.source_id][k]
+                        rev_attrs["is_locked"] = new_locked
+                        if new_locked and target.barrier_item_id:
+                            rev_attrs["barrier_item_id"] = target.barrier_item_id
             if matched_keys or canonical_hit:
                 self._edge_do_targets_applied += 1
                 self._edge_mutations.append(EdgeMutation(
@@ -3145,6 +3325,7 @@ class CausalPhysicsEngine:
                         "barrier_item_id": target.barrier_item_id,
                         "sandbox_edges_touched": len(matched_keys),
                         "canonical_hit": canonical_hit,
+                        "reverse_hit": reverse_hit,
                     },
                 ))
             return
@@ -5025,6 +5206,46 @@ class CausalPhysicsEngine:
         for _nid, _ndata in self.sandbox.nodes(data=True):
             if _ndata.get("node_type") == "EventNode" and _ndata.get("pruned") is True:
                 pruned_evt_ids.add(_nid)
+
+        # Step B.6 — Chain-reaction descendant closure for prevented events.
+        #
+        # When a surgery sets ``EVT_X.event_type ∈ {prevented,
+        # never_happened, removed}`` or ``EVT_X.truth_value='false'``,
+        # any event whose chain_reaction parents are ALL now pruned /
+        # cause-disconnected must also be marked ``pruned`` — otherwise
+        # the brief continues to list those descendants as canonical
+        # and the renderer dutifully stages them on-page (e.g. Macbeth
+        # still stabs Duncan after we erase the persuasion). Pearl's
+        # disjunctive structural-equation rule: over-determined effects
+        # with a surviving sufficient cause are preserved; ``enables``
+        # / ``affordance_gate`` / ``ambient_propagation`` / ``mutation``
+        # edges are modifiers, not sufficient causes, so they do not
+        # participate in this closure.
+        #
+        # Mirrors :func:`shadow_loom.pipeline._compute_shadow_prune_closure`
+        # but operates on the sandbox MultiDiGraph (we want descendants
+        # marked ``pruned=True`` so ``propagate()`` and the cascade gates
+        # skip them, AND we want them in ``pruned_evt_ids`` so the brief's
+        # ``SEVERED CAUSAL CHAINS`` / ``DEPENDENT-STATE SUBSTITUTIONS``
+        # blocks include the whole cascade).
+        if pruned_evt_ids:
+            chain_parents = chain_reaction_parents_from_sandbox(self.sandbox)
+            closure = expand_chain_reaction_closure(chain_parents, pruned_evt_ids)
+            newly_pruned = closure - pruned_evt_ids
+            if newly_pruned:
+                for nid in newly_pruned:
+                    if self.sandbox.has_node(nid):
+                        self.sandbox.nodes[nid]["pruned"] = True
+                pruned_evt_ids |= newly_pruned
+                logger.info(
+                    "[CausalPhysics·ChainClosure] do-prevented surgery "
+                    "expanded %d root event(s) → %d descendant(s) via "
+                    "chain_reaction closure: %s",
+                    len(closure) - len(newly_pruned),
+                    len(newly_pruned),
+                    sorted(newly_pruned),
+                )
+
         beliefs_pruned = 0
         if pruned_evt_ids or disabled_ch_ids:
             beliefs_pruned = AMWNInstantiator._prune_beliefs_by_provenance(

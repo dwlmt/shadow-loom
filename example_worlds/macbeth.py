@@ -721,9 +721,16 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_LADY_MACBETH_PERSUADES", target_id="EVT_DUNCAN_MURDER",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
                    causal_force=8.0, fabula_time=5000, propagation_delay=1000),
-        CausalEdge(source_id="EVT_DUNCAN_ARRIVES_INVERNESS", target_id="EVT_DUNCAN_MURDER",
-                   causality_type="chain_reaction", mechanism="physical", evidence_strength="strong",
-                   causal_force=7.0, fabula_time=5500, propagation_delay=500),
+        # NOTE: EVT_DUNCAN_ARRIVES_INVERNESS is a *precondition* for the
+        # murder (Duncan must be co-located at Inverness), not a
+        # sufficient cause. The schema requires Event→Event edges be
+        # ``chain_reaction`` (which is treated as a sufficient cause by
+        # Pearl's disjunctive prune rule), so we do not wire arrival →
+        # murder. Co-location is established through the entity-location
+        # snapshots / spatial topology instead, and the persuasion is
+        # the murder's sole chain_reaction parent — letting
+        # do(EVT_LADY_MACBETH_PERSUADES=prevented) correctly cascade
+        # to suppress the murder via _compute_shadow_prune_closure.
         CausalEdge(source_id="EVT_DUNCAN_MURDER", target_id="EVT_SERVANTS_FRAMED",
                    causality_type="chain_reaction", mechanism="physical", evidence_strength="strong",
                    causal_force=7.0, fabula_time=6000, propagation_delay=500),

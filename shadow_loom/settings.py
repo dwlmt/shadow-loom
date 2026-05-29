@@ -404,7 +404,7 @@ class AuditorSettings(BaseSettings):
             "to fall back to ``CoreSettings.default_model``."
         ),
     )
-    max_iterations: int = Field(default=4, ge=1, le=8)
+    max_iterations: int = Field(default=6, ge=1, le=8)
     output_retries: int = Field(default=5)
     temperature: float = Field(default=0.2)
     generation_temperature: float = Field(default=0.7)
@@ -415,7 +415,7 @@ class AuditorSettings(BaseSettings):
     min_cognitive_plausibility: float = Field(default=0.7)
     max_miracle_steps: int = Field(default=0)
     ignore_spatial_blocks: bool = Field(default=False)
-    regression_retry_budget: int = Field(default=1)
+    regression_retry_budget: int = Field(default=2)
     failed_open_tolerance: int = Field(default=2)
     enable_deterministic_prose_checks: bool = Field(default=True)
     pov_breach_threshold: int = Field(default=3)

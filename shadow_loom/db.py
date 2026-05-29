@@ -1750,6 +1750,13 @@ def _authorize_project_read(
         return
     if proj.owner_id == actor_id:
         return
+    # Seeded example projects are owned by the built-in example user and
+    # are intentionally readable by every authenticated actor so they
+    # can be forked from the dashboard. They remain private for write
+    # operations because owner/membership checks still apply elsewhere.
+    example_user_id = get_example_user_id()
+    if example_user_id is not None and proj.owner_id == example_user_id:
+        return
     member = s.exec(
         select(ProjectMemberRow).where(
             ProjectMemberRow.project_id == project_id,

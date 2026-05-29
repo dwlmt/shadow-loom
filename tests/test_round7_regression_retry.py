@@ -36,7 +36,7 @@ class TestMaxIterationsDefault:
 
     def test_max_iterations_default_is_four(self):
         cfg = AuditorConfig()
-        assert cfg.max_iterations == 4
+        assert cfg.max_iterations == 6
 
     def test_max_iterations_remains_overridable(self):
         cfg = AuditorConfig(max_iterations=2)

@@ -420,9 +420,20 @@ class TestFilterWorldStateForPov:
         assert out is ws
 
     def test_unknown_pov_returns_world_unchanged(self):
+        """Audit R18-9: an unknown POV is fail-closed — the returned
+        world is emptied (no entities/events/etc.) rather than the
+        full omniscient base. Despite the historical test name, the
+        check is now that the safety boundary holds, not identity.
+        """
         ws = deepcopy(macbeth_ws)
         out = filter_world_state_for_pov(ws, pov_entity_id="ENT_NOT_IN_WORLD")
-        assert out is ws
+        assert out is not ws, (
+            "Unknown POV must NOT return the original world (information leak)."
+        )
+        assert out.entities == {}
+        assert out.events == []
+        assert out.channels == {}
+        assert out.propositions == []
 
     def test_other_entities_have_beliefs_concerns_scrubbed(self):
         ws = deepcopy(macbeth_ws)
