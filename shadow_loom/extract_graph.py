@@ -736,29 +736,6 @@ def extract_full_world_state(
             "(syuzhet_anchor=%d)",
             len(dump["events"]), pre_evt, s,
         )
-        # P5 (2026-05-29 ninth-pass audit): when the syuzhet prune
-        # drops events the omniscient view must also drop any
-        # downstream causal edges that reference those (post-anchor)
-        # events on *either* endpoint. Otherwise the renderer / auditor
-        # walk causal_topology back from a visible event and
-        # immediately land on a dangling cause/effect node that was
-        # surgically removed from the event list.
-        surviving_evt_ids = {evt.get("id") for evt in dump["events"] if evt.get("id")}
-        pre_causal = len(dump.get("causal_topology", []))
-        dump["causal_topology"] = [
-            ce for ce in dump.get("causal_topology", [])
-            if (
-                (not (ce.get("cause_id") or "").startswith("EVT_") or ce.get("cause_id") in surviving_evt_ids)
-                and (not (ce.get("effect_id") or "").startswith("EVT_") or ce.get("effect_id") in surviving_evt_ids)
-            )
-        ]
-        if len(dump["causal_topology"]) < pre_causal:
-            logger.info(
-                "Omniscient Graph syuzhet-prune cascaded to causal edges: "
-                "%d/%d kept (removed %d edges referencing post-anchor events)",
-                len(dump["causal_topology"]), pre_causal,
-                pre_causal - len(dump["causal_topology"]),
-            )
 
     # Drop superseded events from the omniscient view: when a successor
     # event is itself in the surviving set, the older (overridden)
@@ -779,6 +756,40 @@ def extract_full_world_state(
             "(removed %d superseded by surviving successors)",
             len(dump["events"]), pre_evt, pre_evt - len(dump["events"]),
         )
+
+    # P5 (re-fixed 2026-06-06): when ANY anchor (fabula or syuzhet)
+    # dropped events, the omniscient view must also drop causal edges
+    # whose EVENT endpoint was pruned — otherwise the renderer / auditor
+    # / interrogation walk causal_topology and land on a dangling
+    # cause/effect node that no longer exists in the event list,
+    # leaking a not-yet-narrated (future) event id. This must run after
+    # BOTH the fabula/syuzhet slice and the supersession prune so it
+    # also catches edges into superseded-and-dropped successors.
+    #
+    # The previous implementation lived inside the syuzhet block, ran
+    # only for syuzhet anchors, and keyed on ``cause_id``/``effect_id``
+    # which are not fields on CausalEdge (the real fields are
+    # ``source_id``/``target_id``) — so the prune was a silent no-op and
+    # the fabula path had no cascade at all.
+    if temporal_anchor is not None or syuzhet_anchor is not None:
+        surviving_evt_ids = {evt.get("id") for evt in dump["events"] if evt.get("id")}
+        pre_causal = len(dump.get("causal_topology", []))
+        dump["causal_topology"] = [
+            ce for ce in dump.get("causal_topology", [])
+            if (
+                (not str(ce.get("source_id") or "").startswith("EVT_")
+                 or ce.get("source_id") in surviving_evt_ids)
+                and (not str(ce.get("target_id") or "").startswith("EVT_")
+                     or ce.get("target_id") in surviving_evt_ids)
+            )
+        ]
+        if len(dump["causal_topology"]) < pre_causal:
+            logger.info(
+                "Omniscient Graph anchor-prune cascaded to causal edges: "
+                "%d/%d kept (removed %d edges referencing pruned events)",
+                len(dump["causal_topology"]), pre_causal,
+                pre_causal - len(dump["causal_topology"]),
+            )
 
     return dump
 
