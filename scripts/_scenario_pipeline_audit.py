@@ -171,7 +171,6 @@ def _check_sliced_dump(world: str, where: str, dump: Dict[str, Any],
 
 def probe_timeline(world: str, ws: WorldStateV1) -> None:
     all_evt_ids = {e.id for e in ws.events}
-    foci = focal_entities(ws)
 
     def dangling_edges(dump: Dict[str, Any]) -> List[Tuple[str, str]]:
         surviving = _event_ids(dump)
@@ -190,12 +189,10 @@ def probe_timeline(world: str, ws: WorldStateV1) -> None:
         dang = dangling_edges(full)
         ok(f"[{world}] omniscient no dangling causal edge @t={t}", not dang,
            f"{len(dang)} edges reference a pruned event e.g. {dang[:3]}")
-
-        ego = extract_ego_graph_from_memory(ws, foci, t).model_dump()
-        _check_sliced_dump(world, "ego", ego, t, None)
-        dang_e = dangling_edges(ego)
-        ok(f"[{world}] ego no dangling causal edge @t={t}", not dang_e,
-           f"{len(dang_e)} edges reference a pruned event e.g. {dang_e[:3]}")
+        # NOTE: ego-graph integrity is checked in probe_ego_integrity (Part F),
+        # which uses the ego dump's own keys (recent_memory /
+        # relevant_causal_edges). Checking it here with the omniscient keys
+        # (events / causal_topology) was vacuous and has been removed.
 
     for s in syuzhet_anchors(ws):
         full = extract_full_world_state(ws, syuzhet_anchor=s)
@@ -412,6 +409,121 @@ def probe_db_branching(world: str, ws: WorldStateV1) -> None:
 
 
 # --------------------------------------------------------------------------
+# F. ego-graph edge integrity (correct ego payload keys)
+# --------------------------------------------------------------------------
+def _ego_event_ids(ego: Dict[str, Any]) -> set:
+    out = {e.get("id") for e in ego.get("recent_memory", []) if e.get("id")}
+    out |= {e.get("id") for e in ego.get("relevant_utterance_events", []) if e.get("id")}
+    return out
+
+
+def _ego_entity_ids(ego: Dict[str, Any]) -> set:
+    out = {e.get("id") for e in ego.get("focus_entities", []) if e.get("id")}
+    out |= {e.get("id") for e in ego.get("present_entities", []) if e.get("id")}
+    return out
+
+
+def probe_ego_integrity(world: str, ws: WorldStateV1) -> None:
+    all_evt = {e.id for e in ws.events}
+    foci = focal_entities(ws)
+    if not foci:
+        return
+    for t in fabula_anchors(ws)[:3]:
+        ego = extract_ego_graph_from_memory(ws, foci, t).model_dump()
+        evt_ids = _ego_event_ids(ego)
+        ent_ids = _ego_entity_ids(ego)
+
+        # F1: every ego event respects the fabula anchor
+        bad_t = [e["id"] for e in ego.get("recent_memory", [])
+                 if e.get("fabula_time", 0) > t]
+        ok(f"[{world}] ego recent_memory fabula<= t={t}", not bad_t,
+           f"{len(bad_t)} past anchor e.g. {bad_t[:3]}")
+
+        # F2: causal edges referencing an EVENT must reference a surviving one
+        dang = [(c.get("source_id"), c.get("target_id"))
+                for c in ego.get("relevant_causal_edges", [])
+                if (c.get("source_id") in all_evt and c.get("source_id") not in evt_ids)
+                or (c.get("target_id") in all_evt and c.get("target_id") not in evt_ids)]
+        ok(f"[{world}] ego causal edges reference in-scene events @t={t}", not dang,
+           f"{len(dang)} dangling e.g. {dang[:3]}")
+
+        # F3: relationship endpoints should be in-scene entities (WARN — ego
+        # may legitimately mention an off-scene partner, so non-fatal).
+        rel_bad = []
+        for r in ego.get("relevant_relationships", []):
+            for k in ("source_entity_id", "target_entity_id", "source_id", "target_id"):
+                v = r.get(k)
+                if v and str(v).startswith("ENT_") and v not in ent_ids:
+                    rel_bad.append((k, v))
+        ok(f"[{world}] ego relationship endpoints in-scene @t={t}", not rel_bad,
+           f"{len(rel_bad)} off-scene e.g. {rel_bad[:3]}", warn_only=True)
+
+
+# --------------------------------------------------------------------------
+# G. omniscient <-> ego consistency at the same anchor
+# --------------------------------------------------------------------------
+def probe_view_consistency(world: str, ws: WorldStateV1) -> None:
+    foci = focal_entities(ws)
+    if not foci:
+        return
+    for t in fabula_anchors(ws)[:3]:
+        omni = extract_full_world_state(ws, temporal_anchor=t)
+        omni_evt = {e["id"] for e in omni.get("events", [])}
+        ego = extract_ego_graph_from_memory(ws, foci, t).model_dump()
+        ego_evt = _ego_event_ids(ego)
+
+        # G1: ego events are a subset of the omniscient view at the same anchor
+        extra = [e for e in ego_evt if e not in omni_evt]
+        ok(f"[{world}] ego events ⊆ omniscient @t={t}", not extra,
+           f"{len(extra)} ego-only events e.g. {extra[:3]}")
+
+        # G2: every ego causal edge exists in the omniscient causal set
+        omni_edges = {(c.get("source_id"), c.get("target_id"), c.get("fabula_time"))
+                      for c in omni.get("causal_topology", [])}
+        ego_only = [(c.get("source_id"), c.get("target_id"))
+                    for c in ego.get("relevant_causal_edges", [])
+                    if (c.get("source_id"), c.get("target_id"), c.get("fabula_time"))
+                    not in omni_edges]
+        ok(f"[{world}] ego causal edges ⊆ omniscient @t={t}", not ego_only,
+           f"{len(ego_only)} ego-only edges e.g. {ego_only[:3]}")
+
+
+# --------------------------------------------------------------------------
+# H. counterfactual later-event pruning / mutation integrity
+# --------------------------------------------------------------------------
+def probe_counterfactual_pruning(world: str, ws: WorldStateV1) -> None:
+    foci = focal_entities(ws)
+    evts = sorted(ws.events, key=lambda e: e.fabula_time)
+    if not foci or len(evts) < 3:
+        return
+    ev = evts[len(evts) // 3]
+    try:
+        q = CounterfactualQuery(
+            historical_do_targets=[DoEvent(event_id=ev.id, occurred=False)],
+            evidence_node_ids=[foci[0]],
+            target_node_ids=foci[:2],
+        )
+        r = calculate_narrative_physics(q, ws, use_causal_engine=True)
+        if r.get("status") != "success":
+            return  # implausible is acceptable; only audit successful runs
+        pa = r.get("past_anchor")
+        ok(f"[{world}] ctf past_anchor<= divergence event", pa is not None and pa <= ev.fabula_time,
+           f"past_anchor={pa} ev_t={ev.fabula_time}")
+        # mutations must reference real entities/events in the world model
+        known = set(ws.entities) | {e.id for e in ws.events} | set(getattr(ws, "objects", {}) or {})
+        bad_mut = []
+        for m in (r.get("mutations", []) or []) + (r.get("social_mutations", []) or []):
+            tgt = m.get("node_id") or m.get("target_id") or m.get("entity_id")
+            if tgt and str(tgt).startswith(("ENT_", "EVT_", "OBJ_")) and tgt not in known:
+                bad_mut.append(tgt)
+        ok(f"[{world}] ctf mutations reference known nodes", not bad_mut,
+           f"{len(bad_mut)} unknown e.g. {bad_mut[:3]}")
+    except Exception as exc:  # noqa: BLE001
+        ok(f"[{world}] ctf pruning no-exception", False,
+           f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=3)}")
+
+
+# --------------------------------------------------------------------------
 def main() -> int:
     stems = [a for a in sys.argv[1:] if not a.startswith("-")]
     worlds = load_worlds(stems)
@@ -436,6 +548,18 @@ def main() -> int:
     hr("E. DB BRANCHING / FORKING (subset of 3 worlds)")
     for name, ws in worlds[:3]:
         probe_db_branching(name, ws)
+
+    hr("F. EGO-GRAPH EDGE INTEGRITY")
+    for name, ws in worlds:
+        probe_ego_integrity(name, ws)
+
+    hr("G. OMNISCIENT<->EGO CONSISTENCY")
+    for name, ws in worlds:
+        probe_view_consistency(name, ws)
+
+    hr("H. COUNTERFACTUAL PRUNING")
+    for name, ws in worlds:
+        probe_counterfactual_pruning(name, ws)
 
     hr("SUMMARY")
     print(f"  PASS: {PASS_N}")
