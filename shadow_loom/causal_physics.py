@@ -774,7 +774,11 @@ class CausalPhysicsEngine:
             for evt in (self.world_state.events or []):
                 actors = set(getattr(evt, "actor_ids", None) or [])
                 addressees = set(getattr(evt, "addressee_ids", None) or [])
-                referents = set(getattr(evt, "referent_ids", None) or [])
+                # EventNode has no ``referent_ids`` (that field is on
+                # Proposition); an event's referenced entities live in
+                # ``target_ids``. Using the wrong name made this set always
+                # empty, understating the POV co-appearance gate.
+                referents = set(getattr(evt, "target_ids", None) or [])
                 participants = actors | addressees | referents
                 if pov_entity_id in participants:
                     pov_overlap_ids |= participants
@@ -4767,7 +4771,10 @@ class CausalPhysicsEngine:
         social_cyclic_blocked: set[str] = set()
         if social_subgraph.number_of_edges() > 0:
             try:
-                nx.topological_sort(social_subgraph)
+                # ``topological_sort`` is a lazy generator — it only raises
+                # ``NetworkXUnfeasible`` once iterated, so it must be consumed
+                # (``list(...)``) for the multi-node cycle guard below to fire.
+                list(nx.topological_sort(social_subgraph))
             except nx.NetworkXUnfeasible:
                 for scc in nx.strongly_connected_components(social_subgraph):
                     if len(scc) > 1:

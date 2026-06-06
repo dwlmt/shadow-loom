@@ -1568,6 +1568,8 @@ class RelationshipMetric(BaseModel):
         return f
     inertia: float = Field(
         default=0.3,
+        ge=0.0,
+        le=1.0,
         description=(
             "0.0\u20131.0. Force required to shift this specific axis. "
             "Typical bands: fear ~0.2 (volatile), affinity ~0.4, "

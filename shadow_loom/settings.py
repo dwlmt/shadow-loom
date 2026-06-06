@@ -614,14 +614,17 @@ class CausalPhysicsSettings(BaseSettings):
             "downstream caller (narrative_physics, directive_assembly, "
             "MCP server) inherits the Bayesian Monte-Carlo treatment "
             "without code changes. "
-            "Sample-size rationale (default=128): trait values live in "
+            "Sample-size rationale: trait values live in "
             "[0,1] so the worst-case standard deviation is sigma <= 0.5; "
             "the Monte-Carlo standard error of the posterior mean is "
-            "SE = sigma / sqrt(N), giving SE <= 0.044 at N=128. The 5th "
+            "SE = sigma / sqrt(N), giving SE <= 0.10 at the default N=24 — "
+            "cheap enough to leave on by default while still informative for "
+            "narrative-level uncertainty. The 5th "
             "and 95th empirical percentiles have asymptotic SE "
-            "~ sqrt(p(1-p) / N) / f(x_p) ~ 0.02 / f(x_p) for p=0.05, "
-            "which is informative for narrative-level uncertainty without "
-            "the 500-2000-sample budget needed for tight tail estimation. "
+            "~ sqrt(p(1-p) / N) / f(x_p) for p=0.05, which is coarse at "
+            "N=24, so raise N for tail estimation. NOTE: this is >0 by "
+            "default, but ``monte_carlo_seed`` defaults to a fixed int so "
+            "results stay STABLE / reproducible run-to-run. "
             "Set to 0 to disable Monte-Carlo entirely (deterministic "
             "point-estimate execute()); raise to 500-1000 for "
             "publication-quality posterior summaries (cost scales "
@@ -629,8 +632,20 @@ class CausalPhysicsSettings(BaseSettings):
         ),
     )
     monte_carlo_seed: Optional[int] = Field(
-        default=None,
-        description="Optional RNG seed for reproducible Monte-Carlo runs.",
+        default=0,
+        description=(
+            "RNG seed for the Monte-Carlo sampler. Defaults to a FIXED int "
+            "(0) so that — even though Monte-Carlo is on by default "
+            "(monte_carlo_samples=24) — engine results and the tier-2 "
+            "plausibility/vacuity verdicts derived from them are STABLE and "
+            "reproducible run-to-run: the same world + query always draws "
+            "the same sample sequence and returns the same distribution and "
+            "verdict. Set to None for unseeded, genuinely stochastic "
+            "sampling (e.g. to study verdict sensitivity near a decision "
+            "boundary, or to bootstrap confidence intervals across runs); "
+            "set monte_carlo_samples=0 for a deterministic point-estimate "
+            "execute() with no distribution at all."
+        ),
     )
 
     # ------------------------------------------------------------------

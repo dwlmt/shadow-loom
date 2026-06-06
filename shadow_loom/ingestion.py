@@ -13873,6 +13873,17 @@ def _post_pass_dedup_near_duplicate_events(
         update_kwargs: Dict[str, Any] = {}
         if sup and sup in rename:
             update_kwargs["superseded_by_event_id"] = rename[sup]
+        # target_ids can hold EVT_ ids (e.g. utterance referents). If a
+        # referenced event was collapsed, repoint to the keeper; drop dups
+        # and self-references created by the rename.
+        if evt.target_ids and any(t in rename for t in evt.target_ids):
+            remapped = [rename.get(t, t) for t in evt.target_ids]
+            seen_t: Set[str] = set()
+            new_targets = [
+                t for t in remapped
+                if t != evt.id and not (t in seen_t or seen_t.add(t))
+            ]
+            update_kwargs["target_ids"] = new_targets
         patch = keeper_patches.get(evt.id)
         if patch:
             update_kwargs.update(patch)
@@ -13908,10 +13919,14 @@ def _post_pass_dedup_near_duplicate_events(
         if ent.beliefs:
             new_b = []
             for b in ent.beliefs:
+                b_updates: Dict[str, Any] = {}
                 if b.acquired_via_event_id and b.acquired_via_event_id in rename:
-                    b = b.model_copy(
-                        update={"acquired_via_event_id": rename[b.acquired_via_event_id]}
-                    )
+                    b_updates["acquired_via_event_id"] = rename[b.acquired_via_event_id]
+                # target_id can be an EVT_ id (belief about an event).
+                if b.target_id and b.target_id in rename:
+                    b_updates["target_id"] = rename[b.target_id]
+                if b_updates:
+                    b = b.model_copy(update=b_updates)
                 new_b.append(b)
             ent_updates["beliefs"] = new_b
         if ent.state_timeline:

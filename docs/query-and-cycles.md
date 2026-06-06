@@ -416,6 +416,22 @@ The result includes `hidden_deltas` — the latent variable updates abduction
 discovered. These are surfaced in the brief so the renderer can dramatise
 "what the present-day evidence retroactively reveals about the past".
 
+> **Engine results are Monte-Carlo by default — but stable.** With
+> `monte_carlo_samples > 0` (default **24**) every `engine.execute()` call —
+> Rung 2 and Rung 3 — auto-routes through `execute_distribution`, perturbing
+> `causal_force ~ Normal(force, sigma(evidence_strength))` and trait values
+> `~ Beta`. The engine therefore returns a *distribution* (mean / p5 / p50 /
+> p95) over post-propagation traits rather than a single brittle point
+> estimate. Because `monte_carlo_seed` defaults to a **fixed int (0)**, the
+> sampler is reproducible: the same world + query always draws the same
+> sample sequence, so both the distribution and the downstream tier-2
+> vacuity / plausibility verdict are **stable run-to-run**. Set
+> `monte_carlo_seed = None` for unseeded, genuinely stochastic sampling
+> (e.g. to study verdict sensitivity near a decision boundary); set
+> `monte_carlo_samples = 0` to fall back to a deterministic point-estimate
+> `execute()` with no distribution. See [settings.md](settings.md)
+> `monte_carlo_*`.
+
 ### 3.4 Directive cycle (affective optimisation)
 
 ```

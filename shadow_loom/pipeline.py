@@ -3256,6 +3256,7 @@ def run_pipeline(
                     from shadow_loom.extract_graph import extract_ego_graph_from_memory
                     _ego = extract_ego_graph_from_memory(
                         ws, brief.target_entities,
+                        temporal_anchor=eff_temporal,
                         syuzhet_anchor=eff_syuzhet,
                         shadow_path_seed_ids=set(brief.target_entities or []),
                     )
@@ -3298,7 +3299,7 @@ def run_pipeline(
             )
 
             # Build a brief for the auditor from the query
-            brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet)
+            brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet, temporal_anchor=eff_temporal)
             _stamp_brief_full(
                 brief, vwm,
                 branch_world_id=_branch_world_id,
@@ -3912,6 +3913,7 @@ async def run_pipeline_async(
                     from shadow_loom.extract_graph import extract_ego_graph_from_memory
                     _ego = extract_ego_graph_from_memory(
                         ws, brief.target_entities,
+                        temporal_anchor=eff_temporal,
                         syuzhet_anchor=eff_syuzhet,
                         shadow_path_seed_ids=set(brief.target_entities or []),
                     )
@@ -3952,7 +3954,7 @@ async def run_pipeline_async(
                 factual_contrast_summary=_factual_contrast,
                 syuzhet_anchor=eff_syuzhet,
             )
-            brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet)
+            brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet, temporal_anchor=eff_temporal)
             _stamp_brief_full(
                 brief, vwm,
                 branch_world_id=_branch_world_id,
@@ -4414,7 +4416,13 @@ def _run_evaluation_branch(
     # ego graph for any story with more than five entities, biasing
     # the evaluator toward whatever five keys happened to come first.
     focus_ids = list(query.focus_entity_ids or ws.entities.keys())
-    ego_graph = extract_ego_graph_from_memory(ws, focus_ids)
+    # Anchor the ego graph to the reader position so the evaluator's view
+    # excludes not-yet-narrated events — the same frame the scorers below
+    # use (A6). ``None`` (whole-story scoring) leaves the view unbounded.
+    _eval_anchor = getattr(query, "syuzhet_anchor", None)
+    ego_graph = extract_ego_graph_from_memory(
+        ws, focus_ids, syuzhet_anchor=_eval_anchor,
+    )
     eval_assembler = DirectiveAssembler(
         sandbox=None, ego_payload=ego_graph.model_dump(), world_state=ws,
     )
@@ -4445,7 +4453,6 @@ def _run_evaluation_branch(
     # trait snapshots from the entire timeline (including future
     # events the reader has not yet encountered) inflate gap
     # magnitudes and distort reader-effect metrics.
-    _eval_anchor = getattr(query, "syuzhet_anchor", None)
     eval_brief.epistemic_gaps = eval_assembler.compute_epistemic_gaps(
         focus_ids, syuzhet_anchor=_eval_anchor,
     )
@@ -4492,6 +4499,7 @@ def _build_brief_for_query(
     physics_result: Dict[str, Any],
     world_state: WorldStateV1,
     syuzhet_anchor: Optional[int] = None,
+    temporal_anchor: Optional[int] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief from a non-directive query's physics result."""
     from shadow_loom.generation import (
@@ -4622,7 +4630,8 @@ def _build_brief_for_query(
         target_entities = list(query.target_entity_ids or [])
         try:
             ego = extract_ego_graph_from_memory(
-                world_state, target_entities, syuzhet_anchor=syuzhet_anchor,
+                world_state, target_entities,
+                temporal_anchor=temporal_anchor, syuzhet_anchor=syuzhet_anchor,
                 shadow_path_seed_ids=set(target_entities),
             )
             assembler = DirectiveAssembler(

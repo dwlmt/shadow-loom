@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import re as _re
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent, NativeOutput, RunContext
@@ -5639,6 +5639,43 @@ def _build_exclusion_constraints(
     return blocks
 
 
+def _do_target_to_dotted_kv(t: Any) -> Optional[Tuple[str, Any]]:
+    """Reverse the legacy-dict coercion for the InterventionMechanism loop.
+
+    The mechanism-block builder in ``build_intervention_brief`` parses the
+    legacy dotted-key ``interventions`` dict to recover (node_id, property,
+    new_value) and look up old_state / inertia. A typed-only query
+    (``do_targets=[...]`` with ``interventions={}``) never populates that
+    dict — the ``_backfill_typed_do_targets`` validator only lifts
+    legacy→typed, never the reverse — so the mechanism block was silently
+    empty for typed callers (MCP, fixtures). Map the typed targets that
+    have a clean dotted equivalent back to the ``(path, value)`` shape the
+    loop understands; kinds with no dotted form (belief, concern, channel,
+    causal/spatial edge, delete) flow through ``intervention_branch.do_targets``
+    instead and are skipped here.
+    """
+    kind = getattr(t, "target_kind", None)
+    if kind == "trait":
+        return (f"{t.holder_id}.traits.{t.trait_name}", t.value)
+    if kind == "relationship":
+        return (
+            f"{t.source_entity_id}.relationships.{t.target_entity_id}.{t.metric}",
+            t.value,
+        )
+    if kind == "world_trait":
+        return (f"{t.world_trait_id}.value", t.value)
+    if kind == "proposition":
+        return (f"{t.proposition_id}.truth", t.truth)
+    if kind == "event":
+        return (f"{t.event_id}.event_type", "occurred" if t.occurred else "averted")
+    if kind == "narrative_object":
+        if getattr(t, "new_location_id", None) is not None:
+            return (f"{t.object_id}.location_id", t.new_location_id)
+        if getattr(t, "new_owner_id", None) is not None:
+            return (f"{t.object_id}.owner_id", t.new_owner_id)
+    return None
+
+
 def build_intervention_brief(
     query: InterventionQuery,
     physics_state: Dict[str, Any],
@@ -5683,9 +5720,29 @@ def build_intervention_brief(
     pruned_set = set(rule3_pruned_interventions or [])
     is_prune_mode = rule3_pruning_mode == "prune"
 
-    # Build InterventionMechanism entries from the interventions dict
+    # Resolve the typed do_targets up front (legacy→typed coercion mirrors
+    # the fallback at the return site). The mechanism block is built from
+    # the legacy dotted dict when present; for typed-only queries
+    # (interventions={}) we reverse-map the typed targets so the
+    # old_state→new_state + inertia struggle block is not silently empty.
+    _ib_do_targets = list(getattr(query, "do_targets", None) or [])
+    if not _ib_do_targets and getattr(query, "interventions", None):
+        from shadow_loom.query_models import _coerce_legacy_dict
+        _ib_do_targets = list(_coerce_legacy_dict(query.interventions))
+    _ib_primary_do_target = _ib_do_targets[0] if _ib_do_targets else None
+
+    if query.interventions:
+        _mechanism_source: Dict[str, Any] = dict(query.interventions)
+    else:
+        _mechanism_source = {}
+        for _t in _ib_do_targets:
+            kv = _do_target_to_dotted_kv(_t)
+            if kv is not None:
+                _mechanism_source[kv[0]] = kv[1]
+
+    # Build InterventionMechanism entries from the resolved source.
     mechanisms: List[InterventionMechanism] = []
-    for target_path, new_value in query.interventions.items():
+    for target_path, new_value in _mechanism_source.items():
         parts = target_path.split(".", 1)
         node_id = parts[0]
         prop = parts[1] if len(parts) > 1 else "state"
@@ -5997,18 +6054,10 @@ def build_intervention_brief(
         query.interventions, world_state,
     )
     _intervention_pov = _resolve_pov_policy(_intervention_targets)
-    # Mirror the Rung-3 fallback chain in ``build_counterfactual_brief``:
-    # if no typed ``do_targets`` were supplied, coerce them from the
-    # legacy dotted-key ``interventions`` dict. Without this Rung-2
-    # queries parsed from the legacy LLM shape (``{"EVT_X.event_type":
-    # "prevented"}``) reach the renderer with ``do_target=None`` and
-    # the "RUNG-2 SURGERY KIND" / event-prevention hints silently drop.
-    _ib_do_targets = list(getattr(query, "do_targets", None) or [])
-    if not _ib_do_targets and getattr(query, "interventions", None):
-        from shadow_loom.query_models import _coerce_legacy_dict
-        _ib_do_targets = list(_coerce_legacy_dict(query.interventions))
-    _ib_primary_do_target = _ib_do_targets[0] if _ib_do_targets else None
-
+    # ``_ib_do_targets`` / ``_ib_primary_do_target`` were resolved up front
+    # (see the mechanism-block builder) so the Rung-2 typed do_target(s) and
+    # the "RUNG-2 SURGERY KIND" / event-prevention hints stay populated even
+    # when the query arrived in the legacy dotted-key shape.
     return CreativeBrief(
         target_effect="intervention",
         target_entities=_intervention_targets,
