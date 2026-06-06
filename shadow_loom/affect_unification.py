@@ -143,10 +143,23 @@ def _concern_polarity_at(c: Concern, fabula_t: int) -> str:
 def _concern_window_at(
     c: Concern, fabula_t: int,
 ) -> Optional[Tuple[int, int]]:
-    """Return ``c.activation_fabula_window`` resolved at *fabula_t*."""
+    """Return ``c.activation_fabula_window`` resolved at *fabula_t*.
+
+    Normalised to a validated ``(lo, hi)`` int tuple or ``None`` —
+    ``activation_fabula_window`` has no length constraint on the model, so a
+    malformed window (length != 2 or non-int) is treated as "no window"
+    rather than crashing callers that unpack the result.
+    """
     if not c.state_timeline:
-        return c.activation_fabula_window
-    return reconstruct_concern_at(c, fabula_t)["activation_fabula_window"]
+        raw = c.activation_fabula_window
+    else:
+        raw = reconstruct_concern_at(c, fabula_t)["activation_fabula_window"]
+    if not raw:
+        return None
+    try:
+        return int(raw[0]), int(raw[1])
+    except (TypeError, ValueError, IndexError):
+        return None
 
 
 # ---------------------------------------------------------------------------

@@ -432,8 +432,8 @@ def _build_graph_summary(world_state: WorldStateV1) -> str:
         sections.append("PROPOSITIONS (PROP_*, do_targets/proposition):")
         for prop in propositions:
             pid = getattr(prop, "proposition_id", "?")
-            content = (getattr(prop, "content", "") or "")[:80]
-            refs = ", ".join(getattr(prop, "referenced_node_ids", []) or [])
+            content = (getattr(prop, "description", "") or "")[:80]
+            refs = ", ".join(getattr(prop, "referent_ids", []) or [])
             sections.append(f"  {pid}: {content} | refs=[{refs}]")
 
     # Concerns — Pearl Rung-2 utility clamps. Nested per-entity, so
@@ -577,7 +577,7 @@ def _format_valid_ids_section(world_state: WorldStateV1) -> str:
         lines.append(f"Propositions ({len(propositions)}):")
         for prop in propositions:
             pid = getattr(prop, "proposition_id", "?")
-            content = (getattr(prop, "content", "") or "")[:50]
+            content = (getattr(prop, "description", "") or "")[:50]
             lines.append(f"  - {pid}  ({content})")
 
     concern_pairs: list[tuple[str, str]] = []

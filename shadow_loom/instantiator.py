@@ -219,8 +219,16 @@ class AMWNInstantiator:
         # simulating. Counterfactual surgery that calls
         # ``spawn`` / ``destroy`` on a SpatialEdge can then take effect.
         # Compute the slice frontier here so spatial wiring can use it.
+        # Utterances must be included: the ``generation.py`` payload builder
+        # splits utterance events out of ``recent_memory`` into
+        # ``relevant_utterance_events``, whereas ``extract_graph`` leaves them
+        # in ``recent_memory``. Reading only ``recent_memory`` would understate
+        # the frontier on the generation path whenever the latest event is an
+        # utterance — silently disabling spatial lifecycle gating and stamping
+        # ambient edges at too-early a fabula_time.
         _spatial_max_ft = 0
-        for _evt in ego_payload.get("recent_memory", []):
+        for _evt in (list(ego_payload.get("recent_memory", []))
+                     + list(ego_payload.get("relevant_utterance_events", []))):
             _ft = _evt.get("fabula_time", 0)
             if _ft > _spatial_max_ft:
                 _spatial_max_ft = _ft
