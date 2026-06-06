@@ -54,20 +54,20 @@ _BUILTIN_OPENAI_COMPAT_PROVIDERS: dict[str, str] = {
     "openai":        "https://api.openai.com/v1",
     "fireworks":     "https://api.fireworks.ai/inference/v1",
     "featherless":   "https://api.featherless.ai/v1",
-    "together":      "https://api.together.xyz/v1",
+    "together":      "https://api.together.ai/v1",
     "deepinfra":     "https://api.deepinfra.com/v1/openai",
     "groq":          "https://api.groq.com/openai/v1",
-    "anyscale":      "https://api.endpoints.anyscale.com/v1",
     "perplexity":    "https://api.perplexity.ai",
-    "huggingface":   "https://api-inference.huggingface.co/v1",
+    "huggingface":   "https://router.huggingface.co/v1",
     # ── First-party frontier APIs (OpenAI-compatible endpoints) ─
     "mistral":       "https://api.mistral.ai/v1",
     "xai":           "https://api.x.ai/v1",
     "deepseek":      "https://api.deepseek.com/v1",
     "moonshot":      "https://api.moonshot.ai/v1",
+    # ── Hardware-accelerated inference (custom silicon / GPU clouds) ─
+    "cerebras":      "https://api.cerebras.ai/v1",       # Cerebras CS-3 wafer-scale
+    "sambanova":     "https://api.sambanova.ai/v1",      # SambaNova RDU chips
     # ── Fast/cheap inference clouds ─────────────────────────────
-    "cerebras":      "https://api.cerebras.ai/v1",
-    "sambanova":     "https://api.sambanova.ai/v1",
     "nebius":        "https://api.studio.nebius.ai/v1",
     "novita":        "https://api.novita.ai/v3/openai",
     "hyperbolic":    "https://api.hyperbolic.xyz/v1",
