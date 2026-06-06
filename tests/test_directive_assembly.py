@@ -13,7 +13,7 @@ from copy import deepcopy
 from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge,
-    TraitVector, Affordance, Belief,
+    TraitVector, Affordance, Belief, Proposition,
 )
 from shadow_loom.extract_graph import extract_ego_graph_from_memory
 from shadow_loom.directive_assembly import (
@@ -1489,6 +1489,72 @@ class TestSurpriseScore:
         score_mod = asm_mod.compute_surprise_score(["ENT_A"], syuzhet_anchor=1)
         score_ext = asm_ext.compute_surprise_score(["ENT_A"], syuzhet_anchor=1)
         assert score_ext > score_mod
+
+    def test_surprise_bounded_to_unit_interval(self):
+        """Regression: surprise must stay in [0, 1] even when all three
+        components (trait-KL, belief-KL, anachrony) saturate at once.
+
+        The three component weights (0.7 trait + 0.4 belief + 0.3
+        anachrony) sum to 1.4, not 1.0, so a convex-combination
+        assumption over-shoots: a world that maxes every component used
+        to return ~1.39, escaping the documented [0, 1] gauge contract.
+        """
+        ents = {
+            "ENT_A": Entity(
+                id="ENT_A", name="A", location_id="LOC_A", status="healthy",
+                traits={"fear": TraitVector(value=0.99, inertia=0.0)},
+            ),
+        }
+        # Low-fear foils so the corpus marginal sits far below the focal
+        # value → trait-KL saturates.
+        for i in range(4):
+            ents[f"ENT_O{i}"] = Entity(
+                id=f"ENT_O{i}", name=f"O{i}", location_id="LOC_A",
+                status="healthy",
+                traits={"fear": TraitVector(value=0.01, inertia=0.0)},
+            )
+        # Fabula/syuzhet reordering → anachrony saturates.
+        events = [
+            EventNode(id="EVT_1", fabula_time=1, syuzhet_index=10,
+                      event_type="outcome", actor_ids=[],
+                      target_ids=["ENT_A"], description="hidden cause"),
+            EventNode(id="EVT_2", fabula_time=10, syuzhet_index=1,
+                      event_type="outcome", actor_ids=[],
+                      target_ids=["ENT_A"], description="anachrony"),
+            EventNode(id="EVT_3", fabula_time=5, syuzhet_index=20,
+                      event_type="outcome", actor_ids=[],
+                      description="more anachrony"),
+        ]
+        # Still-open propositions at max-entropy audience prior →
+        # belief-KL saturates.
+        props = [
+            Proposition(world_id="factual", proposition_id="PROP_1",
+                        kind="outcome", referent_ids=["EVT_1"],
+                        description="will X", audience_default_prior=0.5,
+                        stakes=1.0, truth_at_fabula={100: True}),
+            Proposition(world_id="factual", proposition_id="PROP_2",
+                        kind="outcome", referent_ids=["EVT_2"],
+                        description="will Y", audience_default_prior=0.5,
+                        stakes=1.0, truth_at_fabula={100: True}),
+        ]
+        ws = WorldStateV1(
+            locations={"LOC_A": Location(
+                id="LOC_A", name="A", description="A", ambient_state={})},
+            objects={}, entities=ents, events=events,
+            causal_topology=[CausalEdge(
+                source_id="EVT_1", target_id="ENT_A",
+                causality_type="mutation", causal_force=5.0,
+                mechanism="physical", evidence_strength="strong",
+                fabula_time=1, trait_target="fear", trait_delta=0.9)],
+            spatial_topology=[], social_topology=[], propositions=props,
+        )
+        ego = _ego_payload(ws, ["ENT_A"])
+        asm = DirectiveAssembler(None, ego, ws)
+        for anchor in range(0, 4):
+            score = asm.compute_surprise_score(["ENT_A"], syuzhet_anchor=anchor)
+            assert 0.0 <= score <= 1.0, (
+                f"surprise {score} at anchor {anchor} escaped [0, 1]"
+            )
 
 
 # =====================================================================

@@ -167,6 +167,43 @@ class TestBuildAmwn:
         target_nodes = [n for n in amwn.nodes if n.var_id == "ENT_TARGET"]
         assert len(target_nodes) == 1
 
+    def test_dotted_path_intervention_applies_do_surgery(self):
+        """Regression: an intervention keyed by a dotted attribute path
+        (e.g. ``EVT_B.truth_value``) must resolve to its diagram node
+        (``EVT_B``) so do-surgery actually fires.
+
+        The diagram nodes are bare ids; previously ``_to_context`` kept
+        the full dotted path, so ``_mutilate_into`` called
+        ``has_node("EVT_B.truth_value")`` (always False), no incoming
+        edges were cut, and the node was never flagged ``intervened`` —
+        silently turning every trait/attribute-level do() into a no-op.
+        """
+        ws = _linear_world()
+        diag = build_causal_diagram(ws)
+        amwn = build_amwn(diag, [("ENT_TARGET", {"EVT_B.truth_value": "false"})])
+        evt_b_nodes = [n for n in amwn.nodes if n.var_id == "EVT_B"]
+        assert len(evt_b_nodes) == 1
+        # do-surgery cut the EVT_A → EVT_B edge and flagged the target
+        assert amwn.nodes[evt_b_nodes[0]]["intervened"] is True
+        assert amwn.in_degree(evt_b_nodes[0]) == 0
+
+    def test_dotted_path_context_projects_onto_diagram_nodes(self):
+        """Regression: the projected intervention context must reference
+        resolved diagram node ids, not unresolvable dotted paths.
+
+        A dotted-path intervention on an ancestor (``EVT_A.outcome``)
+        must leave that ancestor (``EVT_A``) in the downstream node's
+        context; previously the dotted key never matched the bare-id
+        ancestral set so every context collapsed to empty, defeating
+        AMWN node-shadowing.
+        """
+        ws = _linear_world()
+        diag = build_causal_diagram(ws)
+        amwn = build_amwn(diag, [("ENT_TARGET", {"EVT_A.outcome": "x"})])
+        target = [n for n in amwn.nodes if n.var_id == "ENT_TARGET"][0]
+        ctx_ids = {nid for nid, _ in target.context}
+        assert "EVT_A" in ctx_ids
+
 
 # =====================================================================
 # Rule 1 — Consistency

@@ -4074,12 +4074,22 @@ class VersionedWorldModel(BaseModel):
         # History up to (and including) the target version
         kept_history = [h for h in self.history if h.version <= version]
 
+        # Carry the restored version's branch identity onto the new
+        # rollback entry. Branch routing (Continue / What-If) and the
+        # prose renderer's AMWN filter consult ``history[-1].world_id``;
+        # without inheriting it, a rollback into a shadow snapshot would
+        # default to ``world_id="factual"`` and silently present the
+        # restored counterfactual world as canonical (the same failure
+        # mode ``from_world_state`` was fixed to avoid).
+        restored = kept_history[-1] if kept_history else None
         next_version = self.version + 1
         kept_history.append(WorldModelVersion(
             version=next_version,
             timestamp=datetime.now(timezone.utc).isoformat(),
             source="rollback",
             description=f"Rolled back to version {version}.",
+            world_id=restored.world_id if restored else "factual",
+            branch_label=restored.branch_label if restored else None,
         ))
 
         rolled_back = copy.deepcopy(snap.world_state)

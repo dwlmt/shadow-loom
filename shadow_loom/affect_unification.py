@@ -104,6 +104,28 @@ def _prop_audience_prior_at(prop: Proposition, fabula_t: int) -> float:
     return float(reconstruct_proposition_at(prop, fabula_t)["audience_default_prior"])
 
 
+def _proposition_truth_at(prop: Proposition, fabula_t: int) -> Optional[bool]:
+    """Return the proposition's committed ground truth effective at *fabula_t*.
+
+    Walks ``truth_at_fabula`` and returns the value of the latest commit
+    at or before *fabula_t*. Returns ``None`` when no commit has landed
+    yet (the truth is still undetermined for the audience). Keys may
+    arrive str-typed after a JSON / DB round-trip (see the M6 audit
+    note), so they are coerced defensively.
+    """
+    best_t: Optional[int] = None
+    best_v: Optional[bool] = None
+    for _t, _v in prop.truth_at_fabula.items():
+        try:
+            _ti = int(_t)
+        except (TypeError, ValueError):
+            continue
+        if _ti <= fabula_t and (best_t is None or _ti > best_t):
+            best_t = _ti
+            best_v = bool(_v)
+    return best_v
+
+
 def _concern_salience_at(c: Concern, fabula_t: int) -> float:
     """Return ``c.salience`` resolved at *fabula_t*."""
     if not c.state_timeline:
@@ -452,13 +474,56 @@ def synthesise_audience_entity(
 
     audience = _audience_seed_entity()
 
+    # Reverse index: event_id -> authored semantic propositions that
+    # reference it. Authored / ingested worlds attach semantic
+    # proposition ids (``PROP_DUNCAN_DEAD``) to events via
+    # ``referent_ids`` rather than the synthetic ``PROP_FROM_{evt}``
+    # convention. The unified surprise / mystery scorers read those
+    # authored proposition_ids; keying the audience's beliefs onto the
+    # *synthetic* ids (the legacy behaviour) left the audience's
+    # knowledge invisible to those scorers, so every authored world
+    # scored 0 mystery and 0 surprise even though the audience plainly
+    # learns the facts as the syuzhet unfolds. Key onto the semantic
+    # proposition when one is committed at the event's tick; fall back
+    # to the synthetic id only when no authored proposition covers the
+    # event (auto-synthesised worlds, or commits not yet landed).
+    scoped_event_ids = {e.id for e in scoped.events}
+    evt_to_semantic_props: Dict[str, List[Proposition]] = {}
+    for _prop in scoped.propositions:
+        if _prop.proposition_id.startswith("PROP_FROM_"):
+            continue
+        for _ref in (_prop.referent_ids or []):
+            if _ref in scoped_event_ids:
+                evt_to_semantic_props.setdefault(_ref, []).append(_prop)
+
+    def _make_belief(prop_id: str, conf: float) -> Belief:
+        return Belief(
+            target_id=evt.id,
+            perceived_state=evt.description,
+            confidence=conf,
+            inertia=1.0,
+            established_at_fabula=evt.fabula_time,
+            acquired_via_event_id=evt.id,
+            # R19-H12: audience learns utterance content *through* the
+            # channel the utterance routed over. Recording the channel
+            # provenance lets downstream auditors flag audience
+            # beliefs whose channel was later severed (and lets the
+            # affective scorers reason about channel reach).
+            acquired_via_channel_id=(
+                getattr(evt, "via_channel_id", None)
+                if evt.event_type == "utterance"
+                else None
+            ),
+            evidence_strength="strong",
+            proposition_id=prop_id,
+        )
+
     # Emit beliefs in syuzhet order; the snapshot fabula_time is the
     # event's fabula_time (audience learns it at the moment of
     # narration, but the belief is *about* a fabula-time-stamped
     # proposition).
     by_syuzhet = sorted(scoped.events, key=lambda e: e.syuzhet_index)
     for evt in by_syuzhet:
-        prop_id = f"PROP_FROM_{evt.id}"
         confidence: Optional[float]
         if evt.event_type in ("revelation", "outcome", "choice"):
             confidence = _AUDIENCE_REVEALED_CONFIDENCE
@@ -478,33 +543,115 @@ def synthesise_audience_entity(
         if confidence is None:
             continue
 
-        belief = Belief(
-            target_id=evt.id,
-            perceived_state=evt.description,
-            confidence=confidence,
-            inertia=1.0,
-            established_at_fabula=evt.fabula_time,
-            acquired_via_event_id=evt.id,
-            # R19-H12: audience learns utterance content *through* the
-            # channel the utterance routed over. Recording the channel
-            # provenance lets downstream auditors flag audience
-            # beliefs whose channel was later severed (and lets the
-            # affective scorers reason about channel reach).
-            acquired_via_channel_id=(
-                getattr(evt, "via_channel_id", None)
-                if evt.event_type == "utterance"
-                else None
-            ),
-            evidence_strength="strong",
-            proposition_id=prop_id,
-        )
+        beliefs_added: List[Belief] = []
+        for sp in evt_to_semantic_props.get(evt.id, ()):
+            truth = _proposition_truth_at(sp, evt.fabula_time)
+            if truth is None:
+                # The event references the proposition but its ground
+                # truth has not committed by this tick — don't fabricate
+                # a direction for the audience.
+                continue
+            # Audience witnesses the event and learns the proposition's
+            # committed value: high confidence when true, low (knows-it-
+            # is-false) when false. ``confidence`` carries the reveal
+            # strength (utterance reliability for spoken events).
+            directed = confidence if truth else max(_EPS, 1.0 - confidence)
+            beliefs_added.append(_make_belief(sp.proposition_id, directed))
+
+        if not beliefs_added:
+            # No authored proposition committed here — preserve the
+            # legacy synthetic-id belief so auto-synthesised worlds and
+            # the ``PROP_FROM_*`` reveal fallback keep working.
+            beliefs_added.append(
+                _make_belief(f"PROP_FROM_{evt.id}", confidence)
+            )
+
         snap = EntityStateSnapshot(
             world_id=getattr(evt, "world_id", "factual") or "factual",
             fabula_time=evt.fabula_time,
             triggered_by=evt.id,
-            beliefs_added=[belief],
+            beliefs_added=beliefs_added,
         )
         audience.state_timeline.append(snap)
+
+    # ------------------------------------------------------------------
+    # Commit-driven audience reveals for entity-anchored propositions.
+    #
+    # A proposition may attach to the timeline through its
+    # ``truth_at_fabula`` ground-truth commits rather than through an
+    # event in ``referent_ids`` — a common authoring style where the
+    # proposition is *about* entities ("Heathcliff loves Catherine",
+    # referent_ids=[ENT_HEATHCLIFF, ENT_CATHERINE]) and no single event
+    # carries it. The syuzhet-ordered loop above only emits beliefs for
+    # propositions reachable from a revealed event, so these
+    # entity-anchored propositions would never get an audience belief.
+    # Their confidence would then sit frozen at the static
+    # ``audience_default_prior`` (``_prop_audience_prior_at`` does NOT
+    # consult ``truth_at_fabula``), zeroing every surprise / mystery
+    # score that reads audience-belief movement — exactly the symptom
+    # seen on brief_encounter and wuthering_heights.
+    #
+    # Emit one belief snapshot per truth commit, gated at the commit's
+    # own fabula tick so the audience "learns" the committed value when
+    # the narrative reaches that fabula moment (``reconstruct_entity_at``
+    # replays snapshots with ``fabula_time <= cursor``). Provenance is
+    # tagged to the earliest event that carries the audience's
+    # fabula-now to the commit, so counterfactual surgery can still
+    # prune these beliefs if that event no longer fires.
+    # ------------------------------------------------------------------
+    events_by_fabula = sorted(
+        (e for e in scoped.events if e.fabula_time is not None),
+        key=lambda e: e.fabula_time,
+    )
+
+    def _provenance_event(commit_t: int):
+        after = [e for e in events_by_fabula if e.fabula_time >= commit_t]
+        if after:
+            return min(after, key=lambda e: e.syuzhet_index)
+        return events_by_fabula[-1] if events_by_fabula else None
+
+    for prop in scoped.propositions:
+        if prop.proposition_id.startswith("PROP_FROM_"):
+            continue
+        # Skip propositions the event-referent path already handled.
+        if any(r in scoped_event_ids for r in (prop.referent_ids or [])):
+            continue
+        if not prop.truth_at_fabula:
+            continue
+        target = next(iter(prop.referent_ids or []), prop.proposition_id)
+        for ct_raw, val in prop.truth_at_fabula.items():
+            try:
+                ct = int(ct_raw)
+            except (TypeError, ValueError):
+                continue
+            prov = _provenance_event(ct)
+            directed = (
+                _AUDIENCE_REVEALED_CONFIDENCE
+                if bool(val)
+                else max(_EPS, 1.0 - _AUDIENCE_REVEALED_CONFIDENCE)
+            )
+            belief = Belief(
+                target_id=target,
+                perceived_state=prop.description,
+                confidence=directed,
+                inertia=1.0,
+                established_at_fabula=ct,
+                acquired_via_event_id=prov.id if prov else None,
+                evidence_strength="strong",
+                proposition_id=prop.proposition_id,
+            )
+            audience.state_timeline.append(
+                EntityStateSnapshot(
+                    world_id=(
+                        (getattr(prov, "world_id", "factual") or "factual")
+                        if prov
+                        else "factual"
+                    ),
+                    fabula_time=ct,
+                    triggered_by=prov.id if prov else None,
+                    beliefs_added=[belief],
+                )
+            )
 
     # ------------------------------------------------------------------
     # Audience concern seeding.

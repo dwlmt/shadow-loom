@@ -148,7 +148,36 @@ def _hashable_value(value: Any) -> str:
     return repr(value)
 
 
-def _to_context(interventions: Mapping[str, Any]) -> InterventionContext:
+
+def _resolve_diagram_node(path: str, diagram: Optional[nx.DiGraph]) -> str:
+    """Resolve an intervention path to the diagram node it acts on.
+
+    The causal diagram's nodes are bare ids (``ENT_alice``, ``EVT_3``,
+    ``CHN_radio`` — see :func:`build_causal_diagram`). Interventions,
+    however, are keyed by dotted *attribute* paths
+    (``ENT_alice.traits.fear``, ``EVT_3.truth_value``). Pearl's
+    do-surgery cuts the incoming edges of the *node*, so an attribute
+    path must collapse to the node that carries it before it can be
+    matched against the diagram. We keep the full path when the diagram
+    genuinely has it as a node (forward-compatible with per-axis trait
+    nodes); otherwise we fall back to the leading id segment. Paths that
+    resolve to no diagram node are returned unchanged — downstream
+    ``has_node`` guards skip them.
+    """
+    if diagram is None:
+        return path
+    if diagram.has_node(path):
+        return path
+    head = path.split(".", 1)[0]
+    if diagram.has_node(head):
+        return head
+    return path
+
+
+def _to_context(
+    interventions: Mapping[str, Any],
+    diagram: Optional[nx.DiGraph] = None,
+) -> InterventionContext:
     """Normalise an intervention dict to a frozenset of ``(node_id, "")``.
 
     AMWN node identity for d-separation depends only on *which* variables
@@ -159,18 +188,17 @@ def _to_context(interventions: Mapping[str, Any]) -> InterventionContext:
     the AMWN's node-shadowing behaviour. Value-sensitive reasoning lives
     in :func:`check_consistency`, which compares raw values directly.
 
-    AUDIT (post-2026-05-26): preserve dotted-path granularity. The SCM
-    treats ``ENT_alice.traits.anger`` and ``ENT_alice.traits.fear`` as
-    *different* variables (per-axis trait nodes); collapsing both onto
-    the entity id falsely identified non-overlapping do-surgeries as
-    the same intervention and over-shadowed AMWN nodes. We now strip
-    only the value-suffix (everything after the second dot for
-    ``traits.``/``properties.``/``beliefs.``-style scoped axes is kept
-    on the variable id). For non-scoped paths the full path is used.
+    Intervention keys are dotted attribute paths but the diagram nodes
+    are bare ids, so each path is resolved to its owning diagram node via
+    :func:`_resolve_diagram_node` (when a ``diagram`` is supplied). Without
+    this resolution the dotted key never matches the bare-id node, so
+    ``_mutilate_into`` cut no edges and ``_project_context`` collapsed
+    every context to empty — silently turning trait/attribute-level
+    do() into a no-op and defeating node-shadowing.
     """
     items: Set[InterventionItem] = set()
     for path, _value in interventions.items():
-        items.add((path, ""))
+        items.add((_resolve_diagram_node(path, diagram), ""))
     return frozenset(items)
 
 
@@ -574,7 +602,7 @@ def build_amwn(
     amwn = nx.DiGraph()
 
     for var_id, interventions in query_vars:
-        full_context = _to_context(interventions)
+        full_context = _to_context(interventions, diagram)
         intervened_nodes = {nid for nid, _ in full_context}
         mutilated = _mutilate_into(diagram, intervened_nodes)
 
@@ -665,7 +693,7 @@ def check_ctf_independence(
     def _resolve(query: List[Tuple[str, Mapping[str, Any]]]) -> Set[CounterfactualVar]:
         out: Set[CounterfactualVar] = set()
         for var_id, interventions in query:
-            ctx = _to_context(interventions)
+            ctx = _to_context(interventions, diagram)
             mutilated = _mutilate_into(diagram, {nid for nid, _ in ctx})
             proj = _project_context(ctx, var_id, mutilated)
             out.add(CounterfactualVar(var_id, proj))

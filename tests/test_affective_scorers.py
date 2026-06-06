@@ -4,10 +4,17 @@
 from __future__ import annotations
 
 from shadow_loom.affective_scorers import compute_affective_scorers
+from shadow_loom.affect_unification import (
+    AUDIENCE_ID,
+    BeliefState,
+    compute_surprise_unified,
+    synthesise_audience_entity,
+)
 from shadow_loom.models import (
     Belief,
     Concern,
     Entity,
+    EventNode,
     Location,
     Proposition,
     RelationshipEdge,
@@ -140,3 +147,72 @@ def test_ambivalence_zero_when_no_counter_links():
     )
     s = compute_affective_scorers(_ws(entities={"ENT_A": ent}))
     assert s["ambivalence"] == 0.0
+
+
+def test_audience_learns_entity_anchored_proposition_via_truth_commits():
+    """Regression: ``synthesise_audience_entity`` must emit audience
+    beliefs for propositions anchored to *entities* (not events).
+
+    A common authoring style attaches a proposition to the entities it
+    is *about* (``referent_ids=[ENT_HERO, ENT_FOE]``) and records its
+    ground truth in ``truth_at_fabula`` — no single event "carries" it.
+    Pre-fix, the syuzhet-ordered belief loop only emitted beliefs for
+    propositions reachable from a revealed event, so these
+    entity-anchored propositions never produced an audience belief.
+    Their confidence then sat frozen at ``audience_default_prior``
+    (``_prop_audience_prior_at`` does not consult ``truth_at_fabula``),
+    zeroing every surprise / mystery score on worlds authored this way
+    (observed on brief_encounter and wuthering_heights, where 100% of
+    propositions are entity-anchored).
+
+    The fix emits one belief snapshot per truth commit, gated at the
+    commit's own fabula tick, so the audience's confidence tracks the
+    ground truth as the narrative reaches each fabula moment.
+    """
+    hero = Entity(id="ENT_HERO", name="Hero", location_id="LOC_X",
+                  status="healthy", traits={})
+    foe = Entity(id="ENT_FOE", name="Foe", location_id="LOC_X",
+                 status="healthy", traits={})
+    # Two events only give the fabula timeline / provenance anchors;
+    # neither is referenced by the proposition under test.
+    evt_early = EventNode(id="EVT_EARLY", description="they meet",
+                          fabula_time=1000, syuzhet_index=0,
+                          event_type="outcome")
+    evt_late = EventNode(id="EVT_LATE", description="they part",
+                         fabula_time=3000, syuzhet_index=1,
+                         event_type="outcome")
+    # Entity-anchored proposition: about the two entities, with a truth
+    # that flips True -> False across the story.
+    bond = Proposition(
+        proposition_id="PROP_BOND", kind="relation_holds",
+        description="The bond between Hero and Foe holds.",
+        referent_ids=["ENT_HERO", "ENT_FOE"],
+        audience_default_prior=0.5, stakes=0.9,
+        truth_at_fabula={1000: True, 3000: False},
+    )
+    ws = WorldStateV1(
+        entities={"ENT_HERO": hero, "ENT_FOE": foe},
+        locations={"LOC_X": Location(id="LOC_X", name="X", description="x")},
+        objects={}, events=[evt_early, evt_late], causal_topology=[],
+        propositions=[bond],
+    )
+
+    synthesise_audience_entity(ws)
+    audience = ws.entities[AUDIENCE_ID]
+    bond_beliefs = [
+        b for snap in audience.state_timeline
+        for b in snap.beliefs_added
+        if b.proposition_id == "PROP_BOND"
+    ]
+    assert bond_beliefs, (
+        "audience must hold beliefs about an entity-anchored proposition"
+    )
+
+    bs = BeliefState(world=ws)
+    # Confidence tracks the ground-truth commits, not the frozen prior.
+    assert bs.confidence(AUDIENCE_ID, "PROP_BOND", 1000) > 0.9
+    assert bs.confidence(AUDIENCE_ID, "PROP_BOND", 3000) < 0.1
+
+    # The True -> False flip is a genuine expectation violation: the
+    # audience-belief movement must register as surprise.
+    assert compute_surprise_unified(bs, 3000, 1000) > 0.0

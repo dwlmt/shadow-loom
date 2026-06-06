@@ -6086,16 +6086,20 @@ class DirectiveAssembler:
                 "surprise belief-KL component failed", exc_info=True,
             )
 
-        # Convex weighted combine of trait-shift KL (Itti-Baldi /
-        # Storck on entity traits), audience-belief revision (Itti-
-        # Baldi on the unified Proposition substrate), and anachrony
-        # (Bae-Young / Bissell-Paulin-Piper 2025). Weights sum to 1
-        # so the result stays in [0, 1].
+        # Weighted combine of trait-shift KL (Itti-Baldi / Storck on
+        # entity traits), audience-belief revision (Itti-Baldi on the
+        # unified Proposition substrate), and anachrony (Bae-Young /
+        # Bissell-Paulin-Piper 2025). The trait + anachrony weights form
+        # the calibrated convex pair (0.7 + 0.3 = 1.0); the belief-KL
+        # channel is an *additive* booster on top, so the raw sum can
+        # exceed 1.0 when every component saturates. Clamp to keep the
+        # gauge inside the documented [0, 1] contract.
         score = (
             self._SURPRISE_TRAIT_KL_WEIGHT * trait_kl_score
             + self._SURPRISE_BELIEF_KL_WEIGHT * belief_kl_score
             + self._SURPRISE_ANACHRONY_WEIGHT * anachrony_score
         )
+        score = max(0.0, min(1.0, score))
 
         logger.debug(
             "[DirectiveAssembly·Surprise%s] trait_kl=%.4f belief_kl=%.4f "

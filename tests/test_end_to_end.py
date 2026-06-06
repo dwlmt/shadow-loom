@@ -1037,6 +1037,33 @@ class TestVersionedWorldModel:
         assert vwm3.history[0].version == 0
         assert vwm3.history[-1].source == "rollback"
 
+    def test_rollback_preserves_branch_identity(self):
+        """Rolling back into a shadow branch keeps world_id/branch_label.
+
+        Branch routing (Continue / What-If) and the prose renderer's AMWN
+        filter consult ``history[-1].world_id``. A rollback entry that
+        defaulted to ``"factual"`` would silently present the restored
+        counterfactual world as canonical.
+        """
+        vwm = VersionedWorldModel.from_world_state(macbeth_ws)
+        topo = _mock_topology(macbeth_ws)
+        topo.events[0] = topo.events[0].model_copy(
+            update={"id": "EVT_SHADOW_RB", "fabula_time": 99000}
+        )
+        topo.causal_topology[0] = topo.causal_topology[0].model_copy(
+            update={"target_id": "EVT_SHADOW_RB", "fabula_time": 99000}
+        )
+        vwm_shadow = vwm.merge(
+            topo, world_id="shadow", branch_label="What if Duncan lived"
+        )
+        assert vwm_shadow.history[-1].world_id == "shadow"
+
+        # Rolling back to the shadow head must stay on the shadow branch.
+        rolled = vwm_shadow.rollback(vwm_shadow.version)
+        assert rolled.history[-1].source == "rollback"
+        assert rolled.history[-1].world_id == "shadow"
+        assert rolled.history[-1].branch_label == "What if Duncan lived"
+
 
 # =========================================================================
 # Test: extract_topology_from_prose (mocked agents)
