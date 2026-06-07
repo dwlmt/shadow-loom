@@ -655,8 +655,8 @@ class CausalPhysicsSettings(BaseSettings):
         default="bayesian",
         description=(
             "How abduction reconciles a sandbox trait value with the "
-            "factual present-day evidence. 'legacy' (default): blended = "
-            "old + delta * (1 - inertia). 'bayesian': posterior = "
+            "factual present-day evidence. 'legacy': blended = "
+            "old + delta * (1 - inertia). 'bayesian' (default): posterior = "
             "(inertia * old + ev_precision * evidence) / (inertia + "
             "ev_precision), i.e. inertia is interpreted as the *precision* "
             "of the historical prior and characters with high inertia "

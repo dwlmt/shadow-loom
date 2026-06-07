@@ -2432,7 +2432,6 @@ def compute_love_appraisal(
             set(getattr(evt, "actor_ids", []) or [])
             | set(getattr(evt, "target_ids", []) or [])
             | set(getattr(evt, "addressee_ids", []) or [])
-            | set(getattr(evt, "participant_ids", []) or [])
         )
         if focal_id in ids and partner_id in ids:
             if evt.fabula_time < aff_first_ft:

@@ -186,7 +186,7 @@ edges with `ended_at_fabula < established_at_fabula` error; per-axis
 cannot mutate). If errors remain, a
 **correction agent** is invoked with the error summary + the current
 state. When the serialised state exceeds
-`correction_subgraph_threshold_chars` (default 400 KB) the prompt is
+`correction_subgraph_threshold_chars` (default 120,000 chars) the prompt is
 switched to an **error-relevant subgraph** that includes the events,
 causal neighbours, channels, spatial edges and social edges referenced
 by the error ids — not just events — so non-event errors
@@ -392,8 +392,8 @@ The result is a `FeedbackLoopResult` containing:
   deterministic gate, separate from the LLM auditor's verdict
 
 If the auditor returns non-zero loss the loop regenerates (up to
-`AuditorConfig.max_iterations`, default 4 as of the round-7 audit
-2026-05-26) with the auditor's feedback appended to the brief.
+`AuditorConfig.max_iterations`, default 6) with the auditor's feedback
+appended to the brief.
 
 The pipeline records a `GenerationStepRecord` and an `AuditStepRecord`,
 populates `result.scene / prose / converged / audit_iterations /

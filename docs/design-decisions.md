@@ -375,7 +375,7 @@ with the auditor's notes appended.
 
 **Alternative.** Trust the renderer to follow instructions on the first try.
 
-**Tradeoff.** Up to `max_correction_retries` extra LLM calls per scene.
+**Tradeoff.** Up to `max_iterations` extra LLM calls per scene.
 
 **Invariant.** A scene cannot be committed to the canonical graph until the
 auditor reports zero loss.
@@ -712,7 +712,7 @@ distinguishes *temporal-collapse* artefacts from real causal loops:
    introduces a finding type unseen at iteration *n*, the
    `FeedbackLoop` rolls back to iteration *n*'s prose. Round-7
    (2026-05-26) added an anti-regression retry budget
-   (`AuditorConfig.regression_retry_budget`, default 1): the first
+   (`AuditorConfig.regression_retry_budget`, default 2): the first
    regression triggers a rollback **and** an explicit retry from the
    rolled-back draft with a `REGRESSION ALERT` block prepended to
    the refinement prompt; only a second regression exits the loop.

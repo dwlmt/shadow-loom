@@ -115,12 +115,6 @@ def audit_world_schema(world_state: WorldStateV1) -> List[str]:
                     f"[schema\u00b7dangling] EVT {evt.id} actor_id "
                     f"={actor!r} is unknown."
                 )
-        for obj_ref in (getattr(evt, "object_ids", None) or []):
-            if obj_ref not in object_ids:
-                issues.append(
-                    f"[schema\u00b7dangling] EVT {evt.id} object_id "
-                    f"={obj_ref!r} is unknown."
-                )
         # 2026-05-29 round-3 MED: ``Event.target_ids`` (the set of
         # entities / objects / events the event acts upon \u2014 see
         # ``shadow_loom/models.py::Event.target_ids``) was previously

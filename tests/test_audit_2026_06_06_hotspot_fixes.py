@@ -32,9 +32,14 @@ import pytest
 
 from shadow_loom.models import (
     Belief,
+    CausalEdge,
+    Concern,
     Entity,
     EventNode,
+    Proposition,
+    RelationshipEdge,
     RelationshipMetric,
+    TraitVector,
     WorldStateV1,
 )
 from shadow_loom.settings import CausalPhysicsSettings
@@ -234,4 +239,141 @@ class TestMonteCarloStableByDefault:
         assert first == second, (
             "Monte-Carlo results differ across identical runs — the default "
             "seed is not stabilising the sampler"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 5. reconstruct_entity_at_causal must NOT fold mutation_social (relationship)
+#    edges into the personal trait dict.
+# ---------------------------------------------------------------------------
+class TestProjectionExcludesSocialMutations:
+    """A ``mutation_social`` edge carries a relationship axis
+    (affinity/fear/power_dynamic) in ``trait_target`` and ``target_id`` is
+    the dyad's perspective entity. Replaying it inside
+    ``reconstruct_entity_at_causal`` previously wrote e.g. an ``affinity``
+    key into the entity's *personal* trait dict (audit 2026-06-06)."""
+
+    @staticmethod
+    def _world() -> WorldStateV1:
+        ent_a = Entity(
+            name="A", location_id="LOC_X", status="healthy",
+            traits={"ambition": TraitVector(value=0.4, inertia=0.5)},
+        )
+        ent_b = Entity(name="B", location_id="LOC_X", status="healthy", traits={})
+        evt = EventNode(
+            id="EVT_BETRAY", description="a betrayal that sours the bond",
+            event_type="outcome", fabula_time=50, syuzhet_index=50,
+            actor_ids=["ENT_A"], target_ids=["ENT_B"],
+        )
+        personal = CausalEdge(
+            source_id="EVT_BETRAY", target_id="ENT_A",
+            causality_type="mutation", mechanism="psychological",
+            fabula_time=50, trait_target="ambition", trait_delta=0.2,
+        )
+        social = CausalEdge(
+            source_id="EVT_BETRAY", target_id="ENT_A",
+            causality_type="mutation_social", mechanism="social",
+            fabula_time=50, trait_target="affinity", trait_delta=-0.6,
+            rel_counterpart_id="ENT_B",
+        )
+        return WorldStateV1(
+            locations={}, objects={},
+            entities={"ENT_A": ent_a, "ENT_B": ent_b},
+            events=[evt], causal_topology=[personal, social],
+        )
+
+    def test_relationship_axis_absent_from_personal_traits(self):
+        from shadow_loom.projections import reconstruct_entity_at_causal
+        out = reconstruct_entity_at_causal(self._world(), "ENT_A", 100)
+        assert "affinity" not in out["traits"], (
+            "mutation_social relationship axis leaked into the personal "
+            "trait dict"
+        )
+
+    def test_personal_mutation_still_applied(self):
+        from shadow_loom.projections import reconstruct_entity_at_causal
+        out = reconstruct_entity_at_causal(self._world(), "ENT_A", 100)
+        assert out["traits"]["ambition"]["value"] == pytest.approx(0.6)
+
+
+# ---------------------------------------------------------------------------
+# 6. Tension scorer must read fear AS OF fabula_time, not the latest value.
+# ---------------------------------------------------------------------------
+class TestTensionTimeAnchored:
+    """``compute_affective_scorers(fabula_time=...)`` must roll relationship
+    fear back to the requested tick like its sibling scorers, instead of
+    reading the edge's latest value (a future-state leak)."""
+
+    @staticmethod
+    def _world() -> WorldStateV1:
+        ent_a = Entity(name="A", location_id="LOC_X", status="healthy", traits={})
+        ent_b = Entity(name="B", location_id="LOC_X", status="healthy", traits={})
+        # Fear spikes only at tick 80 via a mutation_social edge.
+        edge = RelationshipEdge(
+            source_entity_id="ENT_A", target_entity_id="ENT_B",
+            metrics={"fear": RelationshipMetric(value=0.9, inertia=0.0)},
+        )
+        evt = EventNode(
+            id="EVT_THREAT", description="a terrifying threat is made",
+            event_type="outcome", fabula_time=80, syuzhet_index=80,
+            actor_ids=["ENT_B"], target_ids=["ENT_A"],
+        )
+        rise = CausalEdge(
+            source_id="EVT_THREAT", target_id="ENT_A",
+            causality_type="mutation_social", mechanism="emotional",
+            fabula_time=80, trait_target="fear", trait_delta=0.9,
+            rel_counterpart_id="ENT_B",
+        )
+        # WorldStateV1 auto-mirrors the dyad into a reciprocal edge
+        # (ENT_B->ENT_A); supply the reverse mutation so both directions
+        # roll back cleanly to 0 before the spike.
+        rise_rev = CausalEdge(
+            source_id="EVT_THREAT", target_id="ENT_B",
+            causality_type="mutation_social", mechanism="emotional",
+            fabula_time=80, trait_target="fear", trait_delta=0.9,
+            rel_counterpart_id="ENT_A",
+        )
+        return WorldStateV1(
+            locations={}, objects={},
+            entities={"ENT_A": ent_a, "ENT_B": ent_b},
+            events=[evt], causal_topology=[rise, rise_rev],
+            social_topology=[edge],
+        )
+
+    def test_tension_low_before_fear_spike(self):
+        from shadow_loom.affective_scorers import compute_affective_scorers
+        early = compute_affective_scorers(self._world(), fabula_time=10)
+        assert early["tension"] == pytest.approx(0.0), (
+            "tension read the latest fear (0.9) instead of the rolled-back "
+            "value at tick 10 — temporal leak"
+        )
+
+    def test_tension_high_after_fear_spike(self):
+        from shadow_loom.affective_scorers import compute_affective_scorers
+        late = compute_affective_scorers(self._world(), fabula_time=200)
+        assert late["tension"] == pytest.approx(0.9)
+
+
+# ---------------------------------------------------------------------------
+# 7. Suspense must not count a concern whose proposition is absent entirely.
+# ---------------------------------------------------------------------------
+class TestSuspenseIgnoresDanglingConcern:
+
+    def test_dangling_concern_does_not_raise_suspense(self):
+        from shadow_loom.affective_scorers import compute_affective_scorers
+        ent = Entity(
+            name="A", location_id="LOC_X", status="healthy", traits={},
+            concerns=[Concern(
+                concern_id="CON_X", proposition_id="PROP_MISSING",
+                polarity="fear", salience=0.8,
+            )],
+        )
+        ws = WorldStateV1(
+            locations={}, objects={}, entities={"ENT_A": ent},
+            events=[], causal_topology=[], propositions=[],
+        )
+        scores = compute_affective_scorers(ws, fabula_time=100)
+        assert scores["suspense"] == pytest.approx(0.0), (
+            "a concern pointing at a non-existent proposition was counted "
+            "as open suspense (should mirror the irony guard)"
         )

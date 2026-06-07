@@ -3609,10 +3609,9 @@ def _apply_deletions(
         del merged.objects[oid]
         changeset.objects_removed += 1
         # AUDIT P0-2: scrub the object id off referential surfaces.
+        # EventNode has no object_ids field — object referents live in
+        # target_ids.
         for evt in merged.events:
-            obj_ids = getattr(evt, "object_ids", None)
-            if obj_ids and oid in obj_ids:
-                evt.object_ids = [o for o in obj_ids if o != oid]
             for fld in ("target_ids",):
                 lst = getattr(evt, fld, None)
                 if lst and oid in lst:

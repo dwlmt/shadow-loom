@@ -13199,7 +13199,6 @@ def _post_pass_bind_events_to_propositions(
             evt_ents = (
                 set(getattr(evt, "actor_ids", []) or [])
                 | set(getattr(evt, "target_ids", []) or [])
-                | set(getattr(evt, "participant_ids", []) or [])
             )
             if prop_ent_refs and not (prop_ent_refs & evt_ents):
                 continue
@@ -13689,7 +13688,6 @@ def _post_pass_synthesize_concern_trajectory(
                 holder_in = (
                     eid in (getattr(evt, "actor_ids", []) or [])
                     or eid in (getattr(evt, "target_ids", []) or [])
-                    or eid in (getattr(evt, "participant_ids", []) or [])
                 )
                 if not holder_in:
                     continue
@@ -16275,7 +16273,7 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
             ):
                 if isinstance(tid, str) and tid.startswith("WORLD_"):
                     event_world_refs.add(tid)
-            loc_id = getattr(evt, "location_id", None)
+            loc_id = getattr(evt, "at_location_id", None)
             if isinstance(loc_id, str) and loc_id.startswith("WORLD_"):
                 event_world_refs.add(loc_id)
 

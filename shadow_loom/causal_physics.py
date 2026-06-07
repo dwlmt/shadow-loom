@@ -3755,14 +3755,11 @@ class CausalPhysicsEngine:
             participants = getattr(ch, "participant_ids", None)
             if participants and oid in participants:
                 ch.participant_ids = [p for p in participants if p != oid]
-        # Events: scrub object_ids if the field exists.
+        # Events: scrub the deleted object off target_ids (EventNode has
+        # no object_ids field — object referents live in target_ids).
         _events_scrubbed = 0
         for evt in (ws.events or []):
             touched = False
-            obj_ids = getattr(evt, "object_ids", None)
-            if obj_ids and oid in obj_ids:
-                evt.object_ids = [o for o in obj_ids if o != oid]
-                touched = True
             for fld in ("target_ids",):
                 lst = getattr(evt, fld, None)
                 if lst and oid in lst:

@@ -35,11 +35,13 @@ def reconstruct_entity_at_causal(
     """Reconstruct an entity at ``fabula_time`` overlaying causal mutations.
 
     1. Seed traits from ``Entity.traits`` (pre-story baseline).
-    2. Replay every ``mutation`` / ``mutation_social`` :class:`CausalEdge`
-       whose ``target_id`` is this entity, ``trait_target`` is set, and
+    2. Replay every ``mutation`` :class:`CausalEdge` whose
+       ``target_id`` is this entity, ``trait_target`` is set, and
        ``fabula_time <= fabula_time`` — accumulating signed
        ``trait_delta`` per axis (clamped to ``[0, 1]`` because
        ``TraitVector.value`` is non-negative on the schema).
+       ``mutation_social`` edges are *excluded*: they carry
+       relationship axes, not personal traits.
     3. Apply the snapshot replay on top — authored
        :class:`EntityStateSnapshot` values override the running causal
        values at their tick.
@@ -61,7 +63,15 @@ def reconstruct_entity_at_causal(
     mutations = sorted(
         (
             ce for ce in ws.causal_topology
-            if ce.causality_type in ("mutation", "mutation_social")
+            # Personal traits only: ``mutation`` edges carry a
+            # personal ``trait_target`` (ambition, anger, ...).
+            # ``mutation_social`` edges carry a *relationship* axis
+            # (affinity / fear / power_dynamic) and ``target_id`` is
+            # the dyad's source entity, so including them here leaked
+            # relationship metrics into the personal trait dict
+            # (audit 2026-06-06). Relationship axes are reconstructed
+            # via ``reconstruct_relationship_at``.
+            if ce.causality_type == "mutation"
             and ce.target_id == entity_id
             and ce.trait_target
             and ce.trait_delta is not None

@@ -207,7 +207,11 @@ def compute_affective_scorers(
     for ent in entities:
         for c in _effective_concerns(ent):
             pid = getattr(c, "proposition_id", None)
-            if pid and prop_truth.get(pid) is None:
+            # Mirror the irony guard: a concern is "open" only when its
+            # proposition exists AND is undecided. A concern pointing at
+            # a proposition absent from the world is a dangling ref (the
+            # schema auditor flags it), not suspense.
+            if pid and pid in prop_truth and prop_truth[pid] is None:
                 inten = float(getattr(c, "salience", 0.0) or 0.0)
                 open_concerns.append(inten)
     suspense = (sum(open_concerns) / len(open_concerns)) if open_concerns else 0.0
@@ -234,8 +238,30 @@ def compute_affective_scorers(
     surprise = min(flips / _surprise_norm, 1.0)
 
     # ---- tension ----
+    # R-2026-06-06: when ``fabula_time`` is supplied, fear must be
+    # read *as of* that tick, not at the edge's latest value —
+    # otherwise a time-sliced tension score leaks relationship state
+    # from later in the story. Mirror the belief / concern replay the
+    # other scorers do, via ``reconstruct_relationship_at``.
+    _causal_edges = list(world_state.causal_topology or [])
+    _events = list(world_state.events or [])
     fears = []
     for re in (world_state.social_topology or []):
+        if fabula_time is not None:
+            try:
+                from shadow_loom.models import (
+                    reconstruct_relationship_at as _reconstruct_rel_at,
+                )
+                rolled = _reconstruct_rel_at(
+                    re, int(fabula_time),
+                    causal_edges=_causal_edges, events=_events,
+                )
+                if "fear" not in rolled:
+                    continue
+                fears.append(abs(float(rolled["fear"])))
+                continue
+            except Exception:
+                pass
         metric = (re.metrics or {}).get("fear")
         if metric is None:
             continue
