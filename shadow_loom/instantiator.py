@@ -9,19 +9,19 @@ from shadow_loom.settings import get_settings as _get_settings
 from shadow_loom.models import default_relationship_metrics_dict
 
 
-def _surgery_log_level() -> int:
+def _surgery_log_level(level_when_normal: int = logging.INFO) -> int:
     """Return the appropriate log level for surgery banner lines.
 
     Demoted to ``DEBUG`` while a Monte-Carlo sample is running so a
-    128-sample sweep doesn't emit 128 \u00d7 N "Forced State" banners
+    128-sample sweep doesn't emit 128 × N "Forced State" banners
     at INFO. Imported lazily to avoid a circular import with
     ``shadow_loom.causal_physics``.
     """
     try:
         from shadow_loom.causal_physics import is_in_mc_sample
     except ImportError:
-        return logging.INFO
-    return logging.DEBUG if is_in_mc_sample() else logging.INFO
+        return level_when_normal
+    return logging.DEBUG if is_in_mc_sample() else level_when_normal
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +438,7 @@ class AMWNInstantiator:
 
         for target_path, new_value in interventions.items():
             if '.' not in target_path:
-                logger.warning("Malformed intervention key (no dot): %s. Skipping.", target_path)
+                logger.log(_surgery_log_level(logging.WARNING), "Malformed intervention key (no dot): %s. Skipping.", target_path)
                 skipped.append({
                     "target_path": target_path,
                     "reason": "malformed_key",
@@ -454,7 +454,7 @@ class AMWNInstantiator:
 
             # --- THE FAIL-SAFE ---
             if not sandbox.has_node(node_id):
-                logger.warning("Node %s not in Ego-Graph. Skipping.", node_id)
+                logger.log(_surgery_log_level(logging.WARNING), "Node %s not in Ego-Graph. Skipping.", node_id)
                 skipped.append({
                     "target_path": target_path,
                     "node_id": node_id,
@@ -542,7 +542,7 @@ class AMWNInstantiator:
         # Spatial affordance gate: verify a valid path exists
         if old_location_id and old_location_id != new_location_id and sandbox.has_node(new_location_id):
             if not AMWNInstantiator._check_spatial_path(sandbox, entity_id, old_location_id, new_location_id):
-                logger.warning("[Surgery] Spatial affordance BLOCKED: no traversable path from %s to %s for %s.",
+                logger.log(_surgery_log_level(logging.WARNING), "[Surgery] Spatial affordance BLOCKED: no traversable path from %s to %s for %s.",
                                old_location_id, new_location_id, entity_id)
                 return
 
@@ -557,9 +557,9 @@ class AMWNInstantiator:
             sandbox.add_edge(entity_id, new_location_id, edge_type="located_in", world_id="shadow")
         else:
             sandbox.nodes[entity_id]["location_id"] = new_location_id
-            logger.warning("[Surgery] Target location %s not in sandbox; attribute set but no edge wired.", new_location_id)
+            logger.log(_surgery_log_level(logging.WARNING), "[Surgery] Target location %s not in sandbox; attribute set but no edge wired.", new_location_id)
             
-        logger.info("[Surgery] Teleported %s to %s", entity_id, new_location_id)
+        logger.log(_surgery_log_level(), "[Surgery] Teleported %s to %s", entity_id, new_location_id)
 
     # ==========================================
     # SURGERY 2: INVENTORY
@@ -581,10 +581,10 @@ class AMWNInstantiator:
             # Owned items follow their owner — clear stale location
             sandbox.nodes[object_id]["location_id"] = None
             sandbox.add_edge(object_id, new_owner_id, edge_type="owned_by", world_id="shadow")
-            logger.info("[Surgery] Gave %s to %s", object_id, new_owner_id)
+            logger.log(_surgery_log_level(), "[Surgery] Gave %s to %s", object_id, new_owner_id)
         else:
             if new_owner_id and not sandbox.has_node(new_owner_id):
-                logger.warning(
+                logger.log(_surgery_log_level(logging.WARNING),
                     "[Surgery] Owner %s not in sandbox — treating as drop.",
                     new_owner_id,
                 )
@@ -598,7 +598,7 @@ class AMWNInstantiator:
             if drop_loc and sandbox.has_node(drop_loc):
                 sandbox.nodes[object_id]["location_id"] = drop_loc
                 sandbox.add_edge(object_id, drop_loc, edge_type="located_in", world_id="shadow")
-            logger.info("[Surgery] Dropped %s on the floor.", object_id)
+            logger.log(_surgery_log_level(), "[Surgery] Dropped %s on the floor.", object_id)
 
     # ==========================================
     # SURGERY 3: SOCIAL (Impact > Inertia for relationships)
@@ -611,12 +611,12 @@ class AMWNInstantiator:
         If no relationship edge exists, one is created with default metrics."""
         parts = path.split('.')
         if len(parts) != 3:
-            logger.warning("Malformed relationship path: %s. Expected 'relationships.<target>.<metric>'.", path)
+            logger.log(_surgery_log_level(logging.WARNING), "Malformed relationship path: %s. Expected 'relationships.<target>.<metric>'.", path)
             return
         _, target_id, metric = parts
         
         if not sandbox.has_node(target_id):
-            logger.warning("[Surgery] Relationship target %s not in sandbox. Skipping.", target_id)
+            logger.log(_surgery_log_level(logging.WARNING), "[Surgery] Relationship target %s not in sandbox. Skipping.", target_id)
             return
             
         # Find existing relationship edge
@@ -639,7 +639,7 @@ class AMWNInstantiator:
                 desired_shift = float(new_value) - current_val
 
                 if abs(desired_shift) <= rel_inertia + _inertia_epsilon():
-                    logger.info("[Surgery] Relationship inertia blocked: %s->%s %s shift=%.2f <= inertia=%.2f. No change.",
+                    logger.log(_surgery_log_level(), "[Surgery] Relationship inertia blocked: %s->%s %s shift=%.2f <= inertia=%.2f. No change.",
                                  source_id, target_id, metric, abs(desired_shift), rel_inertia)
                     return
 
@@ -682,7 +682,7 @@ class AMWNInstantiator:
                     # observed so downstream consumers stop treating the
                     # value as an unobserved default.
                     axis_state["observed"] = True
-                logger.info("[Surgery] Relationship dampened: %s->%s %s desired=%.2f, inertia=%.2f, effective=%.2f",
+                logger.log(_surgery_log_level(), "[Surgery] Relationship dampened: %s->%s %s desired=%.2f, inertia=%.2f, effective=%.2f",
                              source_id, target_id, metric, new_value, rel_inertia, effective_val)
                 return
 
@@ -711,7 +711,7 @@ class AMWNInstantiator:
             }
             edge_attrs[metric] = primary_value
             sandbox.add_edge(source_id, target_id, **edge_attrs)
-            logger.info("[Surgery] Created new relationship edge: %s->%s %s=%.2f",
+            logger.log(_surgery_log_level(), "[Surgery] Created new relationship edge: %s->%s %s=%.2f",
                          source_id, target_id, metric, edge_attrs[metric])
 
     # ==========================================
@@ -767,7 +767,7 @@ class AMWNInstantiator:
         current_level = node_data
         for key in keys[:-1]:
             if key not in current_level or not isinstance(current_level[key], dict):
-                logger.warning("[Surgery] Path '%s' creates intermediate key '%s' on %s. "
+                logger.log(_surgery_log_level(logging.WARNING), "[Surgery] Path '%s' creates intermediate key '%s' on %s. "
                                "Verify this is intentional.", path, key, node_id)
                 current_level[key] = {}
             current_level = current_level[key]
@@ -828,7 +828,7 @@ class AMWNInstantiator:
         if location_id and sandbox.has_node(location_id):
             sandbox.add_edge(new_node_id, location_id, edge_type="located_in", world_id="shadow")
 
-        logger.info("[Surgery] Genesis Event: Spawned %s into %s", new_node_id, location_id)
+        logger.log(_surgery_log_level(), "[Surgery] Genesis Event: Spawned %s into %s", new_node_id, location_id)
 
     # ==========================================
     # SURGERY 6: COMMS (Establish / Sever communication)
@@ -896,14 +896,14 @@ class AMWNInstantiator:
                     ndata["pruned"] = True
                     pruned_utts.append(nid)
             if pruned_utts:
-                logger.info(
+                logger.log(_surgery_log_level(),
                     "[Surgery] Marked %d utterance(s) pruned via severed "
                     "channel(s) %s: %s",
                     len(pruned_utts), sorted(severed_channel_ids), pruned_utts,
                 )
 
         if not target_ids:
-            logger.info("[Surgery] Severed all comms from %s", source_id)
+            logger.log(_surgery_log_level(), "[Surgery] Severed all comms from %s", source_id)
             AMWNInstantiator._prune_beliefs_by_provenance(
                 sandbox,
                 removed_channel_ids=severed_channel_ids,
@@ -915,7 +915,7 @@ class AMWNInstantiator:
             if sandbox.has_node(tgt):
                 sandbox.add_edge(source_id, tgt, edge_type="communicating_with",
                                  medium="unknown", world_id="shadow")
-        logger.info("[Surgery] Opened comms: %s → %s", source_id, target_ids)
+        logger.log(_surgery_log_level(), "[Surgery] Opened comms: %s \u2192 %s", source_id, target_ids)
         # Beliefs that were acquired through channels we just severed
         # should be pruned regardless of whether new pairs were added.
         AMWNInstantiator._prune_beliefs_by_provenance(
@@ -1020,8 +1020,8 @@ class AMWNInstantiator:
             if _source_unsatisfied(src_data):
                 tgt_data["pruned"] = True
                 newly_pruned.append(tgt_id)
-                logger.info(
-                    "[Surgery·AffordanceGate] %s blocks %s — source state "
+                logger.log(_surgery_log_level(),
+                    "[Surgery\u00b7AffordanceGate] %s blocks %s \u2014 source state "
                     "no longer satisfies the gate (src_type=%s).",
                     src_id, tgt_id, src_data.get("node_type"),
                 )
@@ -1059,7 +1059,7 @@ class AMWNInstantiator:
                 continue  # gate satisfied
             tgt_data["pruned"] = True
             newly_pruned.append(tgt_id)
-            logger.info(
+            logger.log(_surgery_log_level(),
                 "[Surgery\u00b7AffordanceGate\u00b7Spatial] %s blocks %s \u2014 "
                 "actor %s at %r, object %s at %r/owner=%r, event at %r "
                 "(co-location violated).",
@@ -1150,8 +1150,8 @@ class AMWNInstantiator:
                         kept_snap.append(b)
                     snap["beliefs_added"] = kept_snap
         if pruned:
-            logger.info(
-                "[Surgery·ProvenancePrune] Removed %d belief(s) whose "
+            logger.log(_surgery_log_level(),
+                "[Surgery\u00b7ProvenancePrune] Removed %d belief(s) whose "
                 "provenance was invalidated (events=%d, channels=%d, "
                 "severed_pairs=%d).",
                 pruned, len(removed_event_ids), len(removed_channel_ids),

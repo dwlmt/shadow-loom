@@ -1063,7 +1063,11 @@ class CausalPhysicsEngine:
                         eid,
                     )
             else:
-                logger.warning("[CausalPhysics·Abduction] Evidence node %s not in sandbox. Skipping.", eid)
+                logger.log(
+                    _physics_log(logging.WARNING),
+                    "[CausalPhysics·Abduction] Evidence node %s not in sandbox. Skipping.",
+                    eid,
+                )
 
     # ------------------------------------------------------------------
     # Rung 2 — do-Operator
@@ -4149,10 +4153,11 @@ class CausalPhysicsEngine:
                 )
         
         if edges_removed > 0:
-            logger.info(
-                "[CausalPhysics·graph-surgery] Removed %d incoming edges "
+            logger.log(
+                _physics_log(),
+                "[CausalPhysics\u00b7graph-surgery] Removed %d incoming edges "
                 "to intervened nodes (Pearl's graph surgery)",
-                edges_removed
+                edges_removed,
             )
 
     # ------------------------------------------------------------------
@@ -4277,7 +4282,8 @@ class CausalPhysicsEngine:
                 # any nodes that only appear as affordance sources.
                 missing = [n for n in causal_graph.nodes if n not in cycle_view]
                 execution_order.extend(sorted(missing))
-                logger.info(
+                logger.log(
+                    _physics_log(),
                     "[CausalPhysics\u00b7Propagate] Cycle dissolved by "
                     "excluding affordance_gate edges from cycle "
                     "detection (temporal-collapse artefact, not a "
@@ -4298,7 +4304,8 @@ class CausalPhysicsEngine:
                 for s in cyclic_sccs:
                     cyclic_blocked |= s
                 cyclic_blocked |= _selflooped
-                logger.warning(
+                logger.log(
+                    _physics_log(logging.WARNING),
                     "[CausalPhysics\u00b7Propagate] Cyclic causal graph: %d SCC(s) with "
                     "%d node(s) total (after excluding affordance_gate). "
                     "Cyclic clusters are blocked from propagation; only "
@@ -4783,7 +4790,8 @@ class CausalPhysicsEngine:
                 for node in social_subgraph.nodes():
                     if social_subgraph.has_edge(node, node):
                         social_cyclic_blocked.add(node)
-                logger.warning(
+                logger.log(
+                    _physics_log(logging.WARNING),
                     "[CausalPhysics\u00b7SocialProp] Cyclic social-causal "
                     "subgraph: %d node(s) in non-trivial SCC(s) or "
                     "self-loops. Members are blocked from social "
@@ -4823,8 +4831,11 @@ class CausalPhysicsEngine:
                 continue
 
             if not counterpart_id or not metric:
-                logger.warning("[CausalPhysics·SocialProp] Incomplete mutation_social edge %s→%s: "
-                               "counterpart=%s, metric=%s. Skipping.", u, v, counterpart_id, metric)
+                logger.log(
+                    _physics_log(logging.WARNING),
+                    "[CausalPhysics·SocialProp] Incomplete mutation_social edge %s→%s: "
+                    "counterpart=%s, metric=%s. Skipping.", u, v, counterpart_id, metric
+                )
                 continue
 
             if not self.sandbox.has_node(target_id) or not self.sandbox.has_node(counterpart_id):
@@ -5126,6 +5137,7 @@ class CausalPhysicsEngine:
                 evidence_node_ids=evidence_node_ids,
                 target_node_ids=target_node_ids or None,
                 diagram=diagram,
+                log_level=_physics_log(),
             )
         except Exception:  # pragma: no cover - defensive
             logger.exception("[CausalPhysics\u00b7ctf-calculus] Pre-flight failed; skipping report.")
@@ -5245,7 +5257,8 @@ class CausalPhysicsEngine:
                 k: v for k, v in interventions.items() if k not in pruned_set
             }
         elif pruned_set:
-            logger.info(
+            logger.log(
+                _physics_log(),
                 "[CausalPhysics\u00b7Rule3] %d intervention(s) flagged as "
                 "vacuous by Rule 3 but kept (advisory mode): %s",
                 len(pruned_set), sorted(pruned_set),
@@ -5332,7 +5345,8 @@ class CausalPhysicsEngine:
                     if self.sandbox.has_node(nid):
                         self.sandbox.nodes[nid]["pruned"] = True
                 pruned_evt_ids |= newly_pruned
-                logger.info(
+                logger.log(
+                    _physics_log(),
                     "[CausalPhysics·ChainClosure] do-prevented surgery "
                     "expanded %d root event(s) → %d descendant(s) via "
                     "chain_reaction closure: %s",
@@ -5393,7 +5407,8 @@ class CausalPhysicsEngine:
                     if self.sandbox.has_node(nid):
                         self.sandbox.nodes[nid]["pruned"] = True
                 pruned_evt_ids |= cd_newly_pruned
-                logger.info(
+                logger.log(
+                    _physics_log(),
                     "[CausalPhysics·ChainClosure] cause-disconnected "
                     "do-event mutation expanded %d root event(s) → %d "
                     "descendant(s) via chain_reaction closure: %s",
@@ -5536,7 +5551,8 @@ class CausalPhysicsEngine:
                     f"{dict(_by_reason)})"
                 )
             if _inert:
-                logger.warning(
+                logger.log(
+                    _physics_log(logging.WARNING),
                     "[CausalPhysics\u00b7Inert] Intervention is inert "
                     "\u2014 %s. Pipeline should disclose this rather "
                     "than render fabricated consequences.",

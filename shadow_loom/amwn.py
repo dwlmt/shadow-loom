@@ -785,6 +785,7 @@ def apply_ctf_calculus(
     target_node_ids: Optional[Iterable[str]] = None,
     *,
     diagram: Optional[nx.DiGraph] = None,
+    log_level: int = logging.INFO,
 ) -> CtfCalculusReport:
     """Apply the three ctf-calculus rules as a pre-flight check.
 
@@ -840,7 +841,8 @@ def apply_ctf_calculus(
             continue
         if check_consistency(path, intervention_value, observed):
             report.rule1_redundant.append(path)
-            logger.info(
+            logger.log(
+                log_level,
                 "[ctf-calculus\u00b7Rule1] Intervention %s is redundant \u2014 "
                 "observed value already equals %r.",
                 path, intervention_value,
@@ -849,6 +851,15 @@ def apply_ctf_calculus(
     # ---- Rule 3 (Exclusion) ----
     # Y = explicit query targets only. Evidence is conditioning, not
     # query, so it goes into Z together with the *other* interventions.
+    #
+    # IMPORTANT: Z must be disjoint from Y. Pearl's Rule 3 assumes
+    # Y ∩ Z = ∅. When an entity is both the query target (e.g.
+    # ENT_MRS_COADY in "what if she doesn't die?") AND the abduction
+    # evidence (conditioning on her survival), including it in Z causes
+    # the mutilation G_{Z̄} to cut its own incoming edges — including
+    # the direct event→entity target edge — making the intervention
+    # appear vacuous even though it's substantive. Exclude y_set from
+    # z_for_rule3 to prevent this false prune.
     if target_node_ids:
         y_set = set(target_node_ids)
         for path in interventions:
@@ -858,10 +869,13 @@ def apply_ctf_calculus(
             if node_id not in intervened_node_ids:
                 continue
             other_interventions = intervened_node_ids - {node_id}
-            z_for_rule3 = other_interventions | set(evidence_node_ids)
+            # Exclude query targets from Z so their incoming edges are
+            # not mutilated during the ancestor reachability check.
+            z_for_rule3 = (other_interventions | set(evidence_node_ids)) - y_set
             if check_exclusion(diagram, {node_id}, y_set, z_for_rule3):
                 report.rule3_pruned.append(path)
-                logger.info(
+                logger.log(
+                    log_level,
                     "[ctf-calculus·Rule3] Pruning intervention %s — no path "
                     "to query targets %s in mutilated diagram.",
                     path, sorted(y_set),
@@ -883,7 +897,8 @@ def apply_ctf_calculus(
             z_query = [(o, {}) for o in evidence_node_ids if o != ev]
             if check_ctf_independence(diagram, x_query, y_query, z_query):
                 report.rule2_redundant_evidence.append(ev)
-                logger.info(
+                logger.log(
+                    log_level,
                     "[ctf-calculus·Rule2] Evidence %s d-separated from "
                     "interventions on AMWN given other evidence — "
                     "abduction is redundant.",
