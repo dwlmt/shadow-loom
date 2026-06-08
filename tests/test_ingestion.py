@@ -1117,7 +1117,7 @@ class TestExtractionConfig:
         assert c.output_retries == 5
         assert c.chunk_overlap_chars == 300
         assert c.max_correction_retries == 5
-        assert c.max_concurrent_chunks == 12
+        assert c.max_concurrent_chunks == 16
         assert c.estimated_events_per_chunk == 10
 
     def test_custom_values(self):

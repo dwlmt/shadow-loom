@@ -986,7 +986,7 @@ class ExtractionConfig(BaseModel):
         ),
     )
     max_concurrent_chunks: int = Field(
-        default=12,
+        default=16,
         ge=1,
         description="Maximum number of chunks to extract in parallel during "
         "async topology extraction. Controls LLM request concurrency. Must be >= 1; "

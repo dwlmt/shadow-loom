@@ -57,6 +57,7 @@ _BUILTIN_OPENAI_COMPAT_PROVIDERS: dict[str, str] = {
     "together":      "https://api.together.ai/v1",
     "deepinfra":     "https://api.deepinfra.com/v1/openai",
     "groq":          "https://api.groq.com/openai/v1",
+    "anyscale":      "https://api.endpoints.anyscale.com/v1",
     "perplexity":    "https://api.perplexity.ai",
     "huggingface":   "https://router.huggingface.co/v1",
     # ── First-party frontier APIs (OpenAI-compatible endpoints) ─

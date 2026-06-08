@@ -591,6 +591,17 @@ class AuditResult(BaseModel):
             "LLM explicitly cleared."
         ),
     )
+    llm_raw_violations: List[AuditViolation] = Field(
+        default_factory=list,
+        description=(
+            "Snapshot of violations as returned by the LLM, captured at the "
+            "same time as ``llm_raw_passed``, before deterministic engine "
+            "passes append additional findings. Used by the minor-bypass "
+            "logic so that engine-injected major violations (e.g. "
+            "entity_position_mismatch) cannot prevent the bypass from "
+            "firing when the LLM itself only flagged minor cosmetic issues."
+        ),
+    )
 
 
 class AuditCycleSnapshot(BaseModel):
@@ -4998,14 +5009,16 @@ def run_audit(
     audit = result.output
     log_agent_output(logger, "Auditor", audit)
 
-    # Snapshot the LLM's own verdict before any deterministic engine
-    # passes mutate audit.passed.  The feedback loop reads this field
-    # to correctly compute llm_passed without being blocked by engine
-    # false-positives (e.g. the 120-char proximity position-mismatch
-    # heuristic flagging a reference to a location the entity is NOT
-    # actually at in the prose — "Mrs. Coady recalled seeing George at
-    # the Old Bailey" fires the check even though she is in her flat).
+    # Snapshot the LLM's own verdict and violation list before any
+    # deterministic engine passes mutate audit.passed / audit.violations.
+    # The feedback loop reads these fields to correctly compute llm_passed
+    # without being blocked by engine false-positives (e.g. the 120-char
+    # proximity position-mismatch heuristic), and to restrict the minor-
+    # bypass check to the LLM's own violations only (so an engine-injected
+    # major violation cannot prevent the bypass from firing when the LLM
+    # itself only flagged a minor style_mismatch).
     audit.llm_raw_passed = audit.passed
+    audit.llm_raw_violations = list(audit.violations)
 
     # Deterministic withheld-utterance leak check. Runs even when the
     # LLM call succeeded — a verbatim leak is a hard failure that we
@@ -5528,6 +5541,36 @@ def run_feedback_loop(
                 ),
             )
 
+        # run_audit() hard engine violation guard. ``llm_raw_passed``
+        # correctly prevents 120-char proximity heuristics
+        # (position-mismatch, co-presence, cascade-exclusion) from
+        # blocking convergence when the LLM cleared the prose. But it
+        # must NOT suppress convergence blocking for the *verbatim*
+        # high-precision checks that the LLM structurally cannot
+        # evaluate (it doesn't see the full world-state ledger):
+        #   * withheld_utterance_leak  — secret dialogue in prose
+        #   * pruned_utterance_leak    — do-surgery-severed dialogue
+        #   * disabled_channel_leak    — do-surgery-severed channel ref
+        #   * prevented_event_reenacted — do-surgery-pruned event staged
+        # These are near-zero false-positive rate; when they fire the
+        # prose is directly contradicting the engine's surgery ledger.
+        # Detect them by comparing the engine-injected delta
+        # (audit.violations[llm_raw_violations:]) against the type set.
+        _HARD_ENGINE_VIOLATION_TYPES = {
+            "withheld_utterance_leak",
+            "pruned_utterance_leak",
+            "disabled_channel_leak",
+            "prevented_event_reenacted",
+        }
+        _llm_viol_count = len(audit.llm_raw_violations)
+        _hard_engine_added = (
+            len(audit.violations) > _llm_viol_count
+            and any(
+                getattr(v, "violation_type", "") in _HARD_ENGINE_VIOLATION_TYPES
+                for v in audit.violations[_llm_viol_count:]
+            )
+        )
+
         # C (round-7 audit 2026-05-26): deterministic POV-lock and
         # meta-narration checks run alongside the LLM auditor and
         # merge their findings into the violation list. The LLM
@@ -5874,14 +5917,20 @@ def run_feedback_loop(
         # cannot prevent convergence on prose the LLM explicitly
         # cleared.  det_findings (POV / meta-narration regex checks in
         # the feedback loop itself) are still gated via
-        # _det_added_violations: they are deterministic true-positives
-        # that override the LLM verdict and must block convergence.
+        # _det_added_violations; hard verbatim engine checks (withheld
+        # utterance leaks, do-surgery leaks, etc.) are gated via
+        # _hard_engine_added.
         _llm_verdict = (
             audit.llm_raw_passed
             if audit.llm_raw_passed is not None
             else audit.passed
         )
-        llm_passed = _llm_verdict and not audit.failed_open and not _det_added_violations
+        llm_passed = (
+            _llm_verdict
+            and not audit.failed_open
+            and not _det_added_violations
+            and not _hard_engine_added
+        )
         # Treat an audit whose only verdict was minor violations as
         # effectively passing for refinement-loop purposes. The
         # rewriter is unlikely to address purely cosmetic drift
@@ -5923,14 +5972,29 @@ def run_feedback_loop(
             # exact case the prompt was written to skip.
             "style_mismatch",
         }
+        # Use the LLM's own violation snapshot for the bypass check, not
+        # the full augmented list. Engine-injected major violations
+        # (entity_position_mismatch, co-presence, etc.) must not prevent the
+        # bypass from firing when the LLM itself only raised minor cosmetic
+        # issues — those are structurally unfixable by rewriting and burning
+        # an iteration on them is exactly the pattern the bypass was designed
+        # to prevent. Fall back to audit.violations when llm_raw_violations
+        # is empty (failed_open path where llm_raw_violations was not set).
+        _bypass_violations = (
+            audit.llm_raw_violations
+            if audit.llm_raw_violations
+            else list(audit.violations)
+        )
         if (
             not llm_passed
             and not audit.failed_open
-            and audit.violations
-            and all(v.severity == "minor" for v in audit.violations)
+            and not _det_added_violations  # never bypass when det checks fired real violations
+            and not _hard_engine_added     # never bypass when hard engine checks fired
+            and _bypass_violations
+            and all(v.severity == "minor" for v in _bypass_violations)
             and all(
                 getattr(v, "violation_type", "") in _MINOR_BYPASS_ALLOWLIST
-                for v in audit.violations
+                for v in _bypass_violations
             )
         ):
             logger.info(

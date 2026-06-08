@@ -5952,17 +5952,25 @@ def build_intervention_brief(
             evidence={"rule2_redundant": list(rule2_redundant_evidence)},
         ))
 
-    constraints.append(ConstraintBlock(
-        constraint_type="mathematical",
-        priority="hard",
-        instruction=(
-            "You MUST describe the exact physical mechanism that caused each "
-            "state change. Do NOT just say 'the door opened' — render the "
-            "physical struggle or action that forced the Impact to overcome "
-            "the Inertia. The reader must feel the force required."
-        ),
-        evidence={},
-    ))
+    # The "describe physical mechanism" constraint applies only when the
+    # intervention actually landed (mutations exist). When the intervention
+    # is inert there are NO state changes to mechanise — emitting this
+    # hard constraint alongside the INERT INTERVENTION hard constraint
+    # creates directly contradictory directives ("show the mechanism of
+    # change" vs "there are zero changes; stage attempt and resistance
+    # only"), causing the renderer to ping-pong between them.
+    if not intervention_inert:
+        constraints.append(ConstraintBlock(
+            constraint_type="mathematical",
+            priority="hard",
+            instruction=(
+                "You MUST describe the exact physical mechanism that caused each "
+                "state change. Do NOT just say 'the door opened' — render the "
+                "physical struggle or action that forced the Impact to overcome "
+                "the Inertia. The reader must feel the force required."
+            ),
+            evidence={},
+        ))
 
     # Channels & beliefs subsystem: the Rung-2 do-surgery can sever
     # downstream utterances and channels (e.g. intervening on a
