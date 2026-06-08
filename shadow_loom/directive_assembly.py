@@ -7529,14 +7529,24 @@ class DirectiveAssembler:
                 ],
             )
 
-        # Stamp the active syuzhet anchor into scene_context so
-        # downstream consumers (auditor leak-check, renderers) can
-        # locate the brief on the timeline without having to re-derive
-        # it from recent_memory (which is fabula-sorted and can sit
-        # ahead of the reader's current syuzhet position).
+        # Stamp the active syuzhet anchor AND the corresponding fabula
+        # anchor into scene_context so downstream consumers (auditor
+        # position-mismatch check, leak-check, renderers) can locate
+        # the brief on the timeline without having to re-derive it from
+        # recent_memory (which is fabula-sorted and can sit ahead of
+        # the reader's current syuzhet position due to flashbacks or
+        # prolepses — max(recent_memory.fabula_time) is not a reliable
+        # anchor when the syuzhet and fabula axes diverge).
         scene_context = dict(self.ego) if isinstance(self.ego, dict) else {}
         if syuzhet_anchor is not None:
             scene_context["syuzhet_anchor"] = syuzhet_anchor
+        # fabula_anchor was computed above via _syuzhet_to_fabula_cutoff
+        # and already used by the constraint builders. Stamp it so
+        # _position_mismatch_violations and _event_copresence_violations
+        # use the identical anchor instead of re-deriving from
+        # recent_memory with a potential flashback-skew.
+        if fabula_anchor is not None:
+            scene_context["fabula_anchor"] = fabula_anchor
 
         # Universal lived-present grounding tail — append to whichever
         # affect-specific RenderingDirective was built above so every

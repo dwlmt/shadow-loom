@@ -578,6 +578,19 @@ class AuditResult(BaseModel):
         default=None,
         description="Per-cycle engine-computed delta metrics. None if not computed.",
     )
+    llm_raw_passed: Optional[bool] = Field(
+        default=None,
+        description=(
+            "The LLM auditor's own verdict captured immediately after the "
+            "model call and before any deterministic engine passes "
+            "(position-mismatch, co-presence, etc.) append violations and "
+            "flip ``passed``. The feedback loop uses this to distinguish "
+            "'LLM passed but engine proxy fired a false positive' from "
+            "'LLM itself found violations', preventing the 120-char "
+            "proximity heuristic from blocking convergence on prose the "
+            "LLM explicitly cleared."
+        ),
+    )
 
 
 class AuditCycleSnapshot(BaseModel):
@@ -4426,8 +4439,16 @@ def _prevented_event_reenacted_violations(
         if eid in seen:
             continue
 
-        # Check 1: verbatim id token.
-        if eid.lower() in prose_lower:
+        # Check 1: verbatim id token (word-boundary aware).
+        # Event ids are all-caps underscore tokens (EVT_ENTITY_ACTION);
+        # they essentially never appear in natural prose, but use a
+        # non-identifier-character boundary to avoid an EVT_FOO id
+        # matching inside a longer token like EVT_FOOBAR.
+        _eid_lower = eid.lower()
+        _eid_pat = re.compile(
+            r"(?<![a-z0-9_])" + re.escape(_eid_lower) + r"(?![a-z0-9_])"
+        )
+        if _eid_pat.search(prose_lower):
             seen.add(eid)
             issues.append(AuditViolation(
                 violation_type="prevented_event_reenacted",
@@ -4681,14 +4702,27 @@ def _position_mismatch_violations(
     sc = getattr(brief, "scene_context", {}) or {}
     fabula_anchor: Optional[int] = None
     if isinstance(sc, dict):
-        recent = sc.get("recent_memory") or []
-        if isinstance(recent, list):
-            fts = [
-                e.get("fabula_time") for e in recent
-                if isinstance(e, dict) and isinstance(e.get("fabula_time"), int)
-            ]
-            if fts:
-                fabula_anchor = max(fts)
+        # Prefer the explicit fabula_anchor stamped into scene_context by
+        # DirectiveAssembler.assemble (computed via _syuzhet_to_fabula_cutoff
+        # and already used by the constraint builders). This avoids anchor
+        # drift when recent_memory contains flashback or prolepsis events
+        # whose max(fabula_time) sits ahead of or behind the scene's actual
+        # temporal anchor on the syuzhet axis.
+        if isinstance(sc.get("fabula_anchor"), int):
+            fabula_anchor = sc["fabula_anchor"]
+        else:
+            # Fall back to max(recent_memory.fabula_time) when the brief
+            # was assembled without a syuzhet anchor (e.g. observation
+            # queries with no explicit position) — in that case all events
+            # are visible and the max fabula time is the correct anchor.
+            recent = sc.get("recent_memory") or []
+            if isinstance(recent, list):
+                fts = [
+                    e.get("fabula_time") for e in recent
+                    if isinstance(e, dict) and isinstance(e.get("fabula_time"), int)
+                ]
+                if fts:
+                    fabula_anchor = max(fts)
     if fabula_anchor is None:
         return []
 
@@ -4963,6 +4997,15 @@ def run_audit(
 
     audit = result.output
     log_agent_output(logger, "Auditor", audit)
+
+    # Snapshot the LLM's own verdict before any deterministic engine
+    # passes mutate audit.passed.  The feedback loop reads this field
+    # to correctly compute llm_passed without being blocked by engine
+    # false-positives (e.g. the 120-char proximity position-mismatch
+    # heuristic flagging a reference to a location the entity is NOT
+    # actually at in the prose — "Mrs. Coady recalled seeing George at
+    # the Old Bailey" fires the check even though she is in her flat).
+    audit.llm_raw_passed = audit.passed
 
     # Deterministic withheld-utterance leak check. Runs even when the
     # LLM call succeeded — a verbatim leak is a hard failure that we
@@ -5497,6 +5540,12 @@ def run_feedback_loop(
         # meta-narration triggers. The check is gated behind
         # ``enable_deterministic_prose_checks`` so callers can opt
         # out for genuine omniscient-narration briefs.
+        #
+        # Track whether this block adds NEW violations so the
+        # convergence check can gate on det_findings separately from
+        # the LLM's own verdict (``llm_raw_passed``).
+        _violations_pre_det = len(audit.violations)
+        _det_added_violations = False
         if auditor_config.enable_deterministic_prose_checks and not audit.failed_open:
             brief_pov = None
             pov_aliases: List[str] = []
@@ -5614,6 +5663,14 @@ def run_feedback_loop(
                         len(det_findings), iteration + 1,
                     )
                     audit.passed = False
+
+        # Record whether the deterministic prose block added new
+        # violations so the convergence check can distinguish
+        # "engine position-heuristic false-positive" (should not block
+        # convergence when LLM cleared the prose) from "det_findings
+        # caught a real POV / meta-narration breach the LLM missed"
+        # (should block convergence regardless of llm_raw_passed).
+        _det_added_violations = len(audit.violations) > _violations_pre_det
 
         # Snapshot the current state
         graph_version = versioned.version if versioned else 0
@@ -5808,7 +5865,23 @@ def run_feedback_loop(
         # metrics are not structurally pinned-failing from iteration 0
         # (in which case prose cannot move them and gating on them
         # would create the infinite-rejection loop documented above).
-        llm_passed = audit.passed and not audit.failed_open
+        #
+        # Use llm_raw_passed (the LLM's verdict before run_audit's
+        # deterministic engine passes mutate audit.passed) so that
+        # engine-injected false positives — e.g. the 120-char proximity
+        # position-mismatch heuristic firing on "Mrs. Coady recalled
+        # seeing George at the Old Bailey" when she is in her flat —
+        # cannot prevent convergence on prose the LLM explicitly
+        # cleared.  det_findings (POV / meta-narration regex checks in
+        # the feedback loop itself) are still gated via
+        # _det_added_violations: they are deterministic true-positives
+        # that override the LLM verdict and must block convergence.
+        _llm_verdict = (
+            audit.llm_raw_passed
+            if audit.llm_raw_passed is not None
+            else audit.passed
+        )
+        llm_passed = _llm_verdict and not audit.failed_open and not _det_added_violations
         # Treat an audit whose only verdict was minor violations as
         # effectively passing for refinement-loop purposes. The
         # rewriter is unlikely to address purely cosmetic drift
