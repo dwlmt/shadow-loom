@@ -690,19 +690,17 @@ class AuditorConfig(BaseModel):
         description="PydanticAI model string for the generation LLM (re-renders).",
     )
     max_iterations: int = Field(
-        default=6,
+        default=4,
         ge=1,
         le=8,
         description=(
             "Maximum audit → rewrite cycles before giving up. Counts the "
-            "initial render's audit as iteration 1, so default=4 yields "
-            "up to 3 refinement attempts. Raised from 3 in the 2026-05-26 "
-            "round-7 feedback-loop audit so the regression-retry path "
-            "(see ``run_feedback_loop``) has room to actually re-try "
-            "once after a rollback before exhausting the budget. "
-            "Round-9 E10: bounded to [1, 8] to keep wall-clock budgets "
-            "sane and prevent a misconfigured client from pinning a "
-            "worker on a pathological draft."
+            "initial render's audit as iteration 1, so default=3 yields "
+            "up to 2 refinement attempts. The plausibility bypass "
+            "(see ``run_feedback_loop``) fires after ceil(max_iterations/2) "
+            "iterations when only soft-affective violations remain, so "
+            "plausible prose typically exits after 2 cycles. "
+            "Bounded to [1, 8] to keep wall-clock budgets sane."
         ),
     )
     output_retries: int = Field(
