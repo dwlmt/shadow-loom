@@ -464,17 +464,29 @@ def _render_event_dossier(state: AppState, ctx: Dict[str, Any]) -> None:
                 ).props("flat dense no-caps").classes("text-xs text-right")
 
     # ── Two-column layout for the rest ────────────────────────────
+    # Snapshot at this event's fabula_time so all sub-panels
+    # that render live traits/beliefs show values in-the-moment.
+    ft = ctx["event"]["fabula_time"]
+    ws_at = state.world_state
+    if state.world_state is not None:
+        try:
+            from shadow_loom_ui.viz_helpers import snapshot_world_at
+            ws_at = snapshot_world_at(state.world_state, ft)
+        except Exception:
+            ws_at = state.world_state
+
     with ui.row().classes("w-full gap-3 flex-wrap items-start q-mt-md"):
         with ui.column().classes("flex-grow gap-3 min-w-96"):
-            _render_actors_panel(state, ctx)
+            _render_actors_panel(state, ctx, ws_at=ws_at)
             _render_targets_panel(state, ctx)
             _render_objects_panel(state, ctx)
 
         with ui.column().classes("flex-grow gap-3 min-w-96"):
             _render_causal_panel(state, ctx)
             _render_locations_panel(state, ctx)
+            _render_channels_panel(state, ctx)
             _render_world_traits_panel(state, ctx)
-            _render_attribution_panel(state, ctx)
+            _render_attribution_panel(state, ctx, ws_at=ws_at)
 
 
 def _jump_to(
@@ -499,7 +511,9 @@ def _jump_to(
 # Sub-panels
 # =====================================================================
 
-def _render_actors_panel(state: AppState, ctx: Dict[str, Any]) -> None:
+def _render_actors_panel(
+    state: AppState, ctx: Dict[str, Any], *, ws_at=None
+) -> None:
     actors = ctx["actors"]
     if not actors:
         return
@@ -540,9 +554,12 @@ def _render_actors_panel(state: AppState, ctx: Dict[str, Any]) -> None:
                         ),
                     ).props("flat dense color=primary size=sm no-caps")
 
-                # Trait radar
-                if actor.get("traits") and state.world_state is not None:
-                    render_trait_radar(actor["id"], state.world_state, height="240px")
+                # Trait radar — use at-time snapshot so the spider
+                # chart matches the beliefs table above it (both
+                # anchored to this event's fabula_time).
+                ws_for_radar = ws_at if ws_at is not None else state.world_state
+                if actor.get("traits") and ws_for_radar is not None:
+                    render_trait_radar(actor["id"], ws_for_radar, height="240px")
 
                 # Beliefs as a small table
                 beliefs = actor.get("beliefs") or []
@@ -736,6 +753,68 @@ def _render_locations_panel(state: AppState, ctx: Dict[str, Any]) -> None:
                 )
 
 
+def _render_channels_panel(state: AppState, ctx: Dict[str, Any]) -> None:
+    """T-6: channels available / used at this event's fabula_time.
+
+    Surfaces the via_channel for utterance events plus any channel
+    whose participants overlap the actors at this tick and whose
+    availability window contains it. Lets the dossier render
+    "who could have heard this" without manual tracing.
+    """
+    channels = ctx.get("channels") or []
+    if not channels:
+        return
+    with ui.card().classes(
+        "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+    ):
+        with ui.row().classes("items-center gap-2"):
+            ui.icon("hub", color="primary")
+            ui.label(f"Channels in scope ({len(channels)})").classes(
+                "text-sm font-semibold text-slate-700"
+            )
+        ui.label(
+            "Communication links available to the actors at this tick. "
+            "The 'via' badge marks the channel this utterance was sent on."
+        ).classes("text-[11px] text-slate-500")
+        rows = [
+            {
+                "id": c["id"],
+                "name": c["name"],
+                "medium": c.get("medium") or "?",
+                "directionality": c.get("directionality") or "?",
+                "participants": len(c.get("participant_ids") or []),
+                "via": "✓" if c.get("via_event") else "",
+                "window": (
+                    f"[{c.get('established_at_fabula', 0)}"
+                    f"…{c.get('terminated_at_fabula') if c.get('terminated_at_fabula') is not None else '∞'}]"
+                ),
+            }
+            for c in channels
+        ]
+        ui.table(
+            columns=[
+                {"name": "name", "label": "Channel", "field": "name"},
+                {"name": "medium", "label": "Medium", "field": "medium"},
+                {
+                    "name": "directionality", "label": "Dir",
+                    "field": "directionality",
+                },
+                {
+                    "name": "participants", "label": "Participants",
+                    "field": "participants",
+                },
+                {"name": "via", "label": "Via", "field": "via"},
+                {"name": "window", "label": "Window", "field": "window"},
+            ],
+            rows=rows,
+            pagination={"rowsPerPage": 6},
+            on_select=lambda e: state.select_node(
+                e.selection[0]["id"], "Channel",
+            ) if e.selection else None,
+            selection="single",
+        ).props("dense flat bordered").classes("w-full")
+
+
 def _render_world_traits_panel(state: AppState, ctx: Dict[str, Any]) -> None:
     traits = ctx["world_traits_active"]
     if not traits:
@@ -781,8 +860,18 @@ def _render_world_traits_panel(state: AppState, ctx: Dict[str, Any]) -> None:
         ).props("dense flat bordered").classes("w-full")
 
 
-def _render_attribution_panel(state: AppState, ctx: Dict[str, Any]) -> None:
-    """Mini attribution graph for this event."""
+def _render_attribution_panel(
+    state: AppState, ctx: Dict[str, Any], *, ws_at=None,
+) -> None:
+    """Mini attribution graph for this event.
+
+    T-12 audit fix: render from ``ws_at`` (event-time snapshot) so
+    the attribution graph only includes causal edges that have
+    fired by this event's fabula_time. Reading live
+    ``state.world_state`` here would surface future causal
+    structure (downstream effects + future-tick edges) while the
+    rest of the dossier shows the moment in time.
+    """
     if not ctx["incoming"]:
         return
     with ui.card().classes(
@@ -796,8 +885,9 @@ def _render_attribution_panel(state: AppState, ctx: Dict[str, Any]) -> None:
         ui.label(
             "Reverse-walk of the causal graph from this event."
         ).classes("text-[11px] text-slate-500")
-        if state.world_state is not None:
+        ws_for_graph = ws_at if ws_at is not None else state.world_state
+        if ws_for_graph is not None:
             render_attribution_graph(
-                state.world_state, ctx["event"]["id"],
+                ws_for_graph, ctx["event"]["id"],
                 max_depth=3, height="280px",
             )

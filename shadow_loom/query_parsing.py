@@ -980,7 +980,12 @@ def _build_do_target_item_model(world_state: WorldStateV1):
             description="For target_kind='concern': override salience (0.0-1.0). "
                         "0.0 disarms the concern.")),
         active=(Optional[bool], Field(default=None,
-            description="For target_kind='concern': force concern on/off.")),
+            description=(
+                "For target_kind='concern': force concern on/off. "
+                "For target_kind='channel': True=re-enable a previously "
+                "terminated channel, False=sever the channel (sets "
+                "terminated_at_fabula to the fabula_time of the clamp)."
+            ))),
         # proposition
         truth=(Optional[bool], Field(default=None,
             description="For target_kind='proposition': clamp truth value.")),
@@ -1006,8 +1011,12 @@ def _build_do_target_item_model(world_state: WorldStateV1):
             description="For target_kind='world_trait': canonical domains to drop "
                         "from the trait's affected_domains set.")),
         fabula_time=(Optional[int], Field(default=None,
-            description="For target_kind='world_trait' or 'proposition': fabula "
-                        "tick of the clamp. Defaults to the query anchor.")),
+            description=(
+                "Fabula tick of the clamp. Applies to target_kind= "
+                "'world_trait', 'proposition', 'channel', 'object', "
+                "'relationship', 'causal_edge', 'spatial_edge'. "
+                "Defaults to the query anchor when unset."
+            ))),
         triggered_by=(Optional[evt_lit], Field(default=None,
             description="For target_kind='world_trait' or 'object': optional EVT_ id whose "
                         "occurrence motivates this clamp. Surfaced on the "

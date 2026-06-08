@@ -66,7 +66,6 @@ class StateEvent(Enum):
     FABULA_CURSOR_CHANGED = "fabula_cursor_changed"
     SYUZHET_CURSOR_CHANGED = "syuzhet_cursor_changed"
     TIME_AXIS_CHANGED = "time_axis_changed"
-    WORLD_ID_CHANGED = "world_id_changed"
     ACTIVE_PATH_CHANGED = "active_path_changed"
     WORLD_FACTS_CHANGED = "world_facts_changed"
     PROJECT_LIST_CHANGED = "project_list_changed"
@@ -178,12 +177,15 @@ class AppState:
     # can see Genette's order/anachrony with one switch.
     time_axis: str = "fabula"
 
-    # Active AMWN branch: "factual" (canonical timeline) or "shadow"
-    # (a what-if fork). Every snapshot/replay panel filters
-    # ``state_timeline`` and edge ``world_id`` by this so the UI shows
-    # one branch coherently. Emits :data:`StateEvent.WORLD_ID_CHANGED`
-    # when toggled via :meth:`set_world_id`.
-    world_id: str = "factual"
+    # NOTE: AMWN branch identity ("factual" vs "shadow") is sourced
+    # from :meth:`head_branch` (driven by the loaded VWM head row),
+    # NOT from a free-standing flag on AppState. A previous
+    # ``world_id`` field plus ``set_world_id`` setter and
+    # ``WORLD_ID_CHANGED`` event were unused by any subscriber and
+    # would not have driven ``projected_for_branch`` (which keys off
+    # the VWM head); they were removed in the T-9 audit pass to
+    # prevent future contributors from wiring a branch toggle to a
+    # no-op signal.
 
     # Background task registry (in-flight + recently completed)
     background_tasks: List[BackgroundTask] = field(default_factory=list)
@@ -606,6 +608,35 @@ class AppState:
                 error="No world model loaded.",
                 summary="Error: No world model loaded.",
             )
+
+        # T-12 (P1-1): thread the user-visible cursor anchors into the
+        # query before the pipeline reconstructs the world. The cursor
+        # is what every other UI surface (causality, reasoning, world,
+        # explorer) is already pinned to; without this the query
+        # silently runs against the *latest* world state regardless of
+        # what the user sees. Explicit per-query anchors set upstream
+        # (manual_edit insert points, "after EVT_X" anchors from the
+        # parser, etc.) win over the global cursor so author-side
+        # precision overrides the chrome.
+        anchor_updates: Dict[str, Any] = {}
+        if (
+            getattr(query, "temporal_anchor", None) is None
+            and self.fabula_cursor is not None
+        ):
+            anchor_updates["temporal_anchor"] = int(self.fabula_cursor)
+        if (
+            getattr(query, "syuzhet_anchor", None) is None
+            and self.syuzhet_cursor is not None
+        ):
+            anchor_updates["syuzhet_anchor"] = int(self.syuzhet_cursor)
+        if anchor_updates:
+            try:
+                query = query.model_copy(update=anchor_updates)
+            except Exception:
+                logger.debug(
+                    "[AppState] Failed to apply cursor anchors to query",
+                    exc_info=True,
+                )
 
         # Snapshot execution context up-front so a project switch (or a
         # version load) that happens while the pipeline is running in a
@@ -1763,22 +1794,6 @@ class AppState:
             return
         self.time_axis = axis
         self.emit(StateEvent.TIME_AXIS_CHANGED, axis=axis)
-
-    def set_world_id(self, world_id: str) -> None:
-        """Set the active AMWN branch ("factual" | "shadow").
-
-        Snapshot panels filter entity / world-trait / proposition /
-        concern timelines by this so a Rung-2/3 intervention's shadow
-        nodes are isolated from the canonical mainline. Emits
-        :data:`StateEvent.WORLD_ID_CHANGED`.
-        """
-        wid = (world_id or "factual").lower()
-        if wid not in ("factual", "shadow"):
-            wid = "factual"
-        if self.world_id == wid:
-            return
-        self.world_id = wid
-        self.emit(StateEvent.WORLD_ID_CHANGED, world_id=wid)
 
     def _schedule_cursor_emit(
         self, axis: str, event: "StateEvent", value: int | None,

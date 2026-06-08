@@ -3104,7 +3104,7 @@ class DirectiveAssembler:
                 believed = belief.get("perceived_state", "")
                 confidence = belief.get("confidence", 0.5)
 
-                actual = self._resolve_actual_state(target_id)
+                actual = self._resolve_actual_state(target_id, anchor_t=anchor_t)
 
                 gap_type, magnitude = self._classify_gap(believed, actual, confidence)
                 logger.debug("[DirectiveAssembly·Epistemic] %s belief about %s: believed=%r actual=%r → gap=%s mag=%.2f",
@@ -7661,11 +7661,36 @@ class DirectiveAssembler:
                 return ent
         return None
 
-    def _resolve_actual_state(self, target_id: str) -> str:
-        """Look up the objective state of a belief target in the world state."""
+    def _resolve_actual_state(
+        self, target_id: str, anchor_t: Optional[int] = None,
+    ) -> str:
+        """Look up the objective state of a belief target in the world state.
+
+        ``anchor_t``: optional fabula cut-off. When supplied, entity /
+        object / world-trait / event state is replayed via the
+        canonical ``reconstruct_*_at`` helpers so the actual-state
+        baseline reflects the reader's position rather than the
+        final-frame world. Without this gate, ``compute_epistemic_gaps``
+        compared anchor-filtered beliefs against future-leaking truth
+        and surfaced "contradicted" gaps for facts that were still
+        true at the belief's establishment tick (post-T-10 audit fix).
+        """
         # Entity status + key traits
         ent = self.world_state.entities.get(target_id)
         if ent:
+            if anchor_t is not None:
+                snap = reconstruct_entity_at(ent, anchor_t)
+                status = snap.get("status", ent.status)
+                location_id = snap.get("location_id", ent.location_id)
+                traits = snap.get("traits", {}) or {}
+                parts = [f"status={status}"]
+                if location_id:
+                    parts.append(f"location={location_id}")
+                for tname, tv in traits.items():
+                    val = tv.get("value") if isinstance(tv, dict) else getattr(tv, "value", None)
+                    if val is not None and abs(val - 0.5) >= 0.2:
+                        parts.append(f"{tname}={val:.2f}")
+                return ", ".join(parts)
             parts = [f"status={ent.status}"]
             if ent.location_id:
                 parts.append(f"location={ent.location_id}")
@@ -7678,18 +7703,38 @@ class DirectiveAssembler:
         # Object properties
         obj = self.world_state.objects.get(target_id)
         if obj:
-            props = ", ".join(f"{k}={v}" for k, v in obj.properties.items())
-            return f"owner={obj.owner_id}, {props}" if props else f"owner={obj.owner_id}"
+            if anchor_t is not None:
+                osnap = reconstruct_object_at(obj, anchor_t)
+                owner = osnap.get("owner_id")
+                props = osnap.get("properties") or {}
+            else:
+                owner = obj.owner_id
+                props = obj.properties
+            props_str = ", ".join(f"{k}={v}" for k, v in props.items())
+            return f"owner={owner}, {props_str}" if props_str else f"owner={owner}"
 
         # Location ambient
         loc = self.world_state.locations.get(target_id)
         if loc:
             return f"location={loc.name}"
 
-        # Event
+        # Event (only visible if its fabula_time <= anchor)
         evt = next((e for e in self.world_state.events if e.id == target_id), None)
         if evt:
+            if anchor_t is not None and int(getattr(evt, "fabula_time", 0)) > anchor_t:
+                return "unknown"
             return f"event_type={evt.event_type}, actors={evt.actor_ids}"
+
+        # World trait magnitude
+        wt = self.world_state.world_traits.get(target_id) if hasattr(self.world_state, "world_traits") else None
+        if wt:
+            if anchor_t is not None:
+                wsnap = reconstruct_world_trait_at(wt, anchor_t)
+                mag = wsnap.get("magnitude") or {}
+                val = mag.get("value", wt.magnitude.value)
+            else:
+                val = wt.magnitude.value
+            return f"world_trait={wt.name}, magnitude={val:.2f}"
 
         return "unknown"
 

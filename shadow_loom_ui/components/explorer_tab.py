@@ -21,7 +21,12 @@ from nicegui import ui
 
 from shadow_loom_ui.state import AppState, StateEvent
 from shadow_loom_ui.viz import render_trait_radar, with_expand
-from shadow_loom_ui.viz_helpers import ws_stats
+from shadow_loom_ui.viz_helpers import (
+    axis_bounds,
+    resolve_cursor,
+    snapshot_world_at,
+    ws_stats,
+)
 
 if TYPE_CHECKING:
     from shadow_loom.models import WorldStateV1
@@ -115,10 +120,24 @@ def build_explorer_tab(state: AppState) -> None:
                     )
 
     # ── Event subscriptions ───────────────────────────────────────
+    # T-7: remember the last selection so cursor / axis changes can
+    # re-render the inspector with the new snapshot without requiring
+    # the user to re-click the node.
+    last_selection: dict[str, str | None] = {"node_id": None, "node_type": None}
+
     def _on_ws_change(**_kw):
         _render_explorer(state, explorer_container)
+        # The inspector also depends on ws; re-render if a selection
+        # is live.
+        if last_selection["node_id"] is not None:
+            _render_inspector(
+                state, inspector_container,
+                last_selection["node_id"], last_selection["node_type"],
+            )
 
     def _on_node_selected(**kw):
+        last_selection["node_id"] = kw.get("node_id")
+        last_selection["node_type"] = kw.get("node_type")
         _render_inspector(
             state,
             inspector_container,
@@ -126,9 +145,20 @@ def build_explorer_tab(state: AppState) -> None:
             kw.get("node_type"),
         )
 
+    def _on_cursor_change(**_kw):
+        if last_selection["node_id"] is None:
+            return
+        _render_inspector(
+            state, inspector_container,
+            last_selection["node_id"], last_selection["node_type"],
+        )
+
     state.on(StateEvent.WORLD_STATE_CHANGED, _on_ws_change)
     state.on(StateEvent.VERSION_CHANGED, _on_ws_change)
     state.on(StateEvent.NODE_SELECTED, _on_node_selected)
+    state.on(StateEvent.FABULA_CURSOR_CHANGED, _on_cursor_change)
+    state.on(StateEvent.SYUZHET_CURSOR_CHANGED, _on_cursor_change)
+    state.on(StateEvent.TIME_AXIS_CHANGED, _on_cursor_change)
 
     # Round-12 R12-09: detach listeners when the client disconnects so
     # we don't accumulate dead callbacks that try to mutate elements
@@ -143,6 +173,9 @@ def build_explorer_tab(state: AppState) -> None:
             state.off(StateEvent.WORLD_STATE_CHANGED, _on_ws_change)
             state.off(StateEvent.VERSION_CHANGED, _on_ws_change)
             state.off(StateEvent.NODE_SELECTED, _on_node_selected)
+            state.off(StateEvent.FABULA_CURSOR_CHANGED, _on_cursor_change)
+            state.off(StateEvent.SYUZHET_CURSOR_CHANGED, _on_cursor_change)
+            state.off(StateEvent.TIME_AXIS_CHANGED, _on_cursor_change)
         client.on_disconnect(_cleanup)
 
 
@@ -331,28 +364,79 @@ def _render_inspector(
             )
         return
 
+    # T-7: build a cursor-anchored snapshot once and feed it to every
+    # inspector so the values shown match whatever t the user has
+    # scrubbed to elsewhere in the UI. Falls back to live ws when no
+    # cursor is set, no events exist, or the snapshot fails.
+    snap_ws = ws
+    cursor_label: str | None = None
+    try:
+        axis = getattr(state, "time_axis", "fabula") or "fabula"
+        raw_cursor = getattr(state, "active_cursor", None)
+        _, tmax_axis = axis_bounds(ws, axis)
+        cursor_on_axis = (
+            int(raw_cursor) if raw_cursor is not None
+            else (int(tmax_axis) if tmax_axis > 0 else None)
+        )
+        fabula_t = resolve_cursor(ws, axis, cursor_on_axis)
+        _, fabula_tmax = axis_bounds(ws, "fabula")
+        if fabula_t is not None and fabula_tmax > 0:
+            snap_ws = snapshot_world_at(ws, fabula_t)
+            if raw_cursor is not None:
+                prefix = "s" if axis == "syuzhet" else "t"
+                cursor_label = f"@ {prefix}={raw_cursor} (fabula={fabula_t})"
+    except Exception:
+        logger.debug(
+            "explorer inspector: snapshot failed, using live ws",
+            exc_info=True,
+        )
+        snap_ws = ws
+
     with container:
-        if node_type == "Entity" and node_id in ws.entities:
-            _inspect_entity(ws, node_id)
-            _inspector_suggestions(state, node_id, node_type, ws.entities[node_id].name)
-        elif node_type == "Location" and node_id in ws.locations:
-            _inspect_location(ws, node_id)
-            _inspector_suggestions(state, node_id, node_type, ws.locations[node_id].name)
-        elif node_type == "EventNode":
-            evt = next((e for e in ws.events if e.id == node_id), None)
-            if evt:
-                _inspect_event(ws, evt, state=state)
-                _inspector_suggestions(state, node_id, node_type, evt.description[:30])
-        elif node_type == "NarrativeObject" and node_id in ws.objects:
-            _inspect_object(ws, node_id)
-            _inspector_suggestions(state, node_id, node_type, ws.objects[node_id].name)
-        elif node_type == "WorldTrait" and node_id in ws.world_traits:
-            _inspect_world_trait(ws, node_id)
-            _inspector_suggestions(state, node_id, node_type, ws.world_traits[node_id].name)
-        elif node_type == "Channel" and node_id in ws.channels:
-            _inspect_channel(ws, node_id)
+        if cursor_label is not None:
+            ui.label(cursor_label).classes(
+                "text-[10px] text-slate-400 italic"
+            )
+        if node_type == "Entity" and node_id in snap_ws.entities:
+            _inspect_entity(snap_ws, node_id)
             _inspector_suggestions(
-                state, node_id, node_type, ws.channels[node_id].name,
+                state, node_id, node_type, snap_ws.entities[node_id].name,
+            )
+        elif node_type == "Location" and node_id in snap_ws.locations:
+            _inspect_location(snap_ws, node_id)
+            _inspector_suggestions(
+                state, node_id, node_type, snap_ws.locations[node_id].name,
+            )
+        elif node_type == "EventNode":
+            # Events themselves are immutable but their causal context
+            # is time-anchored; use snap_ws so the panel doesn't render
+            # an event that hasn't happened yet at the cursor.
+            evt = next((e for e in snap_ws.events if e.id == node_id), None)
+            if evt is None:
+                # Event not yet occurred at this cursor — fall back to
+                # the live ws so the user still sees the inspector
+                # rather than a blank pane.
+                evt = next((e for e in ws.events if e.id == node_id), None)
+            if evt:
+                _inspect_event(snap_ws, evt, state=state)
+                _inspector_suggestions(
+                    state, node_id, node_type, evt.description[:30],
+                )
+        elif node_type == "NarrativeObject" and node_id in snap_ws.objects:
+            _inspect_object(snap_ws, node_id)
+            _inspector_suggestions(
+                state, node_id, node_type, snap_ws.objects[node_id].name,
+            )
+        elif node_type == "WorldTrait" and node_id in snap_ws.world_traits:
+            _inspect_world_trait(snap_ws, node_id)
+            _inspector_suggestions(
+                state, node_id, node_type,
+                snap_ws.world_traits[node_id].name,
+            )
+        elif node_type == "Channel" and node_id in snap_ws.channels:
+            _inspect_channel(snap_ws, node_id)
+            _inspector_suggestions(
+                state, node_id, node_type, snap_ws.channels[node_id].name,
             )
         else:
             ui.label(f"Unknown: {node_id}").classes(

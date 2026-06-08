@@ -22,7 +22,12 @@ from shadow_loom.models import (
     Channel,
     EventNode,
     WorldStateV1,
+    reconstruct_channel_at,
+    reconstruct_concern_at,
     reconstruct_entity_at,
+    reconstruct_location_at,
+    reconstruct_object_at,
+    reconstruct_proposition_at,
     reconstruct_world_trait_at,
 )
 
@@ -937,3 +942,168 @@ def filter_world_state_for_pov(
     _strip_shadow_sidecars(filtered)
 
     return filtered
+
+
+# =====================================================================
+# Full-world fabula-time snapshot (model-side, MCP-safe)
+# =====================================================================
+
+
+def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
+    """Return a deep copy of ``ws`` reconstructed to fabula_time ``t``.
+
+    Mirrors the time-slicing rules used by
+    :func:`shadow_loom.extract_graph.extract_ego_graph_from_memory`
+    and by the UI's ``snapshot_world_at`` helper, but lives at the
+    model layer so the MCP server (which must not depend on the UI
+    package) can use the same projection for ``at_time``-anchored
+    tools (``compute_tension``, ``trace_causality``).
+
+    Per element:
+
+      * :class:`Entity` — ``traits`` / ``status`` / ``location_id`` /
+        ``beliefs`` replayed via :func:`reconstruct_entity_at`;
+        per-entity :class:`Concern` rows replayed via
+        :func:`reconstruct_concern_at`.
+      * :class:`GlobalTrait` — ``magnitude`` replayed via
+        :func:`reconstruct_world_trait_at`.
+      * :class:`NarrativeObject` — ``location_id`` / ``owner_id`` /
+        ``properties`` replayed via :func:`reconstruct_object_at`.
+      * :class:`Proposition` — ``stakes`` /
+        ``audience_default_prior`` / ``description`` replayed via
+        :func:`reconstruct_proposition_at`; ``truth_at_fabula``
+        filtered to ``<= t``.
+      * :class:`Location` — ``ambient_state`` normalised via
+        :func:`reconstruct_location_at` (today a pass-through; the
+        helper locks the contract for the future per-key timeline).
+      * ``events`` — filtered to ``fabula_time <= t``.
+      * ``causal_topology`` — filtered to ``fabula_time <= t``.
+      * ``social_topology`` — per-axis ``RelationshipMetric.last_updated_fabula
+        <= t``; whole edge dropped when no axis survives.
+      * ``spatial_topology`` — established by ``t`` and not yet
+        destroyed at ``t``.
+      * ``channels`` — gated by :func:`reconstruct_channel_at` (the
+        canonical half-open window).
+
+    NOTE: unlike the UI's richer snapshot helper this one does **not**
+    replay ``mutation_social`` causal edges back onto relationship
+    metric values. Engine scorers gate on the per-axis ``observed``
+    flag plus ``last_updated_fabula`` (matching what the engine
+    itself does when computing tension at a tick), so the metric
+    value at ``last_updated_fabula`` is the canonical reading. UI
+    chart consumers that want the inter-frame trajectory can layer
+    their own causal replay on top.
+    """
+    if t is None:
+        return ws
+
+    new = ws.model_copy(deep=True)
+
+    # Local import to avoid a top-level cycle.
+    from shadow_loom.models import Belief, TraitVector
+
+    for eid, ent in new.entities.items():
+        snap = reconstruct_entity_at(ent, t)
+        ent.traits = {
+            k: TraitVector(
+                value=v["value"],
+                inertia=v["inertia"],
+                evidence_strength=v.get("evidence_strength", "moderate"),
+            )
+            for k, v in snap["traits"].items()
+        }
+        ent.status = snap["status"]
+        ent.location_id = snap["location_id"]
+        ent.beliefs = [Belief(**b) for b in snap["beliefs"]]
+        for concern in (ent.concerns or []):
+            csnap = reconstruct_concern_at(concern, t)
+            if not isinstance(csnap, dict):
+                continue
+            if csnap.get("salience") is not None:
+                concern.salience = csnap["salience"]
+            if csnap.get("polarity") is not None:
+                concern.polarity = csnap["polarity"]
+            if csnap.get("activation_fabula_window") is not None:
+                concern.activation_fabula_window = csnap[
+                    "activation_fabula_window"
+                ]
+            if csnap.get("counter_concern_ids") is not None:
+                concern.counter_concern_ids = list(
+                    csnap["counter_concern_ids"]
+                )
+            if csnap.get("kind") is not None:
+                concern.kind = csnap["kind"]
+
+    for wid, wt in new.world_traits.items():
+        snap = reconstruct_world_trait_at(wt, t)
+        mag = snap["magnitude"]
+        wt.magnitude = TraitVector(
+            value=mag["value"],
+            inertia=mag["inertia"],
+            evidence_strength=mag.get("evidence_strength", "moderate"),
+        )
+        if snap.get("description") is not None:
+            wt.description = snap["description"]
+
+    new.events = [evt for evt in new.events if evt.fabula_time <= t]
+
+    new.causal_topology = [
+        ce for ce in new.causal_topology if ce.fabula_time <= t
+    ]
+
+    sliced_social: list = []
+    for rel in new.social_topology:
+        survivors = {
+            name: m for name, m in rel.metrics.items()
+            if m.last_updated_fabula <= t
+        }
+        if not survivors:
+            continue
+        rel.metrics = survivors  # type: ignore[assignment]
+        sliced_social.append(rel)
+    new.social_topology = sliced_social
+
+    new.spatial_topology = [
+        se for se in new.spatial_topology
+        if se.established_at_fabula <= t
+        and (se.destroyed_at_fabula is None or se.destroyed_at_fabula > t)
+    ]
+
+    new.channels = {
+        cid: ch for cid, ch in new.channels.items()
+        if reconstruct_channel_at(ch, t) is not None
+    }
+
+    for oid, obj in new.objects.items():
+        obj_snap = reconstruct_object_at(obj, t)
+        obj.location_id = obj_snap["location_id"]
+        obj.owner_id = obj_snap["owner_id"]
+        obj.properties = obj_snap["properties"]
+
+    for prop in (new.propositions or []):
+        psnap = reconstruct_proposition_at(prop, t)
+        if not isinstance(psnap, dict):
+            continue
+        if psnap.get("stakes") is not None:
+            prop.stakes = psnap["stakes"]
+        if psnap.get("audience_default_prior") is not None:
+            prop.audience_default_prior = psnap["audience_default_prior"]
+        if psnap.get("description") is not None:
+            prop.description = psnap["description"]
+        try:
+            tmap = {
+                int(k): v for k, v in (prop.truth_at_fabula or {}).items()
+            }
+        except (TypeError, ValueError):
+            tmap = {}
+        prop.truth_at_fabula = {k: v for k, v in tmap.items() if k <= t}
+
+    for lid, loc in new.locations.items():
+        try:
+            _ = reconstruct_location_at(loc, t)
+        except Exception:
+            # Defensive: a future per-key timeline failure must not
+            # break snapshot rendering. Live ambient_state remains.
+            pass
+
+    return new

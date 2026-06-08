@@ -1715,12 +1715,14 @@ class CausalPhysicsEngine:
             "truth": bool(target.truth),
         })
 
-        cascaded = 0
+        primary_cascaded = 0
+        inverse_cascaded = 0
         if target.propagate_to_beliefs:
-            cascaded = self._cascade_proposition_to_beliefs(target)
-            # P0-FIX: Cascade to inverse proposition beliefs as well
+            primary_cascaded = self._cascade_proposition_to_beliefs(target)
+            # Cascade to inverse proposition beliefs separately so each
+            # PropositionMutation record carries its own count.
             if inverse_pid and inverse_mirror_applied:
-                cascaded += self._cascade_inverse_proposition_to_beliefs(
+                inverse_cascaded = self._cascade_inverse_proposition_to_beliefs(
                     target, inverse_pid, bool(inverse_new_truth)
                 )
 
@@ -1729,24 +1731,23 @@ class CausalPhysicsEngine:
             fabula_time=ft,
             old_truth=old_truth,
             new_truth=bool(target.truth),
-            cascaded_belief_count=cascaded,
+            cascaded_belief_count=primary_cascaded,
         ))
         # Round-10 audit fix (R10-F1): emit a paired ``PropositionMutation``
         # for the inverse so the pipeline merge bridge emits a matching
-        # ``PropositionTruthCommit`` and the
-        # lockstep with the primary clamp. Phase C ingestion already does
-        # this mirror on the canonical side; the Pearl Rung-2 path missed
-        # it. Cascaded belief count is reported as 0 because the cascade
-        # ran against the *primary* proposition's id only — beliefs tied
-        # to the inverse keep their existing confidence (a future round
-        # could cascade through the inverse too if needed).
+        # ``PropositionTruthCommit`` in lockstep with the primary clamp.
+        # Phase C ingestion already mirrors this on the canonical side;
+        # the Pearl Rung-2 path previously missed it.
+        # ``inverse_cascaded`` was computed above alongside
+        # ``primary_cascaded`` so each mutation record carries its own
+        # belief-cascade count independently.
         if inverse_mirror_applied and inverse_pid:
             self._proposition_mutations.append(PropositionMutation(
                 proposition_id=inverse_pid,
                 fabula_time=ft,
                 old_truth=inverse_old_truth,
                 new_truth=bool(inverse_new_truth),
-                cascaded_belief_count=0,
+                cascaded_belief_count=inverse_cascaded,
             ))
 
     def _cascade_proposition_to_beliefs(self, target: Any) -> int:
@@ -4248,7 +4249,7 @@ class CausalPhysicsEngine:
                                       causality_type=causality_type)
 
         if causal_graph.number_of_edges() == 0:
-            logger.info("[CausalPhysics·Propagate] No causal edges in sandbox. Skipping.")
+            logger.log(_physics_log(), "[CausalPhysics·Propagate] No causal edges in sandbox. Skipping.")
             return
 
         # 2. Topological sort. If the causal sub-graph contains cycles

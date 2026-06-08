@@ -258,7 +258,26 @@ def _build_channels_panel(state: AppState) -> None:
                     "text-sm text-slate-400 italic"
                 )
             return
-        rows = hidden_channel_rows(ws)
+        # T-12: thread the current syuzhet anchor so the panel
+        # reflects the reader's POV at the cursor instead of always
+        # pinning to the final syuzhet_index. compute_hidden_channels
+        # is monotonic in ``anchor`` (rows are signals not yet on-page
+        # *as of anchor*), so without this the table wouldn't change
+        # when the user scrubs the timeline.
+        if state.syuzhet_cursor is not None:
+            syuzhet_anchor = int(state.syuzhet_cursor)
+        elif state.fabula_cursor is not None and ws.events:
+            # Map fabula anchor → last syuzhet_index whose event has
+            # fabula_time <= cursor. Falls back to max if no match.
+            ft_cursor = int(state.fabula_cursor)
+            visible = [
+                e.syuzhet_index for e in ws.events
+                if int(e.fabula_time) <= ft_cursor
+            ]
+            syuzhet_anchor = max(visible) if visible else None
+        else:
+            syuzhet_anchor = None
+        rows = hidden_channel_rows(ws, syuzhet_anchor=syuzhet_anchor)
         with body:
             with ui.card().classes(
                 "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
@@ -316,6 +335,11 @@ def _build_channels_panel(state: AppState) -> None:
     _refresh()
     state.on(StateEvent.WORLD_STATE_CHANGED, _refresh)
     state.on(StateEvent.PROJECT_LOADED, _refresh)
+    # T-12: re-render when the user scrubs the timeline so the
+    # hidden-channels view stays aligned with the rest of the UI.
+    state.on(StateEvent.FABULA_CURSOR_CHANGED, _refresh)
+    state.on(StateEvent.SYUZHET_CURSOR_CHANGED, _refresh)
+    state.on(StateEvent.TIME_AXIS_CHANGED, _refresh)
 
 
 # =====================================================================

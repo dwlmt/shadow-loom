@@ -23,6 +23,8 @@ from shadow_loom.models import (
     EventNode,
     WorldStateV1,
     reconstruct_entity_at,
+    reconstruct_location_at,
+    reconstruct_object_at,
     reconstruct_world_trait_at,
 )
 
@@ -418,12 +420,20 @@ def extract_reasoning_trace(
         return out
 
     qtype = physics_result.get("query_type") or ""
+    # T-12 (P2-1): the canonical literal is ``interrogate`` — the
+    # legacy ``interrogation`` alias is normalized here so the
+    # rendered chip and downstream consumers see a single value
+    # regardless of which boundary produced the field. Aliases that
+    # arrive from older cached envelopes are translated once at the
+    # UI boundary instead of being matched at every callsite.
+    if qtype == "interrogation":
+        qtype = "interrogate"
     if qtype == "intervention":
         out["rung"] = 2
     elif qtype == "counterfactual":
         out["rung"] = 3
     elif qtype in (
-        "observation", "general", "interrogate", "interrogation",
+        "observation", "general", "interrogate",
         "directive", "manual_edit", "evaluate",
     ):
         # Round-14 audit: Pearl Rung-1 surfaces (pure observation / Q&A /
@@ -1599,7 +1609,11 @@ def event_context_data(
                               "trait_target", "trait_delta"}],
             "outgoing":     [same shape, target side],
             "locations":    [{"id", "name", "description"}],
-            "objects":      [{"id", "name", "owner_id", "location_id"}],
+            "objects":      [{"id", "name", "owner_id", "location_id",
+                              "properties"}],
+            "channels":     [{"id", "name", "medium", "directionality",
+                              "participant_ids", "established_at_fabula",
+                              "terminated_at_fabula", "via_event"}],
             "world_traits_active": [
                 {"id", "name", "category", "magnitude": {value, inertia}, "description"}
             ],
@@ -1609,9 +1623,17 @@ def event_context_data(
             }
         }
 
-    All entity beliefs/traits are reconstructed *at this event's
-    fabula_time* using :func:`reconstruct_entity_at` — i.e. you see
-    the character as they were *in that moment*, not pre-story.
+    All entity beliefs/traits and world-trait magnitudes are
+    reconstructed *at this event's fabula_time* using the
+    causal-aware UI snapshot helper
+    (:func:`shadow_loom_ui.viz_helpers.snapshot_world_at`) so the
+    dossier reflects every authored snapshot **and** every
+    ``mutation`` / ``mutation_social`` causal edge up to ``ft``.
+    The plain model-level ``reconstruct_*_at`` helpers were the
+    previous source of truth here and silently skipped causal-edge
+    deltas — on worlds whose trait/status mutations live primarily
+    on the causal layer (the common case post-physics-pipeline), the
+    Actors / Targets / World Traits panels showed stale values.
     """
     evt = next((e for e in ws.events if e.id == event_id), None)
     if evt is None:
@@ -1620,19 +1642,38 @@ def event_context_data(
     label = _label_fn_for(ws)
     ft = int(evt.fabula_time)
 
+    # Build a causal-aware snapshot ONCE and source every per-tick
+    # mutable surface from it (T-12 audit fix). Import is local to
+    # avoid a top-level cycle through shadow_loom_ui.viz_helpers,
+    # which imports this module's siblings.
+    try:
+        from shadow_loom_ui.viz_helpers import snapshot_world_at
+        snap_ws = snapshot_world_at(ws, ft)
+    except Exception:
+        logger.debug(
+            "event_context_data: snapshot failed, falling back to live ws",
+            exc_info=True,
+        )
+        snap_ws = ws
+
     # ── Actors and targets reconstructed at this moment ───────────
     def _entity_dossier(eid: str) -> Optional[Dict[str, Any]]:
-        ent = ws.entities.get(eid)
+        ent = snap_ws.entities.get(eid)
         if ent is None:
             return None
-        snap = reconstruct_entity_at(ent, ft)
+        # snap_ws already replays traits/beliefs/status/location at
+        # ``ft`` including causal mutations, so read fields directly.
         return {
             "id": eid,
             "name": ent.name,
-            "status": snap["status"],
-            "location_id": snap["location_id"],
-            "traits": snap["traits"],
-            "beliefs": snap["beliefs"],
+            "status": ent.status,
+            "location_id": ent.location_id,
+            "traits": {
+                k: {"value": tv.value, "inertia": tv.inertia,
+                    "evidence_strength": tv.evidence_strength}
+                for k, tv in ent.traits.items()
+            },
+            "beliefs": [b.model_dump() for b in (ent.beliefs or [])],
         }
 
     actors = [_entity_dossier(eid) for eid in evt.actor_ids]
@@ -1640,19 +1681,25 @@ def event_context_data(
 
     targets: List[Dict[str, Any]] = []
     for tid in evt.target_ids:
-        if tid in ws.entities:
+        if tid in snap_ws.entities:
             d = _entity_dossier(tid)
             if d is not None:
                 targets.append({**d, "_kind": "Entity"})
-        elif tid in ws.objects:
-            obj = ws.objects[tid]
+        elif tid in snap_ws.objects:
+            obj = snap_ws.objects[tid]
+            # T-12: snap_ws.objects already has owner_id / location_id
+            # / properties replayed at ``ft`` (T-6 went via per-object
+            # reconstruct; routing through the unified snapshot keeps
+            # every dossier surface reading from one source of truth).
             targets.append({
                 "id": tid, "name": obj.name,
-                "owner_id": obj.owner_id, "location_id": obj.location_id,
+                "owner_id": obj.owner_id,
+                "location_id": obj.location_id,
+                "properties": obj.properties or {},
                 "_kind": "NarrativeObject",
             })
-        elif tid in ws.locations:
-            loc = ws.locations[tid]
+        elif tid in snap_ws.locations:
+            loc = snap_ws.locations[tid]
             targets.append({
                 "id": tid, "name": loc.name,
                 "description": loc.description,
@@ -1660,9 +1707,13 @@ def event_context_data(
             })
 
     # ── Causal edges in/out ───────────────────────────────────────
+    # T-12: read from ``snap_ws.causal_topology`` so edges with
+    # ``fabula_time > ft`` (causes that haven't fired yet at this
+    # event) don't bleed into the incoming/outgoing tables. The
+    # snapshot already filters causal_topology to ``<= ft``.
     incoming: List[Dict[str, Any]] = []
     outgoing: List[Dict[str, Any]] = []
-    for ce in ws.causal_topology:
+    for ce in snap_ws.causal_topology:
         if ce.target_id == event_id:
             incoming.append({
                 "source_id": ce.source_id,
@@ -1699,51 +1750,125 @@ def event_context_data(
         lid = t.get("location_id") if isinstance(t, dict) else None
         if lid:
             loc_ids.add(lid)
-    locations = [
-        {
+    locations = []
+    for lid in loc_ids:
+        if lid not in snap_ws.locations:
+            continue
+        loc = snap_ws.locations[lid]
+        locations.append({
             "id": lid,
-            "name": ws.locations[lid].name,
-            "description": ws.locations[lid].description,
-        }
-        for lid in loc_ids if lid in ws.locations
-    ]
+            "name": loc.name,
+            "description": loc.description,
+        })
 
     # ── Objects: any object whose owner_id is an actor, or whose
     #    location_id matches an involved location, or which appears as
     #    a target_id ──
+    # T-12: enumerate ``snap_ws.objects`` (already replayed to ``ft``)
+    # so the membership predicates run against in-scene ownership /
+    # location rather than the final-frame values.
     objects: List[Dict[str, Any]] = []
     actor_ids = {a["id"] for a in actors}
     object_ids_seen: set[str] = set()
     for tid in evt.target_ids:
-        if tid in ws.objects and tid not in object_ids_seen:
-            obj = ws.objects[tid]
+        if tid in snap_ws.objects and tid not in object_ids_seen:
+            obj = snap_ws.objects[tid]
             objects.append({
                 "id": tid, "name": obj.name,
-                "owner_id": obj.owner_id, "location_id": obj.location_id,
+                "owner_id": obj.owner_id,
+                "location_id": obj.location_id,
+                "properties": obj.properties or {},
             })
             object_ids_seen.add(tid)
-    for oid, obj in ws.objects.items():
+    for oid, obj in snap_ws.objects.items():
         if oid in object_ids_seen:
             continue
-        if (obj.owner_id and obj.owner_id in actor_ids) or (
-            obj.location_id and obj.location_id in loc_ids
+        owner_at = obj.owner_id
+        loc_at = obj.location_id
+        if (owner_at and owner_at in actor_ids) or (
+            loc_at and loc_at in loc_ids
         ):
             objects.append({
                 "id": oid, "name": obj.name,
-                "owner_id": obj.owner_id, "location_id": obj.location_id,
+                "owner_id": owner_at,
+                "location_id": loc_at,
+                "properties": obj.properties or {},
             })
             object_ids_seen.add(oid)
 
+    # ── Channels in scope at this moment ──────────────────────────
+    # Surface the via_channel for utterance events plus any channel
+    # whose participants overlap the actors at this fabula_time AND
+    # whose availability window contains ``ft``. Lets the dossier
+    # render "who could have heard this" without manual tracing.
+    # T-12: ``snap_ws.channels`` is already gated by
+    # ``reconstruct_channel_at`` so window-check is implicit; we
+    # still keep ``via`` lookup against snap_ws for symmetry.
+    channels: List[Dict[str, Any]] = []
+    channel_ids_seen: set[str] = set()
+    via = getattr(evt, "via_channel_id", None)
+    if via and via in snap_ws.channels:
+        ch = snap_ws.channels[via]
+        channels.append({
+            "id": via,
+            "name": ch.name,
+            "medium": ch.medium,
+            "directionality": ch.directionality,
+            "participant_ids": list(ch.participant_ids),
+            "established_at_fabula": int(ch.established_at_fabula or 0),
+            "terminated_at_fabula": (
+                int(ch.terminated_at_fabula)
+                if ch.terminated_at_fabula is not None else None
+            ),
+            "via_event": True,
+        })
+        channel_ids_seen.add(via)
+    if actor_ids:
+        for cid, ch in snap_ws.channels.items():
+            if cid in channel_ids_seen:
+                continue
+            est = int(getattr(ch, "established_at_fabula", 0) or 0)
+            term = getattr(ch, "terminated_at_fabula", None)
+            # ``snap_ws.channels`` is already window-gated; the
+            # explicit checks below are defensive (kept for clarity
+            # of the actor-overlap predicate).
+            if est > ft:
+                continue
+            if term is not None and int(term) <= ft:
+                continue
+            if not (set(ch.participant_ids) & actor_ids):
+                continue
+            channels.append({
+                "id": cid,
+                "name": ch.name,
+                "medium": ch.medium,
+                "directionality": ch.directionality,
+                "participant_ids": list(ch.participant_ids),
+                "established_at_fabula": est,
+                "terminated_at_fabula": (
+                    int(term) if term is not None else None
+                ),
+                "via_event": False,
+            })
+            channel_ids_seen.add(cid)
+
     # ── World traits — magnitude reconstructed at this moment ─────
+    # T-12: read from causal-aware ``snap_ws`` so magnitudes reflect
+    # WORLD_*-targeted causal mutation edges in addition to the
+    # authored snapshot timeline. The plain
+    # :func:`reconstruct_world_trait_at` helper skipped those edges.
     world_traits_active: List[Dict[str, Any]] = []
-    for wid, wt in ws.world_traits.items():
-        snap = reconstruct_world_trait_at(wt, ft)
+    for wid, wt in snap_ws.world_traits.items():
         world_traits_active.append({
             "id": wid,
             "name": wt.name,
             "category": wt.category,
-            "magnitude": snap["magnitude"],
-            "description": snap.get("description") or wt.description,
+            "magnitude": {
+                "value": wt.magnitude.value,
+                "inertia": wt.magnitude.inertia,
+                "evidence_strength": wt.magnitude.evidence_strength,
+            },
+            "description": wt.description,
         })
     world_traits_active.sort(
         key=lambda r: r["magnitude"]["value"], reverse=True,
@@ -1787,6 +1912,7 @@ def event_context_data(
         "outgoing": outgoing,
         "locations": locations,
         "objects": objects,
+        "channels": channels,
         "world_traits_active": world_traits_active,
         "syuzhet_neighbours": {
             "prev": _evt_min(prev_evt),

@@ -1122,21 +1122,49 @@ def build_affective_dashboard(state: AppState) -> None:
             full_ws = state.world_state
 
             # Engine-grade affects (suspense, surprise, dramatic_irony,
-            # canonical mystery) need a focus entity set + syuzhet
+            # canonical mystery) need a focus entity set + reveal-set
             # anchor. Pick entities from the *full* world so the focus
             # set is stable across cursor scrubs (otherwise early-time
-            # snapshots can drop the protagonist). Default the anchor
-            # to the snapshot's max syuzhet so suspense/surprise reflect
-            # the unrevealed tail rather than collapsing to zero.
+            # snapshots can drop the protagonist). The reveal-set
+            # semantics differ per axis:
+            #
+            #   syuzhet mode: ``syuzhet_anchor`` = current reader
+            #       position (or the snapshot's max syuzhet index when
+            #       no cursor is set), ``fabula_anchor`` = None.
+            #   fabula mode:  ``fabula_anchor`` = current fabula tick
+            #       (driver of the snapshot), ``syuzhet_anchor`` =
+            #       None.
+            #
+            # The previous fabula-mode form passed
+            # ``syuzhet_anchor = max(e.syuzhet_index for e in ws.events)``
+            # which read a syuzhet anchor off a fabula-snapshotted
+            # world. On any non-linear plot (flashbacks → an early
+            # fabula tick contains a high-syuzhet event) that pinned
+            # the reveal-set near the end of the syuzhet axis,
+            # zero-ing out suspense / surprise on the gauge while
+            # the timeseries — which correctly uses ``fabula_anchor``
+            # — still showed meaningful values. Per-axis split below
+            # keeps the gauge and the timeseries in agreement.
             entity_ids = _top_entity_ids_by_event_degree(
                 full_ws or ws, limit=20,
             )
-            if is_syuzhet and state.syuzhet_cursor is not None:
-                anchor = state.syuzhet_cursor
+            if is_syuzhet:
+                syuzhet_anchor_val: int | None
+                if state.syuzhet_cursor is not None:
+                    syuzhet_anchor_val = int(state.syuzhet_cursor)
+                else:
+                    syuzhet_anchor_val = max(
+                        (e.syuzhet_index for e in ws.events), default=None
+                    )
+                fabula_anchor_val: int | None = None
             else:
-                anchor = max(
-                    (e.syuzhet_index for e in ws.events), default=None
-                )
+                syuzhet_anchor_val = None
+                if state.fabula_cursor is not None:
+                    fabula_anchor_val = int(state.fabula_cursor)
+                else:
+                    fabula_anchor_val = max(
+                        (e.fabula_time for e in ws.events), default=None
+                    )
             # Run the gauge scorer with ``ws_for_engine=full_ws`` so the
             # structural affects (suspense / mystery / dramatic irony /
             # surprise) can see the unrevealed tail — matching how the
@@ -1144,9 +1172,10 @@ def build_affective_dashboard(state: AppState) -> None:
             scores = compute_affective_scores(
                 ws,
                 entity_ids=entity_ids,
-                syuzhet_anchor=anchor,
+                syuzhet_anchor=syuzhet_anchor_val,
                 ws_for_engine=full_ws,
                 surprise_local=True,
+                fabula_anchor=fabula_anchor_val,
             )
 
             # Per-metric normalisation for the gauges. Raw affect scores

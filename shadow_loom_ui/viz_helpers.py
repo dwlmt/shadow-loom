@@ -18,8 +18,11 @@ from shadow_loom.models import (
     CausalEdge,
     WorldStateV1,
     event_location_at,
+    reconstruct_concern_at,
     reconstruct_entity_at,
+    reconstruct_location_at,
     reconstruct_object_at,
+    reconstruct_proposition_at,
     reconstruct_world_trait_at,
 )
 
@@ -3906,9 +3909,26 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
       * ``channels``: established by ``t`` and not yet
         terminated at ``t``
 
-    ``NarrativeObject`` instances are left untouched: the model has no
-    per-object state timeline, so object ``location_id`` / ``owner_id``
-    always reflect the latest snapshot.
+    :class:`NarrativeObject` instances are replayed via
+    :func:`reconstruct_object_at` so ``location_id`` / ``owner_id`` /
+    ``properties`` reflect the state at ``t`` rather than the final
+    snapshot.
+
+    Per-entity ``concerns`` are replayed via
+    :func:`reconstruct_concern_at` so ``salience`` / ``polarity`` /
+    ``activation_fabula_window`` / ``counter_concern_ids`` / ``kind``
+    reflect the cursor.
+
+    :class:`Proposition` entries are replayed via
+    :func:`reconstruct_proposition_at` so ``stakes`` /
+    ``audience_default_prior`` / ``description`` reflect the cursor,
+    and ``truth_at_fabula`` is filtered to commits at or before ``t``.
+
+    :class:`Location.ambient_state` is normalised via
+    :func:`reconstruct_location_at`. The canonical helper currently
+    returns the static ambient_state (no per-key timeline yet) but
+    routing through it locks the contract in place for the future
+    timeline addition.
 
     The returned model is suitable to re-feed into existing renderers
     without further changes.
@@ -3939,6 +3959,29 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
         ent.status = snap["status"]
         ent.location_id = snap["location_id"]
         ent.beliefs = [Belief(**b) for b in snap["beliefs"]]
+        # Replay per-entity Concerns so salience / polarity / activation
+        # window / counter_concern_ids / kind reflect the cursor. Without
+        # this the dashboards downstream of snap_ws (concern table,
+        # affective scorers) read final-frame salience even when the user
+        # scrubs backwards.
+        for concern in (ent.concerns or []):
+            csnap = reconstruct_concern_at(concern, t)
+            if csnap is None:
+                continue
+            if csnap.get("salience") is not None:
+                concern.salience = csnap["salience"]
+            if csnap.get("polarity") is not None:
+                concern.polarity = csnap["polarity"]
+            if csnap.get("activation_fabula_window") is not None:
+                concern.activation_fabula_window = csnap[
+                    "activation_fabula_window"
+                ]
+            if csnap.get("counter_concern_ids") is not None:
+                concern.counter_concern_ids = list(
+                    csnap["counter_concern_ids"]
+                )
+            if csnap.get("kind") is not None:
+                concern.kind = csnap["kind"]
 
     for wid, wt in new.world_traits.items():
         snap = reconstruct_world_trait_with_causal(ws, wid, t)
@@ -4029,6 +4072,62 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
         if ch.established_at_fabula <= t
         and (ch.terminated_at_fabula is None or ch.terminated_at_fabula > t)
     }
+
+    # Replay NarrativeObject state timelines so location_id / owner_id /
+    # properties reflect the state AT t rather than the latest snapshot.
+    # ``reconstruct_object_at`` mirrors ``reconstruct_entity_at`` exactly:
+    # it starts from initial fields and replays ObjectStateSnapshot entries
+    # up to *t* inclusive, honouring set_location_null / set_owner_null and
+    # per-key property mutations.
+    for oid, obj in new.objects.items():
+        obj_snap = reconstruct_object_at(obj, t)
+        obj.location_id = obj_snap["location_id"]
+        obj.owner_id = obj_snap["owner_id"]
+        obj.properties = obj_snap["properties"]
+
+    # Replay Proposition mutable framing (stakes / audience_default_prior /
+    # description) and filter ``truth_at_fabula`` to commits at or before
+    # ``t`` so dashboards that read prop.truth_at_fabula directly (NLQ
+    # answers, prose ledgers) don't leak future truth commits. Mirrors
+    # the gates in MCP ``_inspect_proposition`` (R16-9 / R16-10).
+    for prop in (new.propositions or []):
+        psnap = reconstruct_proposition_at(prop, t)
+        if not isinstance(psnap, dict):
+            continue
+        if psnap.get("stakes") is not None:
+            prop.stakes = psnap["stakes"]
+        if psnap.get("audience_default_prior") is not None:
+            prop.audience_default_prior = psnap["audience_default_prior"]
+        if psnap.get("description") is not None:
+            prop.description = psnap["description"]
+        # Filter truth_at_fabula to <= t. Keys may be int or str post
+        # serialization round-trips (see R1-3 in
+        # ``reconstruct_proposition_at``); normalise before filtering.
+        try:
+            tmap = {
+                int(k): v for k, v in (prop.truth_at_fabula or {}).items()
+            }
+        except (TypeError, ValueError):
+            tmap = {}
+        prop.truth_at_fabula = {
+            k: v for k, v in tmap.items() if k <= t
+        }
+
+    # Normalise Location.ambient_state through reconstruct_location_at.
+    # Today this is a static pass-through (no per-key ambient timeline),
+    # but routing every snapshot through the canonical helper locks in
+    # the contract so the future LocationStateSnapshot timeline will
+    # propagate to every UI surface without further wiring.
+    for lid, loc in new.locations.items():
+        try:
+            _ = reconstruct_location_at(loc, t)
+        except Exception:
+            # Defensive: future per-key timeline failures must not break
+            # snapshot rendering. Live ambient_state remains visible.
+            logger.debug(
+                "snapshot_world_at: location replay failed for %s",
+                lid, exc_info=True,
+            )
 
     _snapshot_cache_put(ws, t, new)
     return new

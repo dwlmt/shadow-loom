@@ -193,6 +193,56 @@ def build_workspace(state: AppState, project_id: int) -> None:
             ui.label(f"— {project.description}").classes(
                 "text-sm text-slate-500"
             )
+
+        # ── Version + branch chip (T-8) ──────────────────────────
+        # Always-visible indicator of "you are on vN, branch X" so
+        # users reading prose / chatting can see at a glance whether
+        # they're on factual or a shadow fork without expanding the
+        # version sidebar. Refreshes on VERSION_CHANGED.
+        version_chip_row = ui.row().classes("items-center gap-1 ml-3")
+
+        def _refresh_version_chip(**_kw):
+            version_chip_row.clear()
+            world_id, branch_label = state.head_branch()
+            row_id = state.current_version_row_id
+            vnum: int | None = None
+            if row_id is not None:
+                try:
+                    vrow = db.get_version_by_id(row_id)
+                    if vrow is not None:
+                        vnum = vrow.version
+                except Exception:
+                    logger.debug(
+                        "workspace: version chip lookup failed",
+                        exc_info=True,
+                    )
+            with version_chip_row:
+                if vnum is not None:
+                    ui.badge(f"v{vnum}", color="primary").props("dense")
+                else:
+                    ui.badge("unsaved", color="grey").props("dense outline")
+                if world_id == "shadow":
+                    label_txt = (
+                        f"shadow:{branch_label}" if branch_label
+                        else "shadow"
+                    )
+                    ui.badge(label_txt, color="purple").props(
+                        "dense"
+                    ).tooltip(
+                        "AMWN shadow branch — counterfactual fork "
+                        "isolated from the factual mainline."
+                    )
+                else:
+                    ui.badge("factual", color="green").props(
+                        "dense outline"
+                    ).tooltip(
+                        "Canonical (factual) world model."
+                    )
+
+        _refresh_version_chip()
+        state.on(StateEvent.VERSION_CHANGED, _refresh_version_chip)
+        state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_version_chip)
+
         ui.space()
 
         # ── Global time-axis picker ───────────────────────────────

@@ -1109,7 +1109,7 @@ def _build_data_tables(state: AppState) -> None:
                 # tick. Falls back to fabula_max so a freshly-loaded
                 # world shows its end-state rather than its pre-story
                 # baseline.
-                axis = getattr(state, "active_time_axis", "fabula") or "fabula"
+                axis = getattr(state, "time_axis", "fabula") or "fabula"
                 cursor = getattr(state, "active_cursor", None)
                 fabula_anchor = 0
                 if cursor is not None:
@@ -1178,19 +1178,49 @@ def _build_data_tables(state: AppState) -> None:
         ws = state.world_state
         if ws is None:
             return
-        entity_table.rows = ws_to_entity_rows(ws)
+        # ── Structural / complete-register tables (always live) ────────
         evt_rows = ws_to_event_rows(ws)
         if hide_superseded_state.get("v"):
             evt_rows = [r for r in evt_rows if not r.get("superseded")]
         event_table.rows = evt_rows
-        object_table.rows = ws_to_object_rows(ws)
-        world_trait_table.rows = ws_to_world_trait_rows(ws)
-        trait_stats_table.rows = ws_to_trait_stats_rows(ws)
         causal_table.rows = ws_to_causal_rows(ws)
         spatial_table.rows = ws_to_spatial_rows(ws)
-        social_table.rows = ws_to_social_rows(ws)
-        channel_table.rows = ws_to_channel_rows(ws)
         utterance_table.rows = ws_to_utterance_rows(ws)
+        trait_stats_table.rows = ws_to_trait_stats_rows(ws)
+        # ── Cursor-aware tables (use time-sliced snapshot) ──────────────
+        # world_trait magnitudes, relationship metrics, channel
+        # terminations, and object location/owner/properties all evolve
+        # over fabula time — show values at the active cursor position.
+        snap_ws = ws
+        try:
+            axis = getattr(state, "time_axis", "fabula") or "fabula"
+            raw_cursor = getattr(state, "active_cursor", None)
+            # axis-correct tmax: a "syuzhet live" default must resolve via
+            # the syuzhet bounds, not the fabula tmax (T-1 audit fix —
+            # otherwise resolve_cursor treats the fabula tmax as a
+            # syuzhet index and collapses to a near-arbitrary tick).
+            _, tmax_axis = axis_bounds(ws, axis)
+            if raw_cursor is not None:
+                cursor_on_axis: int | None = int(raw_cursor)
+            elif tmax_axis > 0:
+                cursor_on_axis = int(tmax_axis)
+            else:
+                cursor_on_axis = None
+            fabula_t = resolve_cursor(ws, axis, cursor_on_axis)
+            _, fabula_tmax = axis_bounds(ws, "fabula")
+            if fabula_t is not None and fabula_tmax > 0:
+                snap_ws = snapshot_world_at(ws, fabula_t)
+        except Exception:
+            logger.debug("world_tab: snapshot failed, using live ws", exc_info=True)
+        # T-5 audit fix: entity status/location/traits/beliefs all evolve
+        # over fabula time, so render the entity table from the snapshot
+        # too. id/name/world_id (the "complete register" fields) survive
+        # the projection unchanged.
+        entity_table.rows = ws_to_entity_rows(snap_ws)
+        object_table.rows = ws_to_object_rows(snap_ws)
+        world_trait_table.rows = ws_to_world_trait_rows(snap_ws)
+        social_table.rows = ws_to_social_rows(snap_ws)
+        channel_table.rows = ws_to_channel_rows(snap_ws)
 
     def _on_hide_superseded(e):
         hide_superseded_state["v"] = bool(e.value)
@@ -1200,3 +1230,6 @@ def _build_data_tables(state: AppState) -> None:
 
     _refresh_tables()
     state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_tables)
+    state.on(StateEvent.FABULA_CURSOR_CHANGED, _refresh_tables)
+    state.on(StateEvent.SYUZHET_CURSOR_CHANGED, _refresh_tables)
+    state.on(StateEvent.TIME_AXIS_CHANGED, _refresh_tables)

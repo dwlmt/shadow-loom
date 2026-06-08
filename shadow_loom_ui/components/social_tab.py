@@ -1083,20 +1083,22 @@ def _build_data_tables(state: AppState) -> None:
             only_active=bool(only_active.value),
         )
         belief_table.rows = ws_to_belief_rows(ws, fabula_t=cursor["t"])
-        # Relationship rows are not yet snapshot-aware; they show the
-        # latest stored metric values plus ``last_updated_fabula`` so
-        # the user can spot edges that haven't been refreshed at @t.
-        rel_table.rows = ws_to_social_rows(ws)
-        channel_table.rows = ws_to_channel_rows(ws)
-        # Per-(entity, trait) rows. Snapshot the world at the cursor
-        # so trait values reflect the chosen fabula time rather than
-        # the live mutating state.
+        # Snapshot the world at the cursor for all remaining tables so
+        # relationship metrics, channels, and trait values reflect the
+        # chosen fabula time rather than the final-frame values.
         snap_ws = ws
         if cursor["t"] is not None:
             try:
                 snap_ws = snapshot_world_at(ws, cursor["t"])
             except Exception:
                 snap_ws = ws
+        # Relationship rows: snapshot_world_at time-slices social_topology
+        # axes to last_updated_fabula <= t and replays mutation_social edges,
+        # so passing snap_ws gives cursor-accurate per-axis metric values.
+        rel_table.rows = ws_to_social_rows(snap_ws)
+        # Channel rows: snapshot_world_at already filters out channels
+        # established after t or terminated at/before t.
+        channel_table.rows = ws_to_channel_rows(snap_ws)
         trait_rows: list[dict] = []
         for eid, ent in snap_ws.entities.items():
             for tname, tdata in (ent.traits or {}).items():

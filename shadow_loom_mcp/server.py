@@ -96,6 +96,7 @@ from shadow_loom.models import (
     reconstruct_location_at,
     reconstruct_object_at,
     reconstruct_proposition_at,
+    reconstruct_relationship_at,
     reconstruct_world_trait_at,
 )
 from shadow_loom.narrative_physics import calculate_narrative_physics
@@ -107,6 +108,7 @@ from shadow_loom.projections import (
     project_event_at,
     reconstruct_entity_at_causal,
     reconstruct_world_trait_at_causal,
+    snapshot_world_at,
     trace_information_flow,
 )
 from shadow_loom.query_models import (
@@ -872,6 +874,7 @@ def search(
     project_name: Optional[str] = None,
     version: Optional[int] = None,
     node_type: Optional[str] = None,
+    at_time: Optional[int] = None,
 ) -> dict:
     """Fuzzy search across all nodes in the world model.
 
@@ -882,6 +885,13 @@ def search(
     Optional ``node_type`` filter restricts results to one of:
     ``entity``, ``location``, ``event``, ``utterance``, ``object``,
     ``world_trait``, ``channel``.
+
+    Optional ``at_time`` (fabula_time) anchors the search to a tick:
+    events with ``fabula_time > at_time`` are excluded, channels not
+    yet established or already severed at ``at_time`` are excluded,
+    and entity / world-trait snippets reflect their reconstructed
+    state at the anchor. Use this when the caller has scrubbed the UI
+    cursor and wants search results that match what they see.
     """
     err = require_scope(ctx, "read")
     if err:
@@ -894,6 +904,16 @@ def search(
     ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
+
+    # T-10: when an anchor is supplied, filter and reconstruct in-line
+    # using the model-level helpers. We deliberately do NOT import the
+    # UI-side ``snapshot_world_at`` here — the MCP server must not
+    # depend on the UI package — but we mirror its rules: events with
+    # ``fabula_time > at_time`` are excluded; channels outside their
+    # availability window are excluded; entity snippets reflect their
+    # reconstructed status / location at the anchor; world-trait
+    # snippets reflect the reconstructed magnitude.
+    anchor: int | None = int(at_time) if at_time is not None else None
 
     q = query.lower()
     nt = (node_type or "").lower().strip() or None
@@ -910,8 +930,14 @@ def search(
                 s2 = SequenceMatcher(None, q, c.lower()).ratio()
                 score = max(score, s2 * 0.8)
             if score > 0.3:
+                if anchor is not None:
+                    esnap = reconstruct_entity_at(ent, anchor)
+                    status_at = esnap.get("status", ent.status)
+                else:
+                    status_at = ent.status
                 results.append({"id": eid, "name": ent.name, "type": "Entity",
-                                "relevance": round(score, 3), "snippet": f"Status: {ent.status}"})
+                                "relevance": round(score, 3),
+                                "snippet": f"Status: {status_at}"})
 
     if _accept("location"):
         for lid, loc in ws.locations.items():
@@ -925,6 +951,9 @@ def search(
                                 "snippet": (loc.description or "")[:80]})
 
     for evt in ws.events:
+        # T-10: drop events not yet occurred at the anchor.
+        if anchor is not None and int(getattr(evt, "fabula_time", 0) or 0) > anchor:
+            continue
         is_utt = getattr(evt, "event_type", None) == "utterance"
         kind = "utterance" if is_utt else "event"
         if not _accept(kind):
@@ -958,12 +987,23 @@ def search(
                 s2 = SequenceMatcher(None, q, wt.description.lower()).ratio()
                 score = max(score, s2 * 0.7)
             if score > 0.3:
+                if anchor is not None:
+                    wsnap = reconstruct_world_trait_at(wt, anchor)
+                    mag = wsnap.get("magnitude") or {}
+                    mag_val = float(mag.get("value", wt.magnitude.value))
+                else:
+                    mag_val = wt.magnitude.value
                 results.append({"id": wid, "name": wt.name, "type": "WorldTrait",
                                 "relevance": round(score, 3),
-                                "snippet": f"magnitude={wt.magnitude.value:.2f}"})
+                                "snippet": f"magnitude={mag_val:.2f}"})
 
     if _accept("channel"):
         for cid, ch in ws.channels.items():
+            # T-10: drop channels outside their availability window at
+            # the anchor. ``reconstruct_channel_at`` returns None when
+            # the channel is not yet established or already severed.
+            if anchor is not None and reconstruct_channel_at(ch, anchor) is None:
+                continue
             score = SequenceMatcher(None, q, ch.name.lower()).ratio()
             if ch.medium:
                 s2 = SequenceMatcher(None, q, ch.medium.lower()).ratio()
@@ -974,7 +1014,10 @@ def search(
                                 "snippet": f"medium={ch.medium} participants={len(ch.participant_ids)}"})
 
     results.sort(key=lambda r: r["relevance"], reverse=True)
-    return {"results": results[:20], "total": len(results)}
+    response: dict = {"results": results[:20], "total": len(results)}
+    if anchor is not None:
+        response["at_time"] = anchor
+    return response
 
 
 @mcp.tool()
@@ -985,10 +1028,18 @@ def get_relationships(
     project_name: Optional[str] = None,
     entity_id: Optional[str] = None,
     version: Optional[int] = None,
+    at_time: Optional[int] = None,
 ) -> dict:
     """Get social relationships with names resolved.
 
-    Optionally filtered to relationships involving a specific entity.
+    Optional filters:
+      * ``entity_id`` — only edges involving this entity.
+      * ``at_time`` — fabula_time anchor. When provided, per-axis metric
+        values are rolled back via ``reconstruct_relationship_at`` so the
+        response reflects the dyad as it stood at that tick rather than
+        the current (post-all-mutations) values. Edges not yet established
+        at ``at_time`` (``established_at_fabula > at_time``) or already
+        ended (``ended_at_fabula <= at_time``) are excluded.
     """
     err = require_scope(ctx, "read")
     if err:
@@ -1007,41 +1058,76 @@ def get_relationships(
         edges = [e for e in edges
                  if e.source_entity_id == entity_id or e.target_entity_id == entity_id]
 
+    # Time-gate: drop edges outside their active window.
+    if at_time is not None:
+        ft = int(at_time)
+        def _edge_active(e) -> bool:
+            est = getattr(e, "established_at_fabula", None)
+            end = getattr(e, "ended_at_fabula", None)
+            if est is not None and int(est) > ft:
+                return False
+            if end is not None and int(end) <= ft:
+                return False
+            return True
+        edges = [e for e in edges if _edge_active(e)]
+
     def _name(eid):
         return ws.entities[eid].name if eid in ws.entities else eid
 
-    return {
-        "relationships": [
-            {
-                "source": {"id": e.source_entity_id, "name": _name(e.source_entity_id)},
-                "target": {"id": e.target_entity_id, "name": _name(e.target_entity_id)},
-                # Aggregate edge-level views (back-compat): minimum
-                # inertia / strongest evidence / most-recent timestamp
-                # across observed metrics.
-                "affinity": e.affinity,
-                "fear": e.fear,
-                "power_dynamic": e.power_dynamic,
-                "inertia": e.inertia,
-                "evidence_strength": e.evidence_strength,
-                "last_updated_fabula": e.last_updated_fabula,
-                # Per-axis detail — clients that care about per-metric
-                # uncertainty / staleness should read here. Axes the
-                # extractor never observed are absent from the dict
-                # (distinct from a meaningful 0.0).
-                "metrics": {
-                    name: {
-                        "value": m.value,
-                        "inertia": m.inertia,
-                        "evidence_strength": m.evidence_strength,
-                        "last_updated_fabula": m.last_updated_fabula,
-                        "observed": m.observed,
-                    }
-                    for name, m in e.metrics.items()
-                },
+    rows = []
+    for e in edges:
+        if at_time is not None:
+            rolled = reconstruct_relationship_at(
+                e, int(at_time),
+                causal_edges=ws.causal_topology,
+                events=ws.events,
+            )
+            flat_aff = rolled.get("affinity", e.affinity)
+            flat_fear = rolled.get("fear", e.fear)
+            flat_pd = rolled.get("power_dynamic", e.power_dynamic)
+            metrics_out = {
+                name: {
+                    "value": rolled.get(name, m.value),
+                    "inertia": m.inertia,
+                    "evidence_strength": m.evidence_strength,
+                    "last_updated_fabula": m.last_updated_fabula,
+                    "observed": m.observed,
+                    "reconstruction": "delta_rollback",
+                }
+                for name, m in e.metrics.items()
             }
-            for e in edges
-        ],
-    }
+        else:
+            flat_aff = e.affinity
+            flat_fear = e.fear
+            flat_pd = e.power_dynamic
+            metrics_out = {
+                name: {
+                    "value": m.value,
+                    "inertia": m.inertia,
+                    "evidence_strength": m.evidence_strength,
+                    "last_updated_fabula": m.last_updated_fabula,
+                    "observed": m.observed,
+                }
+                for name, m in e.metrics.items()
+            }
+        rows.append({
+            "source": {"id": e.source_entity_id, "name": _name(e.source_entity_id)},
+            "target": {"id": e.target_entity_id, "name": _name(e.target_entity_id)},
+            # Aggregate edge-level views (back-compat).
+            "affinity": flat_aff,
+            "fear": flat_fear,
+            "power_dynamic": flat_pd,
+            "inertia": e.inertia,
+            "evidence_strength": e.evidence_strength,
+            "last_updated_fabula": e.last_updated_fabula,
+            # Per-axis detail.
+            "metrics": metrics_out,
+        })
+    result: dict = {"relationships": rows}
+    if at_time is not None:
+        result["at_time"] = at_time
+        result["reconstruction"] = "delta_rollback"
+    return result
 
 
 @mcp.tool()
@@ -1053,12 +1139,16 @@ def list_channels(
     entity_id: Optional[str] = None,
     medium: Optional[str] = None,
     version: Optional[int] = None,
+    at_time: Optional[int] = None,
 ) -> dict:
     """Enumerate communication channels with participant names + utterance counts.
 
     Optional filters:
       * ``entity_id`` \u2014 only channels in which the entity participates.
       * ``medium`` \u2014 substring match on channel medium (e.g. ``"telephone"``).
+      * ``at_time`` \u2014 fabula_time anchor. Excludes channels not yet established
+        (``established_at_fabula > at_time``) and channels already severed
+        (``terminated_at_fabula`` is set and ``<= at_time``).
     """
     err = require_scope(ctx, "read")
     if err:
@@ -1086,12 +1176,21 @@ def list_channels(
             utt_counts[evt.via_channel_id] = utt_counts.get(evt.via_channel_id, 0) + 1
 
     medium_q = (medium or "").lower().strip()
+    ft_filter = int(at_time) if at_time is not None else None
     out = []
     for cid, ch in ws.channels.items():
         if entity_id and entity_id not in ch.participant_ids:
             continue
         if medium_q and medium_q not in (ch.medium or "").lower():
             continue
+        # Time-gate: exclude channels outside their active window.
+        if ft_filter is not None:
+            est = int(ch.established_at_fabula) if ch.established_at_fabula is not None else 0
+            if est > ft_filter:
+                continue
+            term = ch.terminated_at_fabula
+            if term is not None and int(term) <= ft_filter:
+                continue
         out.append({
             "id": cid,
             "name": ch.name,
@@ -1107,7 +1206,10 @@ def list_channels(
             "utterance_count": utt_counts.get(cid, 0),
         })
     out.sort(key=lambda r: (-r["utterance_count"], r["id"]))
-    return {"channels": out, "total": len(out)}
+    result: dict = {"channels": out, "total": len(out)}
+    if at_time is not None:
+        result["at_time"] = at_time
+    return result
 
 
 @mcp.tool()
@@ -1119,11 +1221,19 @@ def get_channel_history(
     project_name: Optional[str] = None,
     version: Optional[int] = None,
     limit: int = 100,
+    at_time: Optional[int] = None,
 ) -> dict:
     """All utterances carried by ``channel_id``, in chronological order.
 
     Each row carries ``content``, ``truth_value``, ``speaker``, ``addressees``,
     ``fabula_time``, and ``syuzhet_index``.
+
+    Optional ``at_time`` (fabula_time): when provided, the channel's
+    availability window is checked first — an error is returned if the
+    channel is not yet established or has already been severed at that
+    tick — and the returned utterance list is filtered to
+    ``fabula_time <= at_time`` so callers reading "what's been said on
+    this channel so far?" don't leak future utterances.
     """
     err = require_scope(ctx, "read")
     if err:
@@ -1142,6 +1252,30 @@ def get_channel_history(
 
     ch = ws.channels[channel_id]
 
+    # T-10: gate on the canonical availability window via
+    # ``reconstruct_channel_at`` (half-open interval, R18-22).
+    if at_time is not None:
+        ft_anchor = int(at_time)
+        if reconstruct_channel_at(ch, ft_anchor) is None:
+            est = int(ch.established_at_fabula or 0)
+            term = ch.terminated_at_fabula
+            if est > ft_anchor:
+                return {
+                    "error": (
+                        f"Channel '{channel_id}' not yet established at "
+                        f"fabula_time {ft_anchor} (established_at_fabula={est})."
+                    )
+                }
+            return {
+                "error": (
+                    f"Channel '{channel_id}' was severed at fabula_time "
+                    f"{int(term) if term is not None else '?'}; "
+                    f"queried at {ft_anchor}."
+                )
+            }
+    else:
+        ft_anchor = None
+
     def _name(nid: str) -> str:
         if nid in ws.entities:
             return ws.entities[nid].name
@@ -1153,6 +1287,11 @@ def get_channel_history(
         evt for evt in ws.events
         if evt.event_type == "utterance" and evt.via_channel_id == channel_id
     ]
+    # T-10: when an anchor is supplied, filter out utterances that
+    # haven't been said yet at that tick so the response matches the
+    # cursor in the UI.
+    if ft_anchor is not None:
+        utts = [evt for evt in utts if int(evt.fabula_time) <= ft_anchor]
     utts.sort(key=lambda e: (e.fabula_time, e.syuzhet_index))
 
     # Round-12 R12-07: hard ceiling on the returned slice so a caller
@@ -1200,6 +1339,7 @@ def who_can_hear(
     project_name: Optional[str] = None,
     version: Optional[int] = None,
     threshold: Optional[float] = None,
+    at_time: Optional[int] = None,
 ) -> dict:
     """Participants whose intelligibility on ``channel_id`` meets ``threshold``.
 
@@ -1207,6 +1347,10 @@ def who_can_hear(
     Missing intelligibility entries default to 1.0 (fully intelligible).
     Result rows are split into ``addressable`` (intelligibility \u2265 threshold)
     and ``opaque`` (below threshold) for symmetry.
+
+    ``at_time`` (fabula_time): when provided, the channel's availability
+    window is checked first — an error is returned if the channel has not
+    yet been established or has already been severed at that tick.
     """
     err = require_scope(ctx, "read")
     if err:
@@ -1223,10 +1367,42 @@ def who_can_hear(
     if channel_id not in ws.channels:
         return {"error": f"Channel {channel_id} not found."}
 
+    ch = ws.channels[channel_id]
+    snap_intel: dict[str, float] | None = None
+
+    # Time-gate: delegate to ``reconstruct_channel_at`` so the window
+    # math matches the canonical half-open interval (R18-22) used by
+    # ``pov_visible_event_ids`` — a manual ``<= term`` check here
+    # diverged from the POV layer at exactly the termination tick.
+    if at_time is not None:
+        ft = int(at_time)
+        snap = reconstruct_channel_at(ch, ft)
+        if snap is None:
+            est = int(ch.established_at_fabula or 0)
+            term = ch.terminated_at_fabula
+            if est > ft:
+                return {
+                    "error": f"Channel '{channel_id}' not yet established at "
+                             f"fabula_time {ft} (established_at_fabula={est})."
+                }
+            return {
+                "error": f"Channel '{channel_id}' was severed at "
+                         f"fabula_time {int(term) if term is not None else '?'}; "
+                         f"queried at {ft}."
+            }
+        # snap is the channel's model_dump for that tick; carries the
+        # intelligibility dict as-of-the-window (today this matches the
+        # live dict because Channel has no per-recipient timeline yet,
+        # but using the snapshot here locks in the contract for the
+        # future ChannelSnapshot timeline addition without further
+        # wiring).
+        snap_intel = {
+            str(k): float(v) for k, v in (snap.get("intelligibility") or {}).items()
+        }
+
     thr = float(threshold) if threshold is not None else float(
         _settings.physics.intelligibility_threshold
     )
-    ch = ws.channels[channel_id]
 
     def _name(nid: str) -> str:
         if nid in ws.entities:
@@ -1237,19 +1413,23 @@ def who_can_hear(
 
     addressable: list[dict] = []
     opaque: list[dict] = []
+    intel_source = snap_intel if snap_intel is not None else ch.intelligibility
     for pid_ in ch.participant_ids:
-        intel = float(ch.intelligibility.get(pid_, 1.0))
+        intel = float(intel_source.get(pid_, 1.0))
         row = {"id": pid_, "name": _name(pid_), "intelligibility": intel}
         (addressable if intel >= thr else opaque).append(row)
     addressable.sort(key=lambda r: -r["intelligibility"])
     opaque.sort(key=lambda r: -r["intelligibility"])
-    return {
+    response: dict = {
         "channel_id": channel_id,
         "channel_name": ch.name,
         "threshold": thr,
         "addressable": addressable,
         "opaque": opaque,
     }
+    if at_time is not None:
+        response["at_time"] = int(at_time)
+    return response
 
 
 @mcp.tool()
@@ -1263,6 +1443,7 @@ def trace_causality(
     direction: str = "both",
     depth: int = 3,
     include_information_flow: bool = True,
+    at_time: Optional[int] = None,
 ) -> dict:
     """Trace causal chains upstream and/or downstream from a node.
 
@@ -1274,6 +1455,13 @@ def trace_causality(
             epistemic provenance graph — utterance events and channels
             — in addition to ``ws.causal_topology``. Disable to recover
             the legacy causal-only behaviour.
+        at_time: Optional fabula_time anchor. When provided, every
+            causal edge whose ``fabula_time > at_time`` is excluded
+            from the walk and the information-flow trace is gated
+            against the same snapshot so the trace matches what the
+            reader has seen at that tick (T-10 audit fix — parity
+            with ``inspect`` / ``search`` / ``get_relationships`` /
+            ``list_channels`` / ``who_can_hear``).
 
     Returns a subgraph of causal edges with mechanism and force details,
     plus (when ``include_information_flow``) an ``information_flow``
@@ -1290,6 +1478,15 @@ def trace_causality(
     ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
+
+    # T-10: snapshot the world at the anchor so the causal walk and
+    # the information-flow trace agree on which events / channels
+    # are visible. ``snapshot_world_at`` filters causal_topology +
+    # events and gates channels by the canonical half-open window,
+    # which is exactly what the trace needs.
+    anchor: int | None = int(at_time) if at_time is not None else None
+    if anchor is not None:
+        ws = snapshot_world_at(ws, anchor)
 
     visited: set[str] = set()
     edges_out: list[dict] = []
@@ -1337,6 +1534,8 @@ def trace_causality(
         "nodes": sorted(all_nodes),
         "edges": edges_out,
     }
+    if anchor is not None:
+        response["at_time"] = anchor
     if include_information_flow:
         response["information_flow"] = trace_information_flow(
             ws, node_id, direction=direction, depth=depth,
@@ -1545,6 +1744,7 @@ def ask(
     version: Optional[int] = None,
     pov_entity_id: Optional[str] = None,
     mode: Optional[str] = None,
+    at_time: Optional[int] = None,
 ) -> dict:
     """Ask a read-only question about the story world.
 
@@ -1570,6 +1770,15 @@ def ask(
     ``pov_entity_id`` (scaffold): if set, the world is filtered through that
     character's epistemic lens before analysis (utterances they could not
     plausibly hear and channels they don't participate in are pruned).
+
+    ``at_time`` (fabula tick): if set, the world is snapshotted at this
+    fabula time *before* POV filtering, so the question is answered
+    against the world-as-it-was at ``t`` (authored snapshots **and**
+    causal-mutation replay through :func:`snapshot_world_at`). Mirrors
+    the ordering used by ``compute_tension`` and ``evaluate``: snapshot
+    first, then POV-filter, so an in-tick belief/location update from
+    POV is preserved. The echoed value appears in the response so
+    callers can confirm the temporal anchor.
     """
     err = require_scope(ctx, "read")
     if err:
@@ -1582,6 +1791,10 @@ def ask(
     ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
+
+    fabula_anchor = int(at_time) if at_time is not None else None
+    if fabula_anchor is not None:
+        ws = snapshot_world_at(ws, fabula_anchor)
 
     if pov_entity_id:
         ws = filter_world_state_for_pov(
@@ -1662,6 +1875,8 @@ def ask(
         "question": question,
         "query_type": query.query_type,
         "read_only": True,
+        "at_time": fabula_anchor,
+        "pov_entity_id": pov_entity_id,
     }
 
     if parse_result.parsed:
@@ -1702,6 +1917,7 @@ def compute_tension(
     syuzhet_anchor: Optional[int] = None,
     target_vector_id: Optional[str] = None,
     pov_entity_id: Optional[str] = None,
+    at_time: Optional[int] = None,
 ) -> dict:
     """Compute narrative tension scores for the story or specific entities.
 
@@ -1722,6 +1938,14 @@ def compute_tension(
             (e.g. ``ENT_001.traits.fear``). When set, the response
             includes a ``vector_state`` block with the current value
             for that vector so callers can plan a directive against it.
+        at_time: Optional fabula_time anchor. When supplied the world
+            is rolled back via :func:`snapshot_world_at` before
+            scoring so trait values, relationship metrics, events,
+            and channels reflect the tick the caller has scrubbed to
+            (T-10 audit fix — parity with ``inspect`` /
+            ``get_relationships`` / ``trace_causality``). Combine
+            with ``syuzhet_anchor`` to gate both the fabula state
+            *and* the reader-position separately.
 
     The ``suspense_breakdown`` block exposes the per-entity threat /
     hope decomposition that drives the suspense score, including the
@@ -1739,6 +1963,15 @@ def compute_tension(
     ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
+
+    # T-10: roll the world back to ``at_time`` BEFORE the POV slice
+    # so per-tick trait / relationship / event / channel state feeds
+    # both the POV filter and the assembler. snapshot_world_at is a
+    # deep copy so subsequent mutation (e.g. POV scrubbing) stays
+    # local to this tool invocation.
+    fabula_anchor: int | None = int(at_time) if at_time is not None else None
+    if fabula_anchor is not None:
+        ws = snapshot_world_at(ws, fabula_anchor)
 
     if pov_entity_id:
         ws = filter_world_state_for_pov(
@@ -1794,6 +2027,7 @@ def compute_tension(
         scores: dict[str, Any] = {
             "entity_ids": entity_ids,
             "syuzhet_anchor": syuzhet_anchor,
+            "at_time": fabula_anchor,
             "scores": {
                 "mystery": round(
                     assembler.compute_mystery_score(entity_ids, syuzhet_anchor), 3
@@ -2235,6 +2469,36 @@ async def narrate(
             ],
         }
 
+    # T-12 audit fix (P0-1): when ``mode`` is left unset the parser
+    # is free to classify the instruction as a read-only query type
+    # (``general`` / ``interrogate`` / ``evaluate``). Running those
+    # through ``run_and_save`` would persist a version row that
+    # records no world advancement — divergent from the UI's
+    # read-only branch and a quiet way to pollute version history.
+    # Reject with a typed error that points the caller at the right
+    # tool. ``manual_edit`` is also rejected here because it has a
+    # dedicated ``write`` tool with its own anchor semantics.
+    readonly_types = {"general", "interrogate", "evaluate"}
+    if parse_result.query.query_type in readonly_types:
+        return {
+            "error": (
+                f"narrate resolved instruction to read-only query type "
+                f"{parse_result.query.query_type!r}; use the 'ask' tool "
+                f"(or 'evaluate' for full-story scoring) instead."
+            ),
+            "code": "READONLY_QUERY_REJECTED",
+            "resolved_query_type": parse_result.query.query_type,
+        }
+    if parse_result.query.query_type == "manual_edit":
+        return {
+            "error": (
+                "narrate resolved instruction to 'manual_edit'; use the "
+                "'write' tool for author-provided prose merges."
+            ),
+            "code": "MANUAL_EDIT_REJECTED",
+            "resolved_query_type": "manual_edit",
+        }
+
     # Apply force_implausible override on supported query types.
     if force_implausible and hasattr(parse_result.query, "force_implausible"):
         parse_result.query = parse_result.query.model_copy(
@@ -2632,6 +2896,8 @@ def evaluate(
     focus_entity_ids: Optional[List[str]] = None,
     version: Optional[int] = None,
     target_effect: str = "suspense",
+    at_time: Optional[int] = None,
+    pov_entity_id: Optional[str] = None,
 ) -> dict:
     """Run a full-story quality evaluation (read-only).
 
@@ -2640,6 +2906,15 @@ def evaluate(
       - Affective metrics: emotional trajectory scores, KL divergence, affective loss
       - Quality synthesis: coherence review, reward-hacking diagnostics, rewrite directives
       - Overall pass/fail
+
+    Optional ``at_time`` (fabula_time) — when supplied the world is
+    rolled back via :func:`snapshot_world_at` before scoring so the
+    grade reflects the story-so-far at that tick rather than the
+    final-frame world (parity with ``compute_tension`` / ``inspect``).
+    Optional ``pov_entity_id`` — when supplied the world is filtered
+    through :func:`filter_world_state_for_pov` after the snapshot so
+    affective feedback is computed against the events that focal POV
+    has witnessed.
 
     Does NOT create a new version.
     """
@@ -2654,6 +2929,21 @@ def evaluate(
     ws, ver_row_id = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
+
+    # P2 (post-T-10 audit): mirror the cursor / POV gating that
+    # ``compute_tension`` already applies so evaluation, tension,
+    # inspect, search, trace, and channel reads all agree on which
+    # ticks they consider visible. Snapshot first so the POV slice
+    # filters the already-projected world; the order matches
+    # ``compute_tension``.
+    fabula_anchor: int | None = int(at_time) if at_time is not None else None
+    if fabula_anchor is not None:
+        ws = snapshot_world_at(ws, fabula_anchor)
+    if pov_entity_id:
+        ws = filter_world_state_for_pov(
+            ws, pov_entity_id,
+            intelligibility_threshold=_settings.physics.intelligibility_threshold,
+        )
 
     # Build machinery for evaluation
     try:
@@ -2720,21 +3010,31 @@ def evaluate(
                 causal_fb, affective_fb,
                 AuditorConfig(),
             )
-            return {
+            response: dict = {
                 "read_only": True,
                 "overall_pass": noo.overall_pass,
                 "causal_feedback": noo.causal_feedback.model_dump(),
                 "affective_feedback": noo.affective_feedback.model_dump(),
                 "quality_synthesis": noo.quality_synthesis.model_dump(),
             }
+            if fabula_anchor is not None:
+                response["at_time"] = fabula_anchor
+            if pov_entity_id:
+                response["pov_entity_id"] = pov_entity_id
+            return response
         else:
             # No prose — return engine metrics only
-            return {
+            response = {
                 "read_only": True,
                 "note": "No prose found — returning engine metrics only.",
                 "causal_feedback": causal_fb.model_dump(),
                 "affective_feedback": affective_fb.model_dump(),
             }
+            if fabula_anchor is not None:
+                response["at_time"] = fabula_anchor
+            if pov_entity_id:
+                response["pov_entity_id"] = pov_entity_id
+            return response
 
     except Exception as e:
         return _sanitised_error("evaluate", e)
