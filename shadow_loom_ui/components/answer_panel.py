@@ -40,6 +40,17 @@ logger = logging.getLogger(__name__)
 
 _READONLY_TYPES = {"general", "interrogate"}
 
+# Query types that advance the world state — a Q&A answer produced
+# before one of these runs is stale (it described a world that has
+# since changed) and must be hidden.
+_WORLD_ADVANCING_TYPES = {
+    "observation",
+    "intervention",
+    "counterfactual",
+    "directive",
+    "manual_edit",
+}
+
 
 def build_answer_panel(state: AppState) -> None:
     """Render the Answer panel inside the Story tab.
@@ -79,10 +90,17 @@ def build_answer_panel(state: AppState) -> None:
         result: NLQueryResult | None = kwargs.get("result")
         if result is None or result.pipeline_result is None:
             return
-        if result.pipeline_result.query_type not in _READONLY_TYPES:
-            # Generative queries surface their results in the Story
-            # tab; the Answer panel is reserved for Q&A runs so the
-            # two never compete for the same screen real estate.
+        qtype = result.pipeline_result.query_type
+        if qtype in _WORLD_ADVANCING_TYPES:
+            # A world-advancing query has run — any prior Q&A answer
+            # now describes a stale world state.  Hide the panel so
+            # the user is never misled by an answer that predates the
+            # most recent observation / intervention / counterfactual.
+            last_result["value"] = None
+            _render()
+            return
+        if qtype not in _READONLY_TYPES:
+            # Evaluate / unknown types — neither update nor clear.
             return
         last_result["value"] = result
         _render()

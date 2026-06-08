@@ -3299,6 +3299,93 @@ def _interpret_agent_output(
     return parsed
 
 
+def _observation_should_be_interrogate(
+    natural_language: str,
+    parsed: ParsedQuery,
+    world_state: Optional[WorldStateV1],
+) -> bool:
+    """Return True when an ``observation`` parse should be reclassified as
+    ``interrogate``.
+
+    Fires when ALL of the following hold:
+
+    1. The LLM classified the query as ``observation``.
+    2. A world_state is available to check against.
+    3. The query is asking about a *specific scene or utterance* at a
+       location / event that does not exist in the world model (the
+       renderer would have to invent it wholesale, guaranteeing an
+       ``undeclared_element`` / ``unjustified_introduction`` loop).
+
+    The heuristic looks for:
+      * utterance-seeking phrases ("what does X say", "what did X say at",
+        "what does X tell", "what is said at", "what happens at [Y]" where
+        Y is not a known location);
+      * references to named locations / events that aren't in the world
+        model AND that the focus entities do not have events near.
+
+    Conservative: only fires when the evidence is strong. Ambiguous
+    queries stay as ``observation`` so the renderer can attempt them.
+    """
+    if parsed.query_type != "observation" or world_state is None:
+        return False
+
+    nl_lower = natural_language.lower().strip()
+
+    # --- Utterance-seeking pattern ---
+    # "what does X say at Y", "what does X say to Y", "what did X say",
+    # "what does X tell", "what is said at Y"
+    _UTTERANCE_PATTERNS = (
+        r"\bwhat does\b.*\bsay\b",
+        r"\bwhat did\b.*\bsay\b",
+        r"\bwhat does\b.*\btell\b",
+        r"\bwhat did\b.*\btell\b",
+        r"\bwhat is said\b",
+        r"\bwhat was said\b",
+    )
+    import re as _re_local
+    is_utterance_query = any(
+        _re_local.search(pat, nl_lower) for pat in _UTTERANCE_PATTERNS
+    )
+    if not is_utterance_query:
+        return False
+
+    # --- Check whether ANY word in the query matches a known event
+    # description or location name. If YES, the renderer can anchor
+    # to something real and we should not block it. ---
+    all_event_descs = {
+        (getattr(e, "description", "") or "").lower()
+        for e in (world_state.events or [])
+    }
+    all_event_ids = {
+        (getattr(e, "id", "") or "")
+        for e in (world_state.events or [])
+    }
+    all_loc_names = {
+        (getattr(loc, "name", "") or "").lower()
+        for loc in (world_state.locations or {}).values()
+        if isinstance(world_state.locations, dict)
+    }
+
+    # Check if any resolved IDs in the parsed query refer to real events.
+    resolved_ids = {r.resolved_id for r in (parsed.resolved_ids or [])}
+    if resolved_ids & all_event_ids:
+        # At least one resolved event id exists — renderer can anchor.
+        return False
+
+    # Check if the query text contains a known location name.
+    if any(lname and lname in nl_lower for lname in all_loc_names if len(lname) > 3):
+        return False
+
+    # The query asks about utterances/events at a scene the world model
+    # has no record of. Reclassify to interrogate so the system returns
+    # "no such event is recorded" rather than generating hallucinated prose.
+    logger.info(
+        "[QueryParser] Reclassifying observation→interrogate: utterance "
+        "query references no known event or location in world model."
+    )
+    return True
+
+
 def _finalise_parse(
     natural_language: str,
     parsed: ParsedQuery,
@@ -3315,6 +3402,34 @@ def _finalise_parse(
             "; ".join(e.message for e in errors),
         )
         return _apply_fallback(natural_language, parsed, errors, world_state)
+
+    # Post-parse reclassification: observation queries that ask about
+    # specific utterances / scenes at locations not in the world model
+    # generate hallucinated prose that loops in the auditor. Reclassify
+    # to interrogate so the system returns a factual "no such event
+    # is recorded" answer instead.
+    if _observation_should_be_interrogate(natural_language, parsed, world_state):
+        patched = parsed.model_copy(update={
+            "query_type": "interrogate",
+            "question": natural_language,
+        })
+        query = _build_query(patched, natural_language=natural_language)
+        return QueryParseResult(
+            query=query,
+            parsed=patched,
+            validation_errors=errors,
+            is_valid=True,
+            fallback=FallbackInfo(
+                strategy="observation_to_interrogate",
+                reason=(
+                    "Query asks about utterances or a scene at a location / "
+                    "event not found in the world model. Reclassified to "
+                    "interrogate to avoid generating hallucinated prose."
+                ),
+                original_query_type="observation",
+                original_errors=[],
+            ),
+        )
 
     query = _build_query(parsed, natural_language=natural_language)
     logger.info("[QueryParser] Resolved to %s query", parsed.query_type)

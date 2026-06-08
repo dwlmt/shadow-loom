@@ -116,10 +116,12 @@ If the auditor's `style_mismatch` feedback is the *only* major violation, your r
 ### Undeclared Element
 - Either (a) replace the offending name with an existing referent from the SCENE CONTEXT, (b) remove the reference, or (c) add it to `introduced_elements` with a stable id (`ENT_*` / `LOC_*` / `OBJ_*` / `WORLD_*` / `CHN_*` / `PROP_*` / `CCN_*`), a `name`, and a one-sentence `justification`.
 - Free-floating proper nouns and asserted-as-existing roles ("the courier", "the witness", "the henchman") that resolve to neither SCENE CONTEXT nor `introduced_elements` are the failure mode — anonymous crowd presence is fine.
+- **Contextually entailed sub-spaces are NOT violations.** Do NOT declare a location in `introduced_elements` (and do NOT remove it from prose) just because it is a sub-space of an existing location — e.g. an aircraft cabin when the scene is aboard a flight, a courtroom within a courthouse, a hotel room within a hotel, a cell within a prison, a garden or study within a house already in SCENE CONTEXT. These are structurally implied and the auditor will not flag them. Only use option (c) for genuinely novel, identity-bearing locations.
 
 ### Unjustified Introduction (Reuse-First)
 - Scan SCENE CONTEXT for an existing element that fits the required role / place / object / capability / proposition. If one exists, reuse its id and drop the declaration.
 - If none fits, rewrite the `justification` to **name the existing candidates considered (by id or name) and explain why each was insufficient** — role mismatch, location mismatch, timeline impossibility, capability mismatch. Boilerplate ("needed for the scene", "to advance the plot") will fail again.
+- **Exception for contextually obvious sub-spaces:** a location that is a self-evidently expected part of an existing location (aircraft cabin, courtroom, hotel room, garden, cellar) does not need to justify why no existing location fits — its existence is structurally entailed. A brief one-sentence justification naming the parent location is sufficient.
 
 ### Event Co-presence Violation / Omission / Location Mismatch
 - Every event in SCENE CONTEXT carries an `at_location_id` and binds its actors + non-channel targets as physically present there at `fabula_time`.

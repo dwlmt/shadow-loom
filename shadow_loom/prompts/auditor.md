@@ -145,6 +145,14 @@ Return a JSON object with this exact structure:
   - A new role-defined character referred to by description without a name ("the courier", "the witness", "the henchman") whose existence is asserted as fact and who would need to enter the world model to be reasoned about by future queries — flag if there is no corresponding declaration. (Anonymous one-line crowd presence — "a few villagers passed" — is fine and does not need a declaration.)
   - A new place ("they crossed into the Hollow") that is not in SCENE CONTEXT and not in `introduced_elements`.
   - A new institution / faction / organisation referenced by name as if pre-existing in the world.
+- **Contextual-plausibility exemption (do NOT flag these):** If a new location or element is a *self-evidently expected sub-space or affordance* of a location already present in the SCENE CONTEXT or INTRODUCED ELEMENTS block, do **not** flag it. Examples of exempt inferences:
+  - An *aircraft cabin*, *seat row*, *cockpit*, or *galley* when the scene is set at an airport or aboard a flight.
+  - A *courtroom* or *dock* when the scene is set in a courthouse or at a trial.
+  - A *hotel room*, *corridor*, or *lobby* when the scene is set in a hotel.
+  - A *cell*, *corridor*, or *exercise yard* when the scene is set in a prison.
+  - A *garden*, *study*, *drawing room*, *kitchen*, or *cellar* within a house or estate already in SCENE CONTEXT.
+  - Generic institutional / vehicle sub-spaces whose existence is structurally entailed by a parent location already in the world.
+  The key test: **would a reasonable reader assume this space exists without being told?** If yes, do not flag it. Only flag names that represent a genuinely *unexpected*, *plot-significant*, or *identity-bearing* new element that the merge system needs to track.
 - Violation type: `undeclared_element`
 - Feedback template: "Undeclared Element. The prose names [name] as if it exists in the world, but [name] is not in the SCENE CONTEXT block and was not declared in `introduced_elements`. Either (a) replace [name] with an existing referent, (b) remove the reference, or (c) add [name] to `introduced_elements` with a stable id, role, and one-sentence justification for why a new element was needed."
 
@@ -153,7 +161,7 @@ Return a JSON object with this exact structure:
 **Reuse-first audit (every rendering mode):**
 - Run on every scene. Newly-declared elements in `introduced_elements` (entities, locations, objects, world traits, channels, propositions, concerns, events) are allowed *only* when no existing element in the SCENE CONTEXT (and the broader world state) fits the role, place, object, capability, or proposition the constraints demand. Every declaration MUST carry a `justification` that **concretely names the existing candidate(s) the renderer considered and explains why each was insufficient**. The deterministic pre-check already flags empty justifications, boilerplate justifications ("needed for the scene", "required by the prompt", "to advance the plot", "for narrative purposes", "necessary for the scene", "context demands", "n/a", "none"), and display-name collisions with existing world-state elements. Your job as the LLM auditor is to catch the residual paraphrase / soft cases the deterministic check is too conservative to flag:
   - Justifications that *mention* the existing inventory but in fact gloss over candidates that would have served (e.g. "no existing entity could have served" when SCENE CONTEXT clearly contains an entity matching the required role + location + status).
-  - New locations declared when the scene could have been staged in an existing room with the same affordances.
+  - New locations declared when the scene could have been staged in an existing room with the same affordances. **Exception:** a location that is a contextually obvious sub-space of an existing location (e.g. an aircraft cabin within an airport, a courtroom within a courthouse, a hotel room within a hotel) is expected and should not be flagged as unjustified — its existence is structurally entailed. Only flag introductions of genuinely unexpected or identity-bearing new locations.
   - New channels declared when an existing channel between the same participants already supports the required medium / directionality.
   - New propositions / concerns declared when an existing one with equivalent semantic content is already in the world model.
   - New entities introduced as "the messenger" / "the witness" / "the henchman" when a co-present existing entity could plausibly have performed that role.
@@ -227,10 +235,11 @@ The audit prompt may include the following reference blocks. They describe the r
 1. **Be surgical.** Cite the exact passage that fails. Generic feedback is useless.
 2. **One violation per issue.** Do not combine multiple problems into a single violation.
 3. **Severity classification:**
-   - `critical` — hard constraint violated, physics broken, or information leaked that destroys the narrative effect
-   - `major` — the effect is significantly weakened but not destroyed
-   - `minor` — a soft constraint missed or stylistic issue that reduces impact
+   - `critical` — hard constraint violated, physics broken, or information leaked that destroys the narrative effect. The scene MUST be regenerated.
+   - `major` — the effect is significantly weakened but not destroyed. The prose is plausible and coherent; it just isn't optimally calibrated. A regeneration cycle *may* help.
+   - `minor` — a soft constraint missed or stylistic issue that reduces impact but doesn't change whether the scene is readable and plausible.
+   **Leniency rule (plausible prose):** When the prose is narratively coherent, causally consistent with the SCENE CONTEXT, and would satisfy an informed reader — even if it falls short of the ideal affective calibration — prefer `minor` or `major` over `critical`. Reserve `critical` for genuine physics breaks (miracle steps, leaked secrets, undeclared elements, position contradictions). Do NOT fire `critical` for emotional calibration issues (tonal_mismatch, magnitude_too_low, suspense_threshold, low_kl_divergence) unless the affective effect is completely absent rather than merely imperfect.
 4. **The feedback field is a DIRECT INSTRUCTION to the generation LLM.** Write it as a command, not a suggestion.
-5. **Pass if and only if all hard constraints are honoured and the target effect is structurally achieved.**
+5. **Pass if and only if all hard constraints are honoured and the target effect is structurally achieved.** For soft affective constraints (suspense, fear, joy, tonal calibration), pass when the effect is *present and plausible* even if not perfectly maximised — do not hold out for ideal calibration when the prose is already doing the job.
 6. **Do NOT invent violations.** If the prose successfully achieves the effect, say so.
 7. **Physics audits (Category 4) take precedence.** A Miracle Step is always critical severity.

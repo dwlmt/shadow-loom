@@ -1721,6 +1721,7 @@ def assemble_audit_prompt(
     *,
     world_state: Optional[WorldStateV1] = None,
     affective_feedback: Optional[AffectiveStateFeedback] = None,
+    introduced_elements: Optional["IntroducedElements"] = None,
 ) -> str:
     """Build the full prompt for the auditor LLM.
 
@@ -2106,6 +2107,53 @@ def assemble_audit_prompt(
             "category) ==="
         )
         sections.append(format_scene_context_for_prompt(brief.scene_context))
+        sections.append("")
+
+    # === Renderer-declared introduced elements ===
+    # These are new world elements the renderer minted in *this draft*.
+    # Show them here so the LLM auditor does not flag prose references
+    # to their names/ids as ``undeclared_element`` violations. The
+    # deterministic ``_undeclared_element_violations`` pass also accepts
+    # them, but the LLM auditor runs independently and needs to see them
+    # explicitly to avoid re-firing undeclared_element on every iteration.
+    if introduced_elements is not None and not introduced_elements.is_empty():
+        sections.append(
+            "=== INTRODUCED ELEMENTS (declared by the renderer for this "
+            "draft — treat as already part of the world) ==="
+        )
+        sections.append(
+            "The renderer declared the following NEW elements while writing "
+            "this scene. Treat every name and id listed below as a KNOWN, "
+            "DECLARED referent. Do NOT flag them as ``undeclared_element`` "
+            "violations — they are intentional additions that will be "
+            "materialised into the next world-state revision after the audit "
+            "passes. Only flag a declared element if its justification is "
+            "boilerplate, it duplicates an existing element, or the prose "
+            "uses it in a way that violates other physics constraints. "
+            "Similarly, do NOT flag any sub-location or affordance of a "
+            "declared or existing location (e.g. an aircraft cabin when the "
+            "scene is aboard a flight, a courtroom at a courthouse, a hotel "
+            "room in a hotel) — contextually entailed spaces are never "
+            "``undeclared_element`` violations."
+        )
+        _ie_kind_map = (
+            ("entity", introduced_elements.entities),
+            ("location", introduced_elements.locations),
+            ("object", introduced_elements.objects),
+            ("world_trait", introduced_elements.world_traits),
+            ("channel", introduced_elements.channels),
+            ("proposition", introduced_elements.propositions),
+            ("concern", introduced_elements.concerns),
+            ("event", introduced_elements.events),
+        )
+        for _ie_kind, _ie_specs in _ie_kind_map:
+            for _ie_spec in _ie_specs:
+                _ie_id = getattr(_ie_spec, "id", "?")
+                _ie_name = getattr(_ie_spec, "name", "") or ""
+                _ie_just = (getattr(_ie_spec, "justification", "") or "").strip()
+                sections.append(
+                    f"  [{_ie_kind}] {_ie_id} \"{_ie_name}\": {_ie_just}"
+                )
         sections.append("")
 
     # === External research (WorldFact) fidelity ===
@@ -3048,6 +3096,7 @@ def _build_refinement_prompt(
     brief: Optional[CreativeBrief] = None,
     previous_prose: Optional[str] = None,
     regression_warning: Optional[str] = None,
+    introduced_elements: Optional["IntroducedElements"] = None,
 ) -> str:
     """Augment the original rendering prompt with auditor feedback.
 
@@ -3082,6 +3131,51 @@ def _build_refinement_prompt(
         "previous draft. You MUST address ALL of them in this rewrite:",
         "",
     ]
+
+    # Surface the prior draft's introduced_elements declarations at the
+    # top of the feedback block so the refiner knows exactly which new
+    # elements were already declared and must be preserved in the new
+    # GeneratedScene.introduced_elements output if the corresponding
+    # prose references survive the rewrite. Without this, a refiner
+    # performing a minimal surgical edit on unrelated violations
+    # routinely drops or forgets the prior declarations, causing the
+    # deterministic undeclared_element check to re-fire on the next
+    # audit pass even though the prose is unchanged.
+    if introduced_elements is not None and not introduced_elements.is_empty():
+        feedback_lines.append(
+            "=== PREVIOUSLY DECLARED INTRODUCED ELEMENTS "
+            "(preserve in your new draft) ==="
+        )
+        feedback_lines.append(
+            "The previous draft declared the following new world elements "
+            "in its ``introduced_elements`` structured output. If your "
+            "rewrite keeps any prose reference to a declared element's "
+            "name or id, you MUST also include it in your new "
+            "``introduced_elements`` output. Only drop a declaration if "
+            "you are also removing the prose reference entirely. If you "
+            "are fixing an ``undeclared_element`` violation for one of "
+            "these, option (c) — re-declaring it with a better "
+            "justification — is usually correct."
+        )
+        _ie_kind_map = (
+            ("entity", introduced_elements.entities),
+            ("location", introduced_elements.locations),
+            ("object", introduced_elements.objects),
+            ("world_trait", introduced_elements.world_traits),
+            ("channel", introduced_elements.channels),
+            ("proposition", introduced_elements.propositions),
+            ("concern", introduced_elements.concerns),
+            ("event", introduced_elements.events),
+        )
+        for _ie_kind, _ie_specs in _ie_kind_map:
+            for _ie_spec in _ie_specs:
+                _ie_id = getattr(_ie_spec, "id", "?")
+                _ie_name = getattr(_ie_spec, "name", "") or ""
+                _ie_just = (getattr(_ie_spec, "justification", "") or "").strip()
+                feedback_lines.append(
+                    f"  [{_ie_kind}] {_ie_id} \"{_ie_name}\": {_ie_just}"
+                )
+        feedback_lines.append("")
 
     # Round-7 audit (2026-05-26): when the feedback loop has just
     # rolled back from a regression and granted an anti-regression
@@ -4236,6 +4330,12 @@ _JUSTIFICATION_REUSE_TOKENS: tuple[str, ...] = (
     "existing", "considered", "candidate", "reused",
     "instead of", "rather than", "no ", "none of",
     "ent_", "loc_", "obj_", "wt_", "chn_", "prop_", "ccn_",
+    # Sub-space / containment justifications for contextually entailed
+    # locations (aircraft cabin within airport, courtroom within
+    # courthouse, etc.) that don't reference a specific LOC_ id.
+    "sub-space", "sub space", "part of", "within", "inside",
+    "contained in", "section of", "area of", "room in", "cabin",
+    "entailed", "implied by",
 )
 
 
@@ -4514,6 +4614,7 @@ def _event_copresence_violations(
     prose: str,
     brief: CreativeBrief,
     world_state: Optional[WorldStateV1],
+    introduced: Optional[IntroducedElements] = None,
 ) -> List[AuditViolation]:
     """Deterministic co-presence + event-location auditor pass.
 
@@ -4549,11 +4650,25 @@ def _event_copresence_violations(
     issues: List[AuditViolation] = []
     seen: set[tuple[str, str, str]] = set()
 
+    # Build supplemental name maps from introduced_elements so that
+    # newly declared entities and locations resolve in _name() below.
+    _ie_entity_names: Dict[str, str] = {}
+    _ie_location_names: Dict[str, str] = {}
+    if introduced is not None:
+        for spec in introduced.entities:
+            _ie_entity_names[spec.id] = spec.name or spec.id
+        for spec in introduced.locations:
+            _ie_location_names[spec.id] = spec.name or spec.id
+
     def _name(nid: str) -> str:
         if nid in entities:
             return getattr(entities[nid], "name", nid) or nid
         if nid in locations:
             return getattr(locations[nid], "name", nid) or nid
+        if nid in _ie_entity_names:
+            return _ie_entity_names[nid]
+        if nid in _ie_location_names:
+            return _ie_location_names[nid]
         return nid
 
     def _name_positions(name: str) -> list[int]:
@@ -4675,6 +4790,7 @@ def _position_mismatch_violations(
     prose: str,
     brief: CreativeBrief,
     world_state: Optional[WorldStateV1],
+    introduced: Optional[IntroducedElements] = None,
 ) -> List[AuditViolation]:
     """Deterministic object / entity position-mismatch auditor pass.
 
@@ -4767,6 +4883,23 @@ def _position_mismatch_violations(
         if positions:
             loc_positions[lid] = positions
 
+    # Augment with introduced_elements locations so that new locations
+    # declared in this draft (e.g. LOC_AIRCRAFT_CABIN) participate in
+    # the proximity check. Without this, a reconstructed_loc pointing
+    # at an introduced id silently skips the check (loc_names miss),
+    # and a wrong introduced location near an entity name is also
+    # invisible to the checker.
+    if introduced is not None:
+        for spec in introduced.locations:
+            lid = spec.id
+            lname = spec.name or lid
+            if len(lname) < 3 or lid in loc_names:
+                continue
+            loc_names[lid] = lname
+            positions = _name_positions(lname)
+            if positions:
+                loc_positions[lid] = positions
+
     if not loc_positions:
         return []
 
@@ -4819,6 +4952,37 @@ def _position_mismatch_violations(
                     ))
                     return
 
+    # Build the set of entity IDs named in TRUE propositions of
+    # movement-asserting kinds (event_occurs, outcome) at fabula_anchor.
+    # When a proposition like PROP_ARCHIE_WANDA_FLY_AWAY commits true,
+    # the referenced entities may be physically somewhere their
+    # state_timeline has not yet caught up to. Flagging those entities
+    # as position-mismatched would be a false positive.
+    # Restriction to event_occurs/outcome: trait_holds, relation_holds,
+    # identity_is propositions don't assert location and must NOT suppress
+    # the check (e.g. PROP_ARCHIE_IS_BARRISTER should not exempt Archie
+    # from position checks).
+    _MOVEMENT_PROP_KINDS = {"event_occurs", "outcome"}
+    _prop_referenced_entity_ids: set[str] = set()
+    if world_state is not None:
+        from shadow_loom.models import reconstruct_proposition_at
+        _props = world_state.propositions
+        _prop_iter = (
+            _props.values() if isinstance(_props, dict)
+            else (_props or [])
+        )
+        for prop in _prop_iter:
+            if getattr(prop, "kind", "") not in _MOVEMENT_PROP_KINDS:
+                continue
+            try:
+                pstate = reconstruct_proposition_at(prop, fabula_anchor)
+                if pstate.get("truth_at") is True:
+                    for rid in (getattr(prop, "referent_ids", None) or []):
+                        if isinstance(rid, str) and rid.startswith("ENT_"):
+                            _prop_referenced_entity_ids.add(rid)
+            except Exception:
+                continue
+
     # Objects
     for oid, obj in (objects.items() if isinstance(objects, dict) else []):
         oname = getattr(obj, "name", None) or oid
@@ -4839,6 +5003,10 @@ def _position_mismatch_violations(
     # Entities
     for eid, ent in (entities.items() if isinstance(entities, dict) else []):
         ename = getattr(ent, "name", None) or eid
+        # Skip entities whose position is asserted by a true proposition —
+        # the reconstructed state_timeline location is stale in those cases.
+        if eid in _prop_referenced_entity_ids:
+            continue
         timeline = getattr(ent, "state_timeline", None) or []
         if not timeline and not getattr(ent, "location_id", None):
             continue
@@ -4939,6 +5107,7 @@ def run_audit(
         prose, brief, categories, prior_feedback, causal_feedback,
         world_state=world_state,
         affective_feedback=affective_feedback,
+        introduced_elements=introduced_elements,
     )
 
     logger.info(
@@ -5130,7 +5299,7 @@ def run_audit(
     # against the prose for verbatim violations of MUST_BE_PRESENT
     # and MUST_NOT_BE_PRESENT ledgers.
     copresence_issues = _event_copresence_violations(
-        prose, brief, world_state,
+        prose, brief, world_state, introduced_elements,
     )
     if copresence_issues:
         audit.violations = list(audit.violations) + copresence_issues
@@ -5145,7 +5314,7 @@ def run_audit(
     # ``entity_position_mismatch`` violation kinds against the
     # reconstructed location at the scene's fabula anchor.
     position_issues = _position_mismatch_violations(
-        prose, brief, world_state,
+        prose, brief, world_state, introduced_elements,
     )
     if position_issues:
         audit.violations = list(audit.violations) + position_issues
@@ -5972,6 +6141,55 @@ def run_feedback_loop(
             # exact case the prompt was written to skip.
             "style_mismatch",
         }
+        # Soft-affective violation types. These represent fine-grained
+        # emotional/psychological calibration that may genuinely be at
+        # the limit of what a single LLM pass can achieve on plausible
+        # prose. After the plausibility threshold (see below) they no
+        # longer block convergence when no hard-physics / world-state
+        # violation is also present.
+        _SOFT_AFFECTIVE_TYPES = {
+            # Affective tuning — the effect is present but not perfectly
+            # calibrated; prose is still plausible.
+            "tonal_mismatch",
+            "magnitude_too_low",
+            "suspense_threshold",
+            "low_kl_divergence",
+            # Psychological nuance — character interiority is adequate
+            # but not maximally precise.
+            "reasoning_failure",
+            "affective_failure",
+            "attribution_failure",
+            "empathy_weight",
+            # Implicit subtext — the abduction signal exists but is subtle.
+            "abduction_failure",
+            # Style / form drift that is not a physics break.
+            "style_mismatch",
+        }
+        # Hard world-state / information-control types that ALWAYS block
+        # convergence regardless of severity or iteration count.
+        _ALWAYS_HARD_TYPES = {
+            "undeclared_element",
+            "unjustified_introduction",
+            "spurious_abduction",
+            "premature_payoff",
+            "epistemic_leakage",
+            "knowledge_contamination",
+            "withheld_utterance_leak",
+            "pruned_utterance_leak",
+            "disabled_channel_leak",
+            "blocked_propagation_leak",
+            "meta_narration",
+            "miracle_step",
+            "entity_position_mismatch",
+            "object_position_mismatch",
+            "event_location_mismatch",
+            "event_copresence_violation",
+            "event_copresence_omission",
+            "inert_intervention_aftermath",
+            "utterance_truth_contradiction",
+            "belief_provenance_contradiction",
+            "channel_intelligibility_violation",
+        }
         # Use the LLM's own violation snapshot for the bypass check, not
         # the full augmented list. Engine-injected major violations
         # (entity_position_mismatch, co-presence, etc.) must not prevent the
@@ -5999,9 +6217,57 @@ def run_feedback_loop(
         ):
             logger.info(
                 "[FeedbackLoop] All %d violation(s) at iteration %d are "
-                "'minor' and in the cosmetic allowlist \u2014 treating as "
+                "'minor' and in the cosmetic allowlist — treating as "
                 "effectively passed; not spending a regeneration cycle.",
                 len(audit.violations), iteration + 1,
+            )
+            llm_passed = True
+        # --- Plausibility bypass ---
+        # When the LLM's remaining violations are ALL soft-affective
+        # (emotional calibration, psychological nuance, subtle subtext)
+        # AND none are hard world-state / physics violations, accept the
+        # prose after we have spent at least half the iteration budget.
+        # This prevents the loop from grinding indefinitely on violations
+        # that represent fine-grained LLM taste rather than broken physics
+        # or world-model integrity — prose that an informed reader would
+        # consider plausible should not loop forever because the auditor
+        # wanted marginally sharper suspense or a more visceral adjective.
+        #
+        # Conditions for plausibility bypass:
+        #   1. LLM did not pass on its own (otherwise this branch is moot).
+        #   2. Audit did not fail-open (structured output parse failure).
+        #   3. No deterministic checks added violations (POV / meta regex).
+        #   4. No hard engine checks fired (utterance leaks, surgery leaks).
+        #   5. ALL LLM violations are in _SOFT_AFFECTIVE_TYPES.
+        #   6. NONE of the LLM violations are in _ALWAYS_HARD_TYPES.
+        #   7. All remaining violations are at most ``major`` severity
+        #      (i.e. no ``critical`` left — a critical means something
+        #      is genuinely broken, not just imperfect).
+        #   8. We have spent at least ceil(max_iterations / 2) iterations
+        #      (so a first-pass lucky-miss can still get one retry).
+        _plausibility_threshold = (auditor_config.max_iterations + 1) // 2
+        _vtype = lambda v: getattr(v, "violation_type", "")  # noqa: E731
+        if (
+            not llm_passed
+            and not audit.failed_open
+            and not _det_added_violations
+            and not _hard_engine_added
+            and _bypass_violations
+            and iteration >= _plausibility_threshold
+            and all(_vtype(v) in _SOFT_AFFECTIVE_TYPES for v in _bypass_violations)
+            and not any(_vtype(v) in _ALWAYS_HARD_TYPES for v in _bypass_violations)
+            and all(v.severity != "critical" for v in _bypass_violations)
+        ):
+            logger.info(
+                "[FeedbackLoop] Plausibility bypass at iteration %d/%d: "
+                "%d soft-affective violation(s) remain (%s) but no hard "
+                "physics or world-state violations — accepting plausible "
+                "prose rather than grinding further.",
+                iteration + 1, auditor_config.max_iterations,
+                len(_bypass_violations),
+                ", ".join(
+                    f"{_vtype(v)}({v.severity})" for v in _bypass_violations
+                ),
             )
             llm_passed = True
         engine_blocks_convergence = (
@@ -6128,6 +6394,13 @@ def run_feedback_loop(
             # here so the next rewrite sees a REGRESSION ALERT block
             # naming the violation types that were just introduced.
             regression_warning=pending_regression_warning,
+            # Pass the prior draft's introduced_elements so the refiner
+            # knows to preserve any declarations whose prose references
+            # survive the rewrite (prevents deterministic
+            # undeclared_element re-fires after unrelated edits).
+            introduced_elements=getattr(
+                current_scene, "introduced_elements", None,
+            ),
         )
         # Consume the one-shot warning so a non-regressing next
         # iteration does not re-warn the rewriter.
