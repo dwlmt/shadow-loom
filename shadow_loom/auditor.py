@@ -694,12 +694,20 @@ class AuditorConfig(BaseModel):
         description="Creative temperature for prose re-generation.",
     )
     max_tokens_audit: int = Field(
-        default=64000,
-        description="Max tokens for auditor response.",
+        default=8192,
+        description=(
+            "Maximum *output* tokens for the auditor LLM call. The audit "
+            "result is structured JSON, not prose — 8 192 tokens is "
+            "generous for any violations list and leaves the bulk of the "
+            "256K context window for the (large) audit prompt input."
+        ),
     )
     max_tokens_generation: int = Field(
-        default=64000,
-        description="Max tokens for generation response.",
+        default=16000,
+        description=(
+            "Maximum *output* tokens for the auditor's prose re-write step. "
+            "Mirrors GenerationConfig.max_tokens."
+        ),
     )
     # --- Pass/fail thresholds for NarrativeOrderObject ---
     min_foreshadowing_score: float = Field(
@@ -3505,11 +3513,11 @@ def run_evaluation(
     agent = _build_evaluation_agent(config)
     deps = _EvaluationDeps(evaluation_prompt=eval_prompt)
 
-    model_settings: Dict[str, Any] = {}
+    model_settings: Dict[str, Any] = {
+        "max_tokens": config.max_tokens_audit,
+    }
     if config.auditor_temperature != 0.2:
         model_settings["temperature"] = config.auditor_temperature
-    if config.max_tokens_audit != 64000:
-        model_settings["max_tokens"] = config.max_tokens_audit
 
     try:
         result = agent.run_sync(
@@ -4912,11 +4920,11 @@ def run_audit(
     agent = _build_auditor_agent(config)
     deps = _AuditorDeps(audit_prompt=audit_prompt)
 
-    model_settings: Dict[str, Any] = {}
+    model_settings: Dict[str, Any] = {
+        "max_tokens": config.max_tokens_audit,
+    }
     if config.auditor_temperature != 0.2:
         model_settings["temperature"] = config.auditor_temperature
-    if config.max_tokens_audit != 64000:
-        model_settings["max_tokens"] = config.max_tokens_audit
 
     try:
         result = agent.run_sync(
@@ -6025,11 +6033,11 @@ def run_feedback_loop(
         )
         deps = _GenerationDeps(rendering_prompt=refinement_prompt)
 
-        model_settings: Dict[str, Any] = {}
+        model_settings: Dict[str, Any] = {
+            "max_tokens": generation_config.max_tokens,
+        }
         if generation_config.temperature != 0.7:
             model_settings["temperature"] = generation_config.temperature
-        if generation_config.max_tokens != 64000:
-            model_settings["max_tokens"] = generation_config.max_tokens
 
         try:
             result = agent.run_sync(

@@ -88,12 +88,29 @@ class QueryParsingConfig(BaseModel):
         description="Max retries for output validation.",
     )
     max_tokens: int = Field(
-        default=64000,
-        description="Maximum tokens for the classification response.",
+        default=8192,
+        description="Maximum *output* tokens for the classification response.",
     )
     temperature: float = Field(
         default=0.1,
         description="Low temperature for deterministic classification.",
+    )
+    graph_summary_max_chars: int = Field(
+        default=40_000,
+        description=(
+            "Hard character budget for the world-model graph summary "
+            "injected into the query-parsing prompt. Prevents huge worlds "
+            "from blowing up the context window. Set 0 to disable."
+        ),
+    )
+    max_events_in_summary: int = Field(
+        default=60,
+        description=(
+            "Maximum number of events included in the graph summary. "
+            "Selection is relevance-first: directly-mentioned events, "
+            "then events involving mentioned entities, then a chronological "
+            "spread of the remainder. Set 0 to disable (include all)."
+        ),
     )
 
     @model_validator(mode="before")
@@ -316,13 +333,32 @@ class QueryParseResult(BaseModel):
 # World-model graph summary (compact representation for the LLM)
 # =====================================================================
 
-def _build_graph_summary(world_state: WorldStateV1) -> str:
+def _build_graph_summary(
+    world_state: WorldStateV1,
+    *,
+    mentioned_ids: Optional[set] = None,
+    max_events: int = 60,
+    max_chars: int = 40_000,
+) -> str:
     """Build a compact text summary of all IDs in the world model.
 
-    Keeps the token count manageable while giving the LLM enough
-    context to resolve natural-language references to graph IDs.
+    Selection is relevance-first so that interventions referencing events
+    from anywhere in the story are always surfaced:
+
+    * **Tier 1** — events whose ID appears in ``mentioned_ids`` (directly
+      named in the user query).
+    * **Tier 2** — events where any actor or target entity/object ID is in
+      ``mentioned_ids`` (entity-arc events).
+    * **Tier 3** — remaining events, sampled as a chronological spread
+      (first quarter + last three quarters of the leftover pool) so the
+      model sees both opening context and recent state.
+
+    The entire summary is then hard-capped to ``max_chars`` characters
+    (truncated from the bottom of the Tier-3 filler, never from Tiers 1–2)
+    to keep the total prompt inside typical 128k context windows.
     """
     sections: list[str] = []
+    _mentioned = mentioned_ids or set()
 
     # Entities
     if world_state.entities:
@@ -358,10 +394,55 @@ def _build_graph_summary(world_state: WorldStateV1) -> str:
                 f"props=[{props}] | can=[{affordances}]"
             )
 
-    # Events (sorted by fabula_time)
+    # Events — relevance-tiered selection
     if world_state.events:
+        sorted_events = sorted(world_state.events, key=lambda e: e.fabula_time)
+        total_events = len(sorted_events)
+        if max_events > 0 and total_events > max_events:
+            # IDs of mentioned entities/objects (not events — used for Tier 2)
+            mentioned_entity_ids = {
+                i for i in _mentioned
+                if i.startswith(("ENT_", "OBJ_", "LOC_"))
+            }
+            # Tier 1: events explicitly mentioned by ID
+            t1 = [e for e in sorted_events if e.id in _mentioned]
+            t1_ids = {e.id for e in t1}
+            # Tier 2: events whose actor or target set overlaps with mentioned entities
+            t2 = [
+                e for e in sorted_events
+                if e.id not in t1_ids
+                and (
+                    any(a in mentioned_entity_ids for a in (e.actor_ids or []))
+                    or any(t in mentioned_entity_ids for t in (e.target_ids or []))
+                )
+            ]
+            t2_ids = t1_ids | {e.id for e in t2}
+            # Tier 3: everything else — chronological spread so both opening
+            # and recent context are visible
+            t3 = [e for e in sorted_events if e.id not in t2_ids]
+            remaining = max_events - len(t1) - len(t2)
+            if remaining > 0 and t3:
+                if len(t3) <= remaining:
+                    selected_t3 = t3
+                else:
+                    n_head = max(1, remaining // 4)
+                    n_tail = remaining - n_head
+                    selected_t3 = t3[:n_head] + t3[len(t3) - n_tail:]
+            else:
+                selected_t3 = []
+            selected = sorted(t1 + t2 + selected_t3, key=lambda e: e.fabula_time)
+            omitted = total_events - len(selected)
+        else:
+            selected = sorted_events
+            omitted = 0
         sections.append("EVENTS (chronological):")
-        for evt in sorted(world_state.events, key=lambda e: e.fabula_time):
+        if omitted:
+            sections.append(
+                f"  [Note: {total_events} events total; "
+                f"showing {len(selected)} most relevant "
+                f"({omitted} omitted — increase max_events_in_summary to see more)]"
+            )
+        for evt in selected:
             actors = ", ".join(evt.actor_ids) if evt.actor_ids else "none"
             targets = ", ".join(evt.target_ids) if evt.target_ids else "none"
             sections.append(
@@ -456,7 +537,26 @@ def _build_graph_summary(world_state: WorldStateV1) -> str:
         sections.append("CONCERNS (CCN_*, do_targets/concern):")
         sections.extend(concerns_lines)
 
-    return "\n".join(sections)
+    summary = "\n".join(sections)
+
+    # Hard char-budget cap: trim whole lines from the bottom of the
+    # assembled summary until it fits. We never cut mid-line so the
+    # model always sees well-formed records, and we never cut the first
+    # few sections (entities/locations/objects) which are small and
+    # always relevant. The trimmed tail is typically Tier-3 events,
+    # relationships, or concerns — sections the LLM can recover from
+    # the VALID GRAPH IDS block in constrained mode.
+    if max_chars > 0 and len(summary) > max_chars:
+        lines = summary.splitlines()
+        while lines and len("\n".join(lines)) > max_chars:
+            lines.pop()
+        lines.append(
+            f"  [Summary truncated at {max_chars} chars "
+            f"— increase graph_summary_max_chars for more detail]"
+        )
+        summary = "\n".join(lines)
+
+    return summary
 
 
 def _collect_all_ids(world_state: WorldStateV1) -> set[str]:
@@ -3032,22 +3132,41 @@ def _build_user_message(
     world_state: Optional[WorldStateV1],
     *,
     constrained: bool,
+    cfg: Optional["QueryParsingConfig"] = None,
 ) -> str:
     """Compose the user-message body (graph dump + mention hints + request).
 
     When ``constrained=True`` we additionally emit the categorised
     "VALID GRAPH IDS" block so the LLM sees the exact enum its
     structured output will be validated against.
+
+    The graph summary is built in two passes:
+    1. Extract IDs mentioned in the query (pure Python, no LLM call).
+    2. Build a relevance-tiered summary using those IDs as seeds so
+       events from any part of the story that are relevant to the query
+       are always surfaced, not just the most recent ones.
     """
     user_parts: list[str] = []
     if world_state:
+        # Pass 1 — identify which IDs the query is talking about so the
+        # graph summary can prioritise them regardless of story position.
+        mentions = _extract_mentioned_ids(natural_language, world_state)
+        mentioned_ids = {rid for _, rid in mentions}
+
+        _max_events = cfg.max_events_in_summary if cfg is not None else 60
+        _max_chars = cfg.graph_summary_max_chars if cfg is not None else 40_000
+
         user_parts.append("## WORLD MODEL\n")
-        user_parts.append(_build_graph_summary(world_state))
+        user_parts.append(_build_graph_summary(
+            world_state,
+            mentioned_ids=mentioned_ids,
+            max_events=_max_events,
+            max_chars=_max_chars,
+        ))
         user_parts.append("\n")
         if constrained:
             user_parts.append(_format_valid_ids_section(world_state))
             user_parts.append("\n")
-        mentions = _extract_mentioned_ids(natural_language, world_state)
         hint = _format_mentions_hint(mentions, world_state)
         if hint:
             user_parts.append(hint)
@@ -3251,7 +3370,7 @@ def parse_query(
     system_prompt = _resolve_system_prompt(query_type)
     output_model, constrained = _select_output_model(query_type, world_state)
     user_message = _build_user_message(
-        natural_language, world_state, constrained=constrained,
+        natural_language, world_state, constrained=constrained, cfg=cfg,
     )
 
     # ``PromptedOutput`` keeps the dynamic ``Literal`` / ``anyOf``
@@ -3328,7 +3447,7 @@ async def parse_query_async(
     system_prompt = _resolve_system_prompt(query_type)
     output_model, constrained = _select_output_model(query_type, world_state)
     user_message = _build_user_message(
-        natural_language, world_state, constrained=constrained,
+        natural_language, world_state, constrained=constrained, cfg=cfg,
     )
 
     # See sync ``parse_query`` for why PromptedOutput is used here.

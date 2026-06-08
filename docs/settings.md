@@ -76,6 +76,7 @@ Shadow-Loom understands three families of LLM providers:
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///shadow_loom.db` | SQLModel connection string. Swap for Postgres in production. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1/` | Ollama OpenAI-compatible endpoint. |
+| `OLLAMA_NUM_CTX` | `262144` | Context-window size (in tokens) requested for every `ollama:` model call. Ollama's OpenAI-compat endpoint defaults to **2 048 tokens** and silently truncates anything larger, producing empty/malformed JSON. This value is forwarded as `extra_body={"options": {"num_ctx": <N>}}` on every request; Ollama ≥0.6.x honours it at model-load time. Defaults to 256K to match the reference qwen3.6:35b model — lower it on smaller models (e.g. `32768` for an 8B model). Set `0` to disable forwarding. **Cloud providers (OpenAI, OpenRouter, Anthropic, …) are completely unaffected** — the `extra_body` is only set on the `ollama:` provider branch. See the [Local Ollama context size](#local-ollama-context-size) section below for belt-and-braces fallbacks on older Ollama versions. |
 | `<PREFIX>_BASE_URL` | *(provider-specific default)* | Override the HTTP endpoint for any built-in provider. |
 | `<PREFIX>_API_KEY` | *(empty)* | Required when any model string uses that prefix (cloud only). |
 | `SHADOW_LOOM_PROVIDERS` | *(empty)* | Comma-separated `prefix=base_url` pairs to extend the built-in registry without touching code. |
@@ -143,8 +144,8 @@ this stage discriminates between.
 |---|---|---|
 | `AUDITOR_MODEL` | *(inherits `DEFAULT_MODEL`)* | The judging model. Set only to override `DEFAULT_MODEL` for this stage. |
 | `AUDITOR_GENERATION_MODEL` | *(inherits `DEFAULT_MODEL`)* | The model used for re-renders inside the loop. Set only to override `DEFAULT_MODEL` for this stage. |
-| `AUDITOR_MAX_ITERATIONS` | `3` | Hard cap on audit → rewrite cycles. Each iteration costs two LLM calls. |
-| `AUDITOR_OUTPUT_RETRIES` | `5` | Structured-output retries per call. |
+| `AUDITOR_MAX_ITERATIONS` | `6` | Hard cap on audit → rewrite cycles. Each iteration costs two LLM calls. **Worst-case LLM-call budget per scene** ≈ `AUDITOR_MAX_ITERATIONS × (1 + AUDITOR_OUTPUT_RETRIES) × _PROVIDER_RETRY_ATTEMPTS` = `6 × 6 × 6 = 216` calls. In practice the loop short-circuits as soon as a clean scene is produced; reduce this or `AUDITOR_OUTPUT_RETRIES` first if your provider has tight rate limits. |
+| `AUDITOR_OUTPUT_RETRIES` | `5` | Structured-output retries per call. Multiplies with `AUDITOR_MAX_ITERATIONS` and `_PROVIDER_RETRY_ATTEMPTS` (=6, hardcoded) to bound the per-scene LLM call budget. |
 | `AUDITOR_TEMPERATURE` | `0.2` | Low temperature for deterministic auditing. |
 | `AUDITOR_GENERATION_TEMPERATURE` | `0.7` | Creative temperature for re-renders. |
 | `AUDITOR_MAX_TOKENS` | `64000` | Token budget for audit verdict. |
@@ -193,6 +194,8 @@ The thresholds map directly onto the auditor categories described in
 | `EXTRACTION_MODEL` | *(inherits `DEFAULT_MODEL`)* | Topology extractor. Set only to override `DEFAULT_MODEL` for this stage. |
 | `EXTRACTION_CHUNK_STRATEGY` | `act_headings` | `act_headings` splits on `Act N` / `Chapter N` markers, `paragraph` packs by size. |
 | `EXTRACTION_OUTPUT_RETRIES` | `5` | First-pass structured-output retries. |
+| `EXTRACTION_DEFAULT_MAX_TOKENS` | `16384` | Baseline `max_tokens` (output-token cap) applied to **every** extraction agent that does not pass its own per-call `model_settings`. Wired in at `Agent(...)` construction time so it propagates through PydanticAI's `merge_model_settings` shallow merge (per-call overrides like the catalogue's 65 536 still win). Prevents silent-truncation cascades on providers that enforce a low default output cap (Together, Fireworks, some OpenRouter routings). On the OpenAI provider this is automatically remapped to `max_completion_tokens` for reasoning models, so the value works uniformly across OpenAI / Anthropic / Google / OpenRouter / Ollama. |
+| `EXTRACTION_DEFAULT_TEMPERATURE` | `0.1` | Baseline sampling temperature for extraction agents that don't pass their own `model_settings`. Extraction is determinism-preferred (low temperature reduces id-minting variance across re-runs). Per-call overrides still win via shallow merge. |
 | `EXTRACTION_FABULA_TIME_SPACING` | `1000` | Initial gap between fabula-time stamps; leaves room for flashbacks/inserts. |
 | `EXTRACTION_MIN_CHUNK_CHARS` | `800` | Minimum chunk size before merging adjacent paragraphs. |
 | `EXTRACTION_CHUNK_OVERLAP_CHARS` | `300` | Trailing context prepended to the next chunk for coreference. |
@@ -445,6 +448,55 @@ First check `PHYSICS_CAUSAL_FORCE_SCALING` (raise/lower together with
 to soften / sharpen response. See
 [academic-foundations.md §2.3](academic-foundations.md#23-abduction-causalphysicsengineabduction_update)
 for the underlying model.
+
+---
+
+## 14. Local Ollama context size
+
+Ollama's OpenAI-compatible endpoint (`/v1/chat/completions`) defaults to
+a **2 048-token context window** regardless of what the underlying model
+advertises. On Shadow-Loom's multi-thousand-token extraction and
+generation prompts this silently truncates the input, the model returns
+empty / malformed JSON, and the pipeline cascades into
+`JSONDecodeError`s with no obvious upstream cause.
+
+Shadow-Loom mitigates this in three layered ways — set **all three** in
+production for full belt-and-braces coverage:
+
+1. **`OLLAMA_NUM_CTX` (default `262144`)** — every `ollama:` model call
+   is constructed with
+   `extra_body={"options": {"num_ctx": OLLAMA_NUM_CTX}}`. Ollama
+   ≥0.6.x honours `options` on the OpenAI-compat endpoint and resizes
+   the KV cache at model-load time. Older Ollama versions silently
+   ignore the field, so:
+
+2. **Server-side `OLLAMA_CONTEXT_LENGTH` env var** — export this on the
+   machine that launches the Ollama server (e.g.
+   `OLLAMA_CONTEXT_LENGTH=262144 ollama serve`) so every loaded model
+   gets the larger window regardless of what the client requested.
+
+3. **Modelfile `PARAMETER num_ctx`** — bake the context size into a
+   custom Modelfile and `ollama create my-model -f Modelfile`. This is
+   the most reliable option because it persists across server restarts
+   and is independent of both environment variables and request fields.
+
+All three approaches are documented at
+[docs.ollama.com/api/openai-compatibility](https://docs.ollama.com/api/openai-compatibility)
+under "Setting the context size".
+
+> **Cloud providers are unaffected.** The `extra_body.options.num_ctx`
+> field is only set on the `ollama:` provider branch in
+> [`resolve_model`](../shadow_loom/settings.py). OpenAI, OpenRouter,
+> Anthropic, Google, Azure, and every custom OpenAI-compatible provider
+> use the standard `max_tokens` (auto-remapped to
+> `max_completion_tokens` for OpenAI reasoning models by PydanticAI)
+> with no Ollama-specific payload.
+
+> **Memory caveat.** A 256K KV cache on a 35B-parameter model needs
+> tens of GB of VRAM. If you're on a smaller GPU (or running an 8B
+> model), drop `OLLAMA_NUM_CTX` to a value your hardware can actually
+> load — `32768` is a safe ceiling for an 8B model on a single 24GB
+> GPU.
 
 ---
 

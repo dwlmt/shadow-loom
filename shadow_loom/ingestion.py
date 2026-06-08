@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent, ModelRetry, NativeOutput, PromptedOutput, RunContext
+from pydantic_ai.settings import ModelSettings
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as __resolve_model
 
@@ -773,7 +774,13 @@ class ExtractionConfig(BaseModel):
     """Runtime configuration for the extraction pipeline."""
     model: str = Field(
         default="ollama:qwen3.6:35b",
-        description="PydanticAI model string (e.g. 'ollama:qwen3.6:35b', 'openai:gpt-4o').",
+        description=(
+            "PydanticAI model string (e.g. 'ollama:qwen3.6:35b', "
+            "'openai:gpt-4o', 'openrouter:qwen/qwen3.6-35b-a3b'). "
+            "Defaults to the project's reference long-context local "
+            "model; override via ``EXTRACTION_MODEL`` or by passing an "
+            "``ExtractionConfig(model=...)`` directly."
+        ),
     )
     chunk_strategy: Literal["act_headings", "paragraph"] = Field(
         default="act_headings",
@@ -782,6 +789,40 @@ class ExtractionConfig(BaseModel):
     output_retries: int = Field(
         default=5,
         description="Max retries for PydanticAI output validation.",
+    )
+    default_max_tokens: int = Field(
+        default=16384,
+        ge=1024,
+        description=(
+            "Default ``max_tokens`` (output token cap) applied to every "
+            "extraction agent that does not pass its own per-call "
+            "``model_settings``. Wired in at Agent construction time via "
+            "``model_settings={'max_tokens': ..., 'temperature': ...}`` "
+            "so it propagates through PydanticAI's ``merge_model_settings`` "
+            "shallow merge (per-call overrides still win). Prevents the "
+            "silent-truncation failure mode where providers that enforce "
+            "a low default output cap (Together, Fireworks, some "
+            "OpenRouter routings) would return mid-JSON-truncated "
+            "responses that surfaced as ``JSONDecodeError`` cascades. "
+            "On the OpenAI provider, PydanticAI automatically remaps this "
+            "to ``max_completion_tokens`` for reasoning models, so the "
+            "value works uniformly across OpenAI/Anthropic/Google/"
+            "OpenRouter/Ollama."
+        ),
+    )
+    default_temperature: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "Default sampling temperature applied to every extraction "
+            "agent that does not pass its own ``model_settings``. "
+            "Extraction is determinism-preferred (a low temperature "
+            "reduces id-minting variance across re-runs), so the "
+            "default is held near zero. Stages that genuinely need "
+            "creative sampling (e.g. socratic scaffolding) can still "
+            "override via per-call ``model_settings``."
+        ),
     )
     fabula_time_spacing: int = Field(
         default=1000,
@@ -1069,7 +1110,13 @@ class ExtractionConfig(BaseModel):
             "3.5+, Gemini 1.5/2.x) all advertise >=64k output budgets, "
             "so this default is safe across the supported provider "
             "set; trim it via ``EXTRACTION_PROPOSITION_CATALOGUE_MAX_TOKENS`` "
-            "if you are targeting a smaller-output model."
+            "if you are targeting a smaller-output model. **Warning:** on "
+            "Ollama models with <128K total context (``num_ctx``), an "
+            "output cap of 64k will leave very little headroom for the "
+            "(large) catalogue prompt itself and risks empty completions "
+            "— override to ≤16384 for small local models. With the "
+            "default 256K ``CoreSettings.ollama_num_ctx`` and a 256K-context "
+            "model (qwen3 / kimi-k2 / glm-4.6) this is comfortably safe."
         ),
     )
     proposition_catalogue_temperature: float = Field(
@@ -1472,6 +1519,7 @@ def _build_location_agent(config: ExtractionConfig) -> Agent[None, LocationRegis
         output_type=NativeOutput(LocationRegister),
         system_prompt=_load_prompt("ontology_locations.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
 
@@ -1491,6 +1539,7 @@ def _build_object_agent(config: ExtractionConfig) -> Agent[_ObjectDeps, ObjectRe
         output_type=NativeOutput(ObjectRegister),
         system_prompt=_load_prompt("ontology_objects.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -1572,6 +1621,7 @@ def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRe
         output_type=NativeOutput(EntityRegister),
         system_prompt=_load_prompt("ontology_entities.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -1672,6 +1722,7 @@ def _build_world_traits_agent(config: ExtractionConfig) -> Agent[None, WorldTrai
         output_type=NativeOutput(WorldTraitsRegister),
         system_prompt=_load_prompt("ontology_world_traits.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
 
@@ -1997,6 +2048,7 @@ def _build_socratic_agent(config: ExtractionConfig) -> Agent[_SocraticDeps, Socr
         output_type=NativeOutput(SocraticScaffold),
         system_prompt=_load_prompt("socratic_scaffolding.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -2172,6 +2224,7 @@ def _build_proposition_catalogue_agent(
         output_type=NativeOutput(_PropositionCatalogueDraft),
         system_prompt=_load_prompt("proposition_catalogue.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -2415,6 +2468,28 @@ def _catalogue_model_settings(config: ExtractionConfig) -> Dict[str, Any]:
         "max_tokens": int(config.proposition_catalogue_max_tokens),
         "temperature": float(config.proposition_catalogue_temperature),
     }
+
+
+def _default_extraction_settings(config: ExtractionConfig) -> ModelSettings:
+    """Build the Agent-init ``model_settings=`` dict shared by all builders.
+
+    Provides a baseline ``max_tokens`` and ``temperature`` so providers
+    that enforce a low default output cap (Together, Fireworks, some
+    OpenRouter routings) don't silently truncate JSON responses, and
+    so extraction stays deterministic across re-runs.
+
+    Per-call ``agent.run(..., model_settings=...)`` overrides still
+    win because PydanticAI's :func:`pydantic_ai.settings.merge_model_settings`
+    is a shallow dict-merge with overrides taking precedence (verified
+    against pydantic-ai 1.87+). On the OpenAI provider the ``max_tokens``
+    key is automatically remapped to ``max_completion_tokens`` for
+    reasoning models, so the same value works uniformly across
+    OpenAI / Anthropic / Google / OpenRouter / Ollama.
+    """
+    return ModelSettings(
+        max_tokens=int(config.default_max_tokens),
+        temperature=float(config.default_temperature),
+    )
 
 
 def _merge_catalogues(
@@ -2893,6 +2968,7 @@ def _build_concern_scaffold_agent(
         output_type=NativeOutput(ConcernScaffold),
         system_prompt=_load_prompt("concern_scaffolding.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -3164,6 +3240,7 @@ def _build_concern_catalogue_agent(
         output_type=NativeOutput(_ConcernSeedsDraft),
         system_prompt=_load_prompt("proposition_catalogue_concerns.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -4529,6 +4606,7 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
         output_type=NativeOutput(PhysicsExtraction),
         system_prompt=_load_prompt("physics_extraction.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -5096,6 +5174,7 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
         output_type=NativeOutput(SocialExtraction),
         system_prompt=_load_prompt("social_extraction.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -5632,6 +5711,7 @@ def _build_consequences_agent(
         output_type=NativeOutput(ConsequencesExtraction),
         system_prompt=_load_prompt("consequences_extraction.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -6030,6 +6110,7 @@ def _build_affect_agent(
         output_type=NativeOutput(ChunkAffectExtraction),
         system_prompt=_load_prompt("affect_extraction.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -10404,6 +10485,7 @@ def _build_research_agent(
         output_type=NativeOutput(WorldFact),
         system_prompt=_load_prompt("research_extraction.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
     return agent
 
@@ -10514,7 +10596,11 @@ def _run_research_step(
         )
 
         try:
-            result = agent.run_sync(user_msg, **_user_kwargs())
+            result = agent.run_sync(
+                user_msg,
+                model_settings={"max_tokens": 4096},
+                **_user_kwargs(),
+            )
             fact: WorldFact = result.output
         except Exception:
             logger.exception("[Pipeline·Research] agent failed for topic=%r — skipping.", topic)
@@ -10605,7 +10691,11 @@ async def _run_research_step_async(
         )
 
         try:
-            result = await agent.run(user_msg, **_user_kwargs())
+            result = await agent.run(
+                user_msg,
+                model_settings={"max_tokens": 4096},
+                **_user_kwargs(),
+            )
             fact: WorldFact = result.output
         except Exception:
             logger.exception("[Pipeline·Research·Async] agent failed for topic=%r — skipping.", topic)
@@ -16824,6 +16914,7 @@ def _build_validation_agent(config: ExtractionConfig) -> Agent[None, ValidationR
         output_type=PromptedOutput(ValidationReport),
         system_prompt=_load_prompt("validation.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
 
@@ -16841,6 +16932,7 @@ def _build_correction_agent(config: ExtractionConfig) -> Agent[None, WorldStateV
         output_type=NativeOutput(WorldStateV1),
         system_prompt=_load_prompt("correction.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
 
@@ -17897,6 +17989,7 @@ def _build_correction_patch_agent(
         output_type=NativeOutput(WorldStatePatch),
         system_prompt=_load_prompt("correction.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
 
@@ -18346,6 +18439,7 @@ def _build_world_trait_timeline_agent(
         output_type=NativeOutput(WorldTraitTimelineExtraction),
         system_prompt=_load_prompt("world_trait_timeline.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -18734,6 +18828,7 @@ def _build_concern_extraction_agent(
         output_type=NativeOutput(ConcernRegister),
         system_prompt=_load_prompt("concern_extraction.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt
@@ -19070,6 +19165,7 @@ def _build_belief_clustering_agent(
         output_type=NativeOutput(BeliefClusterRegister),
         system_prompt=_load_prompt("belief_proposition_clustering.md"),
         retries=config.output_retries,
+        model_settings=_default_extraction_settings(config),
     )
 
     @agent.system_prompt

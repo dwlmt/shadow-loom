@@ -802,6 +802,41 @@ scorer constants are externalised through
 \texttt{DIRECTIVE\_ASSEMBLY\_*}); the audit script
 \texttt{scripts/audit\_affective.py} reproduces the table.
 
+\paragraph{LLM-call hardening (2026-06-08, fourteenth-pass).}
+A subsequent context-budget audit closed two further
+provider-agnostic robustness issues that had been masquerading
+as model-quality failures: (E1)~Ollama's OpenAI-compatible
+endpoint silently truncates every request to a 2\,048-token
+context window unless told otherwise --- on Shadow-Loom's
+multi-thousand-token extraction prompts this caused empty /
+malformed JSON that surfaced downstream as a
+\texttt{JSONDecodeError} cascade. The \texttt{ollama:} branch of
+\texttt{resolve\_model} now forwards
+\texttt{extra\_body=\{"options":\{"num\_ctx":N\}\}} on every
+request (default $N=262\,144$, overridable via the
+\texttt{OLLAMA\_NUM\_CTX} env var; honoured by Ollama
+$\geq 0.6$). The field is set \emph{only} on the Ollama branch,
+so cloud providers (OpenAI, OpenRouter, Anthropic, Google) are
+completely unaffected. (E2)~Fourteen of the nineteen extraction
+agent builders had been passing no \texttt{max\_tokens}, leaving
+the per-call output cap at whatever default the provider
+enforced --- typically benign on OpenAI / Anthropic but
+silently $\leq 4$\,K on several OpenRouter routings and on
+Together / Fireworks. The builders now declare baseline
+\texttt{model\_settings} (\texttt{max\_tokens}=16\,384,
+\texttt{temperature}=0.1) at \texttt{Agent(\ldots)} construction
+time; PydanticAI's
+\texttt{merge\_model\_settings(base \(\vert\) overrides)}
+shallow merge preserves per-call overrides (the proposition
+catalogue's 65\,536-token cap, the research agent's 4\,096),
+and on the OpenAI provider \texttt{max\_tokens} is
+auto-remapped to \texttt{max\_completion\_tokens} for reasoning
+models, so the same baseline works uniformly across all
+supported back-ends. Both fixes are accompanied by an explicit
+worst-case audit-call budget in the auditor docstring
+($\texttt{max\_iterations}\times(1+\texttt{output\_retries})
+\times \texttt{\_PROVIDER\_RETRY\_ATTEMPTS}=216$ at defaults).
+
 
 \section*{Code, licence, and reproducibility}
 

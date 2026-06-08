@@ -368,13 +368,27 @@ def _compress_world_state(
 
     events = physics_state.get("events", []) or []
     if events:
-        # Sort by fabula_time so the LLM gets chronological order.
+        # Spread across the full timeline: first quarter for opening
+        # context + last three quarters for recent state. Without this
+        # a head-only tail slice blinds the answer agent to events from
+        # the beginning of the story when interventions / counterfactuals
+        # target early acts.
         sorted_events = sorted(
             events, key=lambda e: e.get("fabula_time", 0),
         )
-        recent = sorted_events[-max_events:]
+        if len(sorted_events) <= max_events:
+            spread = sorted_events
+        else:
+            n_head = max(1, max_events // 4)
+            n_tail = max_events - n_head
+            spread = sorted_events[:n_head] + sorted_events[len(sorted_events) - n_tail:]
         lines.append("\n## Events (chronological)")
-        for evt in recent:
+        if len(sorted_events) > max_events:
+            lines.append(
+                f"  [{len(sorted_events)} total; showing {len(spread)} "
+                f"(first {n_head} + last {n_tail}) — increase max_events for more]"
+            )
+        for evt in spread:
             eid = evt.get("id", "?")
             ft = evt.get("fabula_time", "?")
             etype = evt.get("event_type", "?")
@@ -1309,7 +1323,13 @@ def answer_question(
             _timeout = 120.0
 
         with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-            _fut = _pool.submit(agent.run_sync, user_msg)
+            _fut = _pool.submit(
+                agent.run_sync,
+                user_msg,
+                model_settings={
+                    "max_tokens": config.answer_max_tokens,
+                },
+            )
             try:
                 result = _fut.result(timeout=_timeout)
             except _cf.TimeoutError as exc:

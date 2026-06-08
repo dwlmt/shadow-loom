@@ -257,6 +257,37 @@ class CoreSettings(BaseSettings):
         default="http://localhost:11434/v1/",
         description="Base URL for the local Ollama API (OpenAI-compat).",
     )
+    ollama_num_ctx: int = Field(
+        default=262144,
+        ge=0,
+        description=(
+            "Context-window size (in tokens) requested for every "
+            "``ollama:`` model call. Ollama defaults to **2 048 tokens** "
+            "for the OpenAI-compat ``/v1/chat/completions`` endpoint, "
+            "which silently truncates Shadow-Loom's multi-thousand-token "
+            "extraction and generation prompts and produces empty / "
+            "malformed JSON. We forward this as "
+            "``extra_body={'options': {'num_ctx': <N>}}`` on every "
+            "OllamaModel request — recent Ollama versions (>=0.6.x) "
+            "honour the ``options`` field on the OpenAI-compat endpoint "
+            "and apply it at model-load time; older versions ignore it "
+            "(no-op). Default 262 144 (256K) matches the long-context "
+            "qwen3 / kimi-k2 / glm-4.6 family that Shadow-Loom is tuned "
+            "for; lower it on smaller models (e.g. 32 768 for an 8B "
+            "model that won't actually load a 256K KV cache). For full "
+            "compatibility on Ollama <0.6.x, also set the server-side "
+            "``OLLAMA_CONTEXT_LENGTH`` env var to the same value when "
+            "launching the Ollama server, or bake the size into a "
+            "custom Modelfile (``PARAMETER num_ctx <N>`` + "
+            "``ollama create``) — both options are documented at "
+            "https://docs.ollama.com/api/openai-compatibility "
+            "(\u201cSetting the context size\u201d). Set to 0 to disable "
+            "the forwarding entirely (the model loads with whatever "
+            "default the server / Modelfile defines). Only consulted on "
+            "the ``ollama:`` provider branch — cloud providers (OpenAI, "
+            "OpenRouter, Anthropic, …) are completely unaffected."
+        ),
+    )
     tavily_api_key: str = Field(
         default="",
         description=(
@@ -281,7 +312,12 @@ class CoreSettings(BaseSettings):
         default="ollama:qwen3.6:35b",
         description=(
             "Fallback PydanticAI model string when a stage-specific model "
-            "is not set. Format is ``<provider>:<model>``. Built-in providers: "
+            "is not set. The default points at the project's reference "
+            "long-context local model (qwen3.6-35b-a3b, 256K window) — "
+            "production deployments typically override via the "
+            "``DEFAULT_MODEL`` env var (e.g. "
+            "``openrouter:qwen/qwen3.6-35b-a3b`` for the cloud build). "
+            "Format is ``<provider>:<model>``. Built-in providers: "
             "ollama, openrouter, openai, fireworks, featherless, together, "
             "deepinfra, groq, anyscale, perplexity, huggingface, mistral, xai, "
             "deepseek, moonshot, cerebras, sambanova, nebius, novita, "
@@ -325,7 +361,15 @@ class GenerationSettings(BaseSettings):
             "empty to fall back to ``CoreSettings.default_model``."
         ),
     )
-    max_tokens: int = Field(default=32000)
+    max_tokens: int = Field(
+        default=16000,
+        description=(
+            "Maximum *output* tokens for generated prose. Prose scenes "
+            "rarely exceed ~12 000 words so 16 000 tokens leaves generous "
+            "headroom while keeping the output budget well below a 256K "
+            "context window and leaving ~240K tokens for the input prompt."
+        ),
+    )
     temperature: float = Field(default=0.7)
     output_retries: int = Field(default=5)
     # ── Scene-context trimming ────────────────────────────────────
@@ -351,6 +395,15 @@ class GenerationSettings(BaseSettings):
     # GPT-class context windows with the old unlimited defaults.
     answer_max_entities: int = Field(default=60)
     answer_max_events: int = Field(default=80)
+    answer_max_tokens: int = Field(
+        default=4096,
+        description=(
+            "Maximum *output* tokens for the Q&A answer agent. The "
+            "AnswerCard is structured JSON — 4 096 tokens is generous "
+            "for any answer + evidence list and keeps the output budget "
+            "well below a 256K context window."
+        ),
+    )
 
 
 # =====================================================================
@@ -372,9 +425,36 @@ class QueryParsingSettings(BaseSettings):
             "fall back to ``CoreSettings.default_model``."
         ),
     )
-    max_tokens: int = Field(default=32000)
+    max_tokens: int = Field(
+        default=8192,
+        description=(
+            "Maximum *output* tokens for the query-parsing LLM call. "
+            "The classification response is a small JSON object, so "
+            "this must be kept well below the model's context window "
+            "to leave room for the (potentially large) input prompt. "
+            "128000 here caused failures with 128k-context models "
+            "because input + output budget exceeded the context limit."
+        ),
+    )
     temperature: float = Field(default=0.1)
     output_retries: int = Field(default=5)
+    graph_summary_max_chars: int = Field(
+        default=40_000,
+        description=(
+            "Hard character budget for the world-model graph summary "
+            "injected into the query-parsing prompt. Keeps the input "
+            "well inside typical 128k context windows. Set 0 to disable."
+        ),
+    )
+    max_events_in_summary: int = Field(
+        default=60,
+        description=(
+            "Maximum number of events included in the graph summary. "
+            "When a world has more events the summary keeps the first "
+            "third and last two thirds (chronological), so both opening "
+            "events and recent state are visible. Set 0 to disable."
+        ),
+    )
 
 
 # =====================================================================
@@ -404,12 +484,48 @@ class AuditorSettings(BaseSettings):
             "to fall back to ``CoreSettings.default_model``."
         ),
     )
-    max_iterations: int = Field(default=6, ge=1, le=8)
-    output_retries: int = Field(default=5)
+    max_iterations: int = Field(
+        default=6,
+        ge=1,
+        le=8,
+        description=(
+            "Maximum number of audit→regenerate cycles per scene. The "
+            "**worst-case LLM call count per scene** is approximately "
+            "``max_iterations * (1 + output_retries) * _PROVIDER_RETRY_ATTEMPTS`` "
+            "= ``6 * 6 * 6 = 216`` calls at defaults. In practice the "
+            "auditor short-circuits as soon as a clean scene is produced, "
+            "so this ceiling is rarely hit — but if your provider has "
+            "tight per-minute rate limits, reduce this or ``output_retries`` "
+            "first."
+        ),
+    )
+    output_retries: int = Field(
+        default=5,
+        description=(
+            "PydanticAI ``Agent.retries`` for both the auditor and its "
+            "regeneration sub-agent. Multiplies with ``max_iterations`` "
+            "and ``_PROVIDER_RETRY_ATTEMPTS`` (see ``max_iterations`` "
+            "docstring) to bound the per-scene LLM call budget."
+        ),
+    )
     temperature: float = Field(default=0.2)
     generation_temperature: float = Field(default=0.7)
-    max_tokens: int = Field(default=32000)
-    max_tokens_generation: int = Field(default=16000)
+    max_tokens: int = Field(
+        default=8192,
+        description=(
+            "Maximum *output* tokens for the auditor LLM call. The audit "
+            "result is structured JSON (violations list), not prose, so "
+            "8 192 tokens is more than sufficient and leaves the bulk of "
+            "the 256K context window free for the (large) audit prompt."
+        ),
+    )
+    max_tokens_generation: int = Field(
+        default=16000,
+        description=(
+            "Maximum *output* tokens for the auditor's prose re-generation "
+            "step. Mirrors GenerationSettings.max_tokens."
+        ),
+    )
     min_foreshadowing_score: float = Field(default=0.6)
     max_affective_loss: float = Field(default=0.3)
     min_cognitive_plausibility: float = Field(default=0.7)
@@ -446,10 +562,10 @@ class ExtractionSettings(BaseSettings):
     min_chunk_chars: int = Field(default=800)
     chunk_overlap_chars: int = Field(default=300)
     max_correction_retries: int = Field(default=5)
-    validation_payload_max_chars: int = Field(default=200_000)
-    correction_subgraph_threshold_chars: int = Field(default=120_000)
-    max_concurrent_chunks: int = Field(default=12)
-    per_chunk_timeout_seconds: float = Field(default=0.0)
+    validation_payload_max_chars: int = Field(default=600_000)
+    correction_subgraph_threshold_chars: int = Field(default=400_000)
+    max_concurrent_chunks: int = Field(default=16)
+    per_chunk_timeout_seconds: float = Field(default=600.0)
     per_agent_call_timeout_seconds: float = Field(default=600.0)
     estimated_events_per_chunk: int = Field(default=10)
     enable_consequences_agent: bool = Field(default=True)
@@ -1258,6 +1374,7 @@ class Settings:
             "preceding_prose_max_chars": self.generation.preceding_prose_max_chars,
             "answer_max_entities": self.generation.answer_max_entities,
             "answer_max_events": self.generation.answer_max_events,
+            "answer_max_tokens": self.generation.answer_max_tokens,
         }
 
     def query_parsing_config(self) -> dict:
@@ -1267,6 +1384,8 @@ class Settings:
             "output_retries": self.query_parsing.output_retries,
             "max_tokens": self.query_parsing.max_tokens,
             "temperature": self.query_parsing.temperature,
+            "graph_summary_max_chars": self.query_parsing.graph_summary_max_chars,
+            "max_events_in_summary": self.query_parsing.max_events_in_summary,
         }
 
     def auditor_config(self) -> dict:
@@ -1544,7 +1663,28 @@ def resolve_model(model_str: str, *, stage: Optional[str] = None):
         model_name = model_str.split(":", 1)[1]
         from pydantic_ai.models.ollama import OllamaModel
         from pydantic_ai.providers.ollama import OllamaProvider
-        return OllamaModel(model_name, provider=OllamaProvider(base_url=core.ollama_base_url))
+        # Forward ``num_ctx`` via ``extra_body.options`` so Ollama loads
+        # the model with a large enough context window. Ollama's
+        # ``/v1/chat/completions`` shim defaults to 2 048 tokens (see
+        # https://docs.ollama.com/api/openai-compatibility) — without
+        # this, every long extraction / generation prompt is silently
+        # truncated. Recent Ollama versions honour the ``options``
+        # field on the OpenAI-compat endpoint; older versions ignore
+        # it harmlessly. ``ollama_num_ctx=0`` disables the forwarding
+        # so users can rely on a Modelfile / ``OLLAMA_CONTEXT_LENGTH``
+        # instead.
+        ollama_settings: dict | None = None
+        if core.ollama_num_ctx > 0:
+            ollama_settings = {
+                "extra_body": {
+                    "options": {"num_ctx": int(core.ollama_num_ctx)},
+                },
+            }
+        return OllamaModel(
+            model_name,
+            provider=OllamaProvider(base_url=core.ollama_base_url),
+            settings=ollama_settings,  # type: ignore[arg-type]
+        )
 
     providers = get_openai_compat_providers()
     if ":" in model_str:

@@ -122,6 +122,13 @@ class GenerationConfig(BaseModel):
     preceding_prose_max_chars: int = Field(default=3000)
     answer_max_entities: int = Field(default=30)
     answer_max_events: int = Field(default=40)
+    answer_max_tokens: int = Field(
+        default=4096,
+        description=(
+            "Maximum *output* tokens for the Q&A answer agent. "
+            "AnswerCard is structured JSON; 4096 is generous."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod

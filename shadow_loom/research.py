@@ -543,7 +543,12 @@ def lookup_and_persist_topic(
 
     try:
         agent = _build_research_agent(config)
-        result = agent.run_sync(user_msg, user_id=user_id, project_id=project_id)
+        result = agent.run_sync(
+            user_msg,
+            model_settings={"max_tokens": 4096},
+            user_id=user_id,
+            project_id=project_id,
+        )
         fact = result.output
     except Exception as e:
         # R20-H9: sanitize — see R20-H8 above.
