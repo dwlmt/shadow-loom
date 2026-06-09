@@ -6413,7 +6413,6 @@ def run_feedback_loop(
         # restore them if the rewriter makes things strictly worse.
         prior_scene = current_scene
         prior_audit = audit
-        prior_violation_count = len(audit.violations)
         prior_violation_score = _finding_severity_score(
             findings_from_sources(audit, engine_failures)
         )

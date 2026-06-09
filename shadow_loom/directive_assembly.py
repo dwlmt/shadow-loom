@@ -8547,7 +8547,6 @@ class DirectiveAssembler:
                 elif bucket == "hope":
                     if weighted > hope_prob:
                         hope_prob = weighted
-                        best_hope_id = evt.id
                         best_hope_kind = kind
 
         # Clamp the surfaced probabilities into [0, 1]; the weighted

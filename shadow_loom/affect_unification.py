@@ -37,9 +37,12 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 import networkx as nx
+
+if TYPE_CHECKING:
+    from shadow_loom.models import Location
 
 from shadow_loom.models import (
     Belief,

@@ -8212,13 +8212,13 @@ def _audit_chunk_consistency(
     # mutation_social edges declare (target, counterpart, axis); each
     # should have a matching RelationshipEdge reading on that dyad-axis.
     rel_dyad_axes: Set[Tuple[str, str, str]] = set()
-    for re in topo.social_topology:
-        for axis_name, reading in (re.metrics or {}).items():
+    for rel in topo.social_topology:
+        for axis_name, reading in (rel.metrics or {}).items():
             # Only count axes the social agent actually observed.
             if not getattr(reading, "observed", True):
                 continue
             rel_dyad_axes.add(
-                (re.source_entity_id, re.target_entity_id, axis_name)
+                (rel.source_entity_id, rel.target_entity_id, axis_name)
             )
     for ce in topo.causal_topology:
         if ce.causality_type != "mutation_social":
@@ -14340,14 +14340,14 @@ def _orphan_audit_relationship_edges(
     Validates that both endpoints exist in entity registry.
     Prevents phantom social topology that breaks d-separation reasoning.
     """
-    for re in social_edges:
-        if re.source_entity_id not in entity_ids:
+    for rel in social_edges:
+        if rel.source_entity_id not in entity_ids:
             repairs.append(
-                f"ORPHAN-AUDIT: RelationshipEdge has invalid source: {re.source_entity_id} → {re.target_entity_id}"
+                f"ORPHAN-AUDIT: RelationshipEdge has invalid source: {rel.source_entity_id} → {rel.target_entity_id}"
             )
-        if re.target_entity_id not in entity_ids:
+        if rel.target_entity_id not in entity_ids:
             repairs.append(
-                f"ORPHAN-AUDIT: RelationshipEdge has invalid target: {re.source_entity_id} → {re.target_entity_id}"
+                f"ORPHAN-AUDIT: RelationshipEdge has invalid target: {rel.source_entity_id} → {rel.target_entity_id}"
             )
 
 

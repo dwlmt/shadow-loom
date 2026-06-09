@@ -740,7 +740,7 @@ def run_and_save(
         # propagated. Surface compact counts so the client can render
         # "5 prop, 2 object, 1 edge" rails without re-walking the
         # raw mutation arrays.
-        _cascade_counts: Dict[str, int] = {}
+        _cascade_counts: dict[str, int] = {}
         for _k in (
             "mutations",
             "social_mutations",

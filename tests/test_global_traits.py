@@ -927,7 +927,9 @@ class TestWorldTraitTimelineAgent:
         assert len(validators) > 0
 
         with pytest.raises(ModelRetry):
-            await validators[-1].validate(bad_extraction, ctx)
+            await validators[-1].validate(
+                bad_extraction, ctx, wrap_validation_errors=False
+            )
 
     @pytest.mark.asyncio
     async def test_validator_rejects_mismatched_fabula_time(self):
@@ -965,7 +967,9 @@ class TestWorldTraitTimelineAgent:
 
         validators = agent._output_validators
         with pytest.raises(ModelRetry):
-            await validators[-1].validate(bad_extraction, ctx)
+            await validators[-1].validate(
+                bad_extraction, ctx, wrap_validation_errors=False
+            )
 
     @pytest.mark.asyncio
     async def test_validator_rejects_invalid_world_trait_id(self):
@@ -1003,4 +1007,6 @@ class TestWorldTraitTimelineAgent:
 
         validators = agent._output_validators
         with pytest.raises(ModelRetry):
-            await validators[-1].validate(bad_extraction, ctx)
+            await validators[-1].validate(
+                bad_extraction, ctx, wrap_validation_errors=False
+            )

@@ -2414,7 +2414,6 @@ def find_pod(
     )
 
     candidate_event_ids: List[str] = []
-    target_kind = getattr(target_outcome, "target_kind", "event")
     target_id: Optional[str] = None
 
     if isinstance(target_outcome, DoEvent):

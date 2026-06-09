@@ -1278,7 +1278,7 @@ def build_affective_dashboard(state: AppState) -> None:
                     char_grid = compute_character_emotion_grid(
                         full_ws or ws,
                         entity_ids=entity_ids,
-                        syuzhet_anchor=anchor,
+                        syuzhet_anchor=syuzhet_anchor_val,
                     )
                 except Exception:
                     logger.exception("Character emotion grid failed")
