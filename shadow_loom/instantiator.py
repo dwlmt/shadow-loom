@@ -34,6 +34,10 @@ def _relationship_inertia_default() -> float:
     return _physics_settings().relationship_inertia_default
 
 
+def _entity_trait_inertia_default() -> float:
+    return _physics_settings().entity_trait_inertia_default
+
+
 def _ambient_force_multiplier() -> float:
     return _physics_settings().ambient_force_multiplier
 
@@ -731,37 +735,54 @@ class AMWNInstantiator:
         # --- IMPACT > INERTIA CHECK for trait mutations ---
         if keys[0] == "traits" and len(keys) >= 2:
             trait_name = keys[1]
-            trait_data = node_data.get("traits", {}).get(trait_name)
-            if isinstance(trait_data, dict) and "value" in trait_data and "inertia" in trait_data:
-                current_val = trait_data["value"]
-                trait_inertia = trait_data["inertia"]
-                # Determine the target value
-                if len(keys) == 2 and isinstance(new_value, (int, float)):
-                    target_val = float(new_value)
-                elif len(keys) == 3 and keys[2] == "value" and isinstance(new_value, (int, float)):
-                    target_val = float(new_value)
-                else:
-                    target_val = None
-                if target_val is not None:
-                    desired_shift = target_val - current_val
-                    if abs(desired_shift) <= trait_inertia + _inertia_epsilon():
-                        logger.log(_surgery_log_level(),
-                                   "[Surgery] Inertia blocked: %s.%s shift=%.2f <= inertia=%.2f. No change.",
-                                   node_id, path, abs(desired_shift), trait_inertia)
-                        return  # Trait resists — do NOT sever edges
-                    # Dampen: effective shift = desired_shift - sign(shift)*inertia
-                    sign = 1 if desired_shift > 0 else -1
-                    effective_shift = desired_shift - sign * trait_inertia
-                    effective_val = max(0.0, min(1.0, current_val + effective_shift))
-                    new_value = effective_val
-                    if len(keys) == 2:
-                        # Promote shorthand "traits.X" → "traits.X.value" so the
-                        # standard mutation updates the value inside the dict
-                        # instead of replacing the entire TraitVector.
-                        keys = [keys[0], keys[1], "value"]
+            traits_map = node_data.setdefault("traits", {})
+            trait_data = traits_map.get(trait_name)
+            if not (isinstance(trait_data, dict) and "value" in trait_data and "inertia" in trait_data):
+                # Trait axis absent (or malformed) on this node. Materialise a
+                # well-formed TraitVector seeded at the neutral 0.0 baseline so
+                # the do-clamp writes a proper dict (never a bare float) and the
+                # inertia gate below applies uniformly. Mirrors the
+                # create-if-absent behaviour of ``_intervene_relationship``.
+                # An invented axis has no typed response functions, so its only
+                # downstream effect is the untyped-edge severance below.
+                trait_data = {
+                    "value": 0.0,
+                    "inertia": _entity_trait_inertia_default(),
+                    "evidence_strength": "weak",
+                }
+                traits_map[trait_name] = trait_data
+                logger.log(_surgery_log_level(),
+                           "[Surgery] Materialised absent trait axis %s.%s at "
+                           "baseline 0.0 for do-clamp.", node_id, trait_name)
+            current_val = trait_data["value"]
+            trait_inertia = trait_data["inertia"]
+            # Determine the target value
+            if len(keys) == 2 and isinstance(new_value, (int, float)):
+                target_val = float(new_value)
+            elif len(keys) == 3 and keys[2] == "value" and isinstance(new_value, (int, float)):
+                target_val = float(new_value)
+            else:
+                target_val = None
+            if target_val is not None:
+                desired_shift = target_val - current_val
+                if abs(desired_shift) <= trait_inertia + _inertia_epsilon():
                     logger.log(_surgery_log_level(),
-                               "[Surgery] Inertia dampened: %s.%s desired=%.2f, inertia=%.2f, effective=%.2f",
-                               node_id, path, target_val, trait_inertia, effective_val)
+                               "[Surgery] Inertia blocked: %s.%s shift=%.2f <= inertia=%.2f. No change.",
+                               node_id, path, abs(desired_shift), trait_inertia)
+                    return  # Trait resists — do NOT sever edges
+                # Dampen: effective shift = desired_shift - sign(shift)*inertia
+                sign = 1 if desired_shift > 0 else -1
+                effective_shift = desired_shift - sign * trait_inertia
+                effective_val = max(0.0, min(1.0, current_val + effective_shift))
+                new_value = effective_val
+                if len(keys) == 2:
+                    # Promote shorthand "traits.X" → "traits.X.value" so the
+                    # standard mutation updates the value inside the dict
+                    # instead of replacing the entire TraitVector.
+                    keys = [keys[0], keys[1], "value"]
+                logger.log(_surgery_log_level(),
+                           "[Surgery] Inertia dampened: %s.%s desired=%.2f, inertia=%.2f, effective=%.2f",
+                           node_id, path, target_val, trait_inertia, effective_val)
 
         # --- STANDARD STATE MUTATION ---
         current_level = node_data

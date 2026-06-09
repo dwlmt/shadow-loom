@@ -1333,11 +1333,12 @@ class CausalEdge(AMWNEdge):
     """
     A universal causal link that can bridge Events, States, Traits, and Affordances.
 
-    Supports four modalities of narrative causality:
-      - chain_reaction:        Event → Event  (direct sequential triggers)
-      - mutation:              Event → State   (actions leave marks on the world)
-      - affordance_gate:       State → Event   (states enable or prevent events)
-      - ambient_propagation:   State → State   (background physics without events)
+    Supports five modalities of narrative causality:
+      - chain_reaction:        Event → Event        (direct sequential triggers)
+      - mutation:              Event → State        (actions leave marks on the world)
+      - mutation_social:       Event → Relationship (affinity/fear/power shifts)
+      - affordance_gate:       State → Event        (states enable or prevent events)
+      - ambient_propagation:   State → State        (background physics without events)
     """
     source_id: str = Field(
         description="The cause. Can be an EVT_ (Event), ENT_ (Trait/State), LOC_ (Ambient State), OBJ_ (Affordance), or WORLD_ (Global Trait)."

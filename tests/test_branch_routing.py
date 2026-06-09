@@ -396,6 +396,62 @@ class TestPromoteBranch:
         with pytest.raises(VersionMutationError):
             promote_branch(99999, user_id=uid)
 
+    def test_promote_retags_node_level_world_id_to_factual(self):
+        # ``promote_branch`` flips the *VersionRow* world_id to factual,
+        # but the persisted WorldStateV1 carries its own per-node
+        # ``world_id`` tags (entities, propositions, …). Downstream
+        # consumers (renderer, auditor, MCP routing, AMWN filters) branch
+        # on those node tags, so a promote that left them as "shadow"
+        # would make the promoted version still *look* like a shadow
+        # branch everywhere except the version DAG. Verify the node-level
+        # retag (``_retag_shadow_to_factual``) actually runs end-to-end.
+        import json
+
+        from shadow_loom.models import Entity, Proposition, WorldStateV1
+
+        uid, pid = _seed_project()
+        v0 = _save(pid, uid, 0)
+
+        shadow_ws = WorldStateV1(
+            locations={}, objects={},
+            entities={
+                "ENT_SHADOW": Entity(
+                    id="ENT_SHADOW", name="Ghost", location_id="LOC_X",
+                    status="healthy", traits={}, world_id="shadow",
+                ),
+            },
+            events=[], causal_topology=[],
+            propositions=[
+                Proposition(
+                    proposition_id="PROP_S", kind="event_occurs",
+                    description="counterfactual outcome", world_id="shadow",
+                ),
+            ],
+        )
+        shadow_json = shadow_ws.model_dump_json()
+        assert '"world_id":"shadow"' in shadow_json.replace(" ", "")
+
+        s1 = save_version(
+            project_id=pid,
+            world_state_json=shadow_json,
+            version=1,
+            source="counterfactual",
+            description="v1",
+            user_id=uid,
+            ancestor_id=v0.id,  # forks off current factual head → no force
+            world_id="shadow",
+            branch_label="alt",
+        )
+
+        promoted = promote_branch(s1.id, user_id=uid, description="canon!")
+
+        assert promoted.world_id == "factual"
+        # No node-level shadow tag survives in the promoted snapshot.
+        assert '"world_id":"shadow"' not in promoted.world_state_json.replace(" ", "")
+        data = json.loads(promoted.world_state_json)
+        assert data["entities"]["ENT_SHADOW"]["world_id"] == "factual"
+        assert data["propositions"][0]["world_id"] == "factual"
+
 
 # =====================================================================
 # AppState-level: DB-load must carry branch identity into the in-memory

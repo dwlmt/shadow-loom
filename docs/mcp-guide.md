@@ -114,7 +114,7 @@ from a short enum and drop kind-specific arguments into `payload`.
 
 | Tool | Replaces | Discriminator |
 |---|---|---|
-| `discover(scope, project_id?, payload?)` | `list_projects`, `list_branches`, `list_channels`, `list_world_facts` | `scope ∈ {projects, branches, channels, world_facts}` |
+| `discover(scope, project_id?, payload?)` | `list_projects`, `list_branches`, `list_channels`, `list_world_facts` (+ proposition/concern/superseded-event surfaces) | `scope ∈ {projects, branches, channels, world_facts, propositions, concerns, superseded_events}` |
 | `trace(kind, project_id?, payload)` | `trace_causality`, `get_history`, `get_channel_history` | `kind ∈ {causal, history, channel}` |
 | `author(action, project_id?, payload)` *(async)* | `ingest`, `write`, `research_topic`, `delete_world_fact` | `action ∈ {ingest, edit, research, forget_fact}` |
 | `manage(action, project_id?, payload)` | `branch`, `fork`, `share`, `promote_branch`, `update_project_tool`, `delete_project`, `delete_version`, `reparent_version`, `set_active_version`, `get_active_version`, `set_project_settings`, `get_project_settings`, `get_research_status`, `export_prose` | 14 actions — see below |
@@ -127,11 +127,17 @@ from a short enum and drop kind-specific arguments into `payload`.
 | `"branches"` | required | — | `{branches: [...]}` |
 | `"channels"` | required | `version` (optional) | `{channels: [...]}` |
 | `"world_facts"` | required | — | `{project_id, facts: [...], count}` |
+| `"propositions"` | required | `version`, `at_time` (fold each through `reconstruct_proposition_at`) | `{propositions: [...], count}` |
+| `"concerns"` | required | `version`, `at_time` (replay), `entity_id` (filter), `only_active` (drop concerns inactive at `at_time`) | `{concerns: [...], count}` |
+| `"superseded_events"` | required | `version` | `{superseded_events: [...], count}` — each with its `successor_chain` |
 
 ```jsonc
 discover(scope="projects")
 discover(scope="channels", project_id=42, payload={"version": 3})
 discover(scope="world_facts", project_id=42)
+discover(scope="propositions", project_id=42, payload={"at_time": 12000})
+discover(scope="concerns", project_id=42, payload={"entity_id": "ENT_MACBETH", "at_time": 12000, "only_active": true})
+discover(scope="superseded_events", project_id=42)
 ```
 
 #### `trace(kind, ...)` — follow a chain

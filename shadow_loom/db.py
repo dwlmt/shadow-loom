@@ -2936,24 +2936,29 @@ def list_branches(project_id: int) -> list[dict]:
         is_root = parent is None or parent.world_id != r.world_id
         if not is_root:
             continue
-        # Walk forward along same-world_id direct descendants to find the head.
+        # Walk the entire same-world_id descendant subtree rooted here to
+        # count every version on the branch and find its head. A branch may
+        # fan out (e.g. two edits forked from one version, or a shadow fork
+        # later re-branched within the same world_id); all same-world_id
+        # descendants belong to this one branch, so we count them all rather
+        # than stopping at the first fork. The canonical head is the
+        # highest-version tip; ``get_version_children`` still exposes the
+        # individual forks for navigation.
         head = r
-        version_count = 1
-        while True:
-            same_branch_children = [
-                c for c in children_by_anc.get(head.id, ())
-                if c.world_id == head.world_id
-            ]
-            if not same_branch_children:
-                break
-            # If a branch fans out (multiple children on the same world_id),
-            # pick the highest-version child as the canonical head and stop —
-            # downstream ``get_version_children`` exposes the rest.
-            same_branch_children.sort(key=lambda c: c.version)
-            head = same_branch_children[-1]
+        version_count = 0
+        stack = [r]
+        seen: set[int] = set()
+        while stack:
+            node = stack.pop()
+            if node.id in seen:
+                continue
+            seen.add(node.id)
             version_count += 1
-            if len(same_branch_children) > 1:
-                break
+            if node.version > head.version:
+                head = node
+            for c in children_by_anc.get(node.id, ()):
+                if c.world_id == node.world_id and c.id not in seen:
+                    stack.append(c)
         branches.append({
             "world_id": r.world_id,
             "branch_label": r.branch_label,

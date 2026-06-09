@@ -6084,15 +6084,17 @@ class DirectiveAssembler:
           low). The marginal collapses to 0.5 only when the corpus is
           itself maximally split, otherwise it pulls the reader's
           expectation toward what the rest of the cast looks like.
-          For each *revealed* causal edge targeting this entity we then
-          apply a **geometric** Bayesian-style pull,
-          ``prior += w_i · (actual - prior)`` (clipped to ``[ε, 1-ε]``),
-          so each successive piece of evidence asymptotes the prior
-          toward the truth without overshooting (an additive form
-          ``prior += w · (actual - base_prior)`` summed past the
-          actual value once ``Σw > 1``, producing a non-monotonic
-          surprise curve that contradicted the
-          "more-revealed → less-surprise" semantics).
+          The corpus marginal ``m`` then seeds a Beta(s·m, s·(1-m))
+          prior (weak pseudo-count ``s = 2``), and each *revealed*
+          causal edge targeting this entity contributes Bernoulli
+          evidence (``α += w·actual``, ``β += w·(1-actual)``); the
+          returned prior is the posterior mean ``α/(α+β)`` (clipped to
+          ``[ε, 1-ε]``). This Beta-Bernoulli update replaced an earlier
+          geometric pull ``prior += w·(actual - prior)``, which had an
+          additive variant that summed past the actual value once
+          ``Σw > 1``, producing a non-monotonic surprise curve that
+          contradicted the "more-revealed → less-surprise" semantics.
+          See ``_prior_for`` below for the implementation.
         * **Posterior** — actual trait values from the sandbox
           (post-simulation) or world state (truth).
 

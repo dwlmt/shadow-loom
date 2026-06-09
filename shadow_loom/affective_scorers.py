@@ -23,8 +23,11 @@ ground-truthed affective banner:
   recent fabula window (default last 2000 ticks).
 * **tension**     \u2014 mean ``abs(fear)`` over the densest dyad
   cluster, capped at 1.0.
+* **ambivalence** \u2014 mean over entities of the strongest pair of
+  co-active opposing concerns (``min`` of the two saliences), capped
+  at 1.0.
 
-All five outputs are floats in ``[0.0, 1.0]`` (``surprise`` is
+All six outputs are floats in ``[0.0, 1.0]`` (``surprise`` is
 normalised by ``min(flips / 5.0, 1.0)``). The function never raises
 and silently substitutes ``0.0`` for any unavailable component.
 """

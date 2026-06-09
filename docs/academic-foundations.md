@@ -308,11 +308,15 @@ i.e. forward propagation of ambient sources only):
 
 | Node | Trait | Old → New | Impact |
 |---|---|---|---|
-| `ENT_BANQUO` | `suspicion` | $+0.003 \to +0.015$ | $+0.021$ |
-| `ENT_MALCOLM` | `leadership` | $+0.204 \to +0.214$ | $+0.024$ |
-| `ENT_LADY_MACBETH` | `ruthlessness` | $+0.993 \to +0.999$ | $+0.023$ |
+| `ENT_LADY_MACBETH` | `guilt` | $+0.000 \to +0.081$ | $+0.114$ |
+| `ENT_LADY_MACBETH` | `ambition` | $+0.841 \to +0.863$ | $+0.088$ |
+| `ENT_MACDUFF` | `loyalty` | $+0.836 \to +0.850$ | $+0.079$ |
+| `ENT_LENNOX` | `loyalty` | $+0.115 \to +0.137$ | $+0.066$ |
+| `ENT_MALCOLM` | `courage` | $+0.531 \to +0.543$ | $+0.036$ |
+| `ENT_MALCOLM` | `leadership` | $+0.149 \to +0.163$ | $+0.036$ |
+| `ENT_DUNCAN` | `benevolence` | $+0.993 \to +0.998$ | $+0.034$ |
 
-Plus 27 propagation impulses absorbed by the noisy-OR gate
+Plus 23 propagation impulses absorbed by the noisy-OR gate
 (`reason="noisy_or_absorbed"`) — every active source fires, but most
 trait shifts fall below the per-trait `propagation_threshold`.
 
@@ -321,16 +325,18 @@ target set `[ENT_DUNCAN, ENT_LADY_MACBETH]`):
 
 | Node | Trait | Old → New | Impact |
 |---|---|---|---|
-| `ENT_LADY_MACBETH` | `resolve` | $+0.966 \to +0.980$ | $+0.040$ |
-| `ENT_LADY_MACBETH` | `ruthlessness` | $+0.698 \to +0.704$ | $+0.019$ |
-| `ENT_LADY_MACBETH` | `guilt` | $+0.922 \to +0.917$ | $-0.006$ |
-| `ENT_LENNOX` | `caution` | $+0.862 \to +0.868$ | $+0.023$ |
-| `ENT_BANQUO` | `suspicion` | $+0.001 \to +0.013$ | $+0.022$ |
-| `ENT_MALCOLM` | `courage` | $+0.713 \to +0.722$ | $+0.026$ |
+| `ENT_MACBETH` | `ambition` | $+0.883 \to +0.000$ | clamp |
+| `ENT_LADY_MACBETH` | `guilt` | $+0.000 \to +0.092$ | $+0.114$ |
+| `ENT_LADY_MACBETH` | `ambition` | $+0.841 \to +0.867$ | $+0.083$ |
+| `ENT_MACDUFF` | `loyalty` | $+0.836 \to +0.850$ | $+0.079$ |
+| `ENT_LENNOX` | `loyalty` | $+0.115 \to +0.137$ | $+0.066$ |
+| `ENT_LADY_MACBETH` | `ruthlessness` | $+0.997 \to +1.000$ | $+0.030$ |
 
 `intervened_nodes = [ENT_MACBETH]`,
 `rule3_pruned_interventions = []`,
-`rule2_redundant_evidence = []`.
+`rule2_redundant_evidence = []`. The first row is the do-clamp itself
+(`impact = 0.000`); the remaining eight are forward propagation off
+the mutilated graph.
 
 **Rung 3 — Counterfactual** (abduction conditioned on
 `evidence_node_ids=[ENT_MACBETH, ENT_LADY_MACBETH]`, then
@@ -341,68 +347,71 @@ shifts that explain the observed downstream:
 
 ```text
 ENT_MACBETH:
-  ambition       +0.598    courage         -0.061
-  loyalty        +0.102    guilt           +0.444
-  paranoia       +0.173    ruthlessness    -0.289
-  despair        +0.670
+  ambition       -0.033    courage         -0.291
+  loyalty        +0.173    guilt           +0.848
+  paranoia       +0.477    ruthlessness    -0.152
+  despair        +0.613
 ENT_LADY_MACBETH:
-  ambition       -0.076    ruthlessness    +0.188
+  ambition       +0.059    ruthlessness    -0.147
   resolve        -0.800    guilt           +0.950
 ```
 
-The `+0.598` ambition shift on Macbeth and the `-0.800` resolve
-shift on Lady Macbeth are precisely the latent perturbations the
-*observed* Act-V evidence requires; the precision-weighted Bayesian
-blend in §2.3 derives them from the per-trait inertia and the gap
-between the sandbox prior and the factual `state_timeline`.
+The `+0.848` guilt and `+0.613` despair shifts on Macbeth and the
+`-0.800` resolve / `+0.950` guilt shifts on Lady Macbeth are
+precisely the latent perturbations the *observed* Act-V evidence
+requires; the precision-weighted Bayesian blend in §2.3 derives them
+from the per-trait inertia and the gap between the sandbox prior and
+the factual `state_timeline`.
 
 Forward propagation then fires on top of those staged sources:
 
 | Node | Trait | Old → New | Impact |
 |---|---|---|---|
-| `ENT_LADY_MACBETH` | `guilt` | $+0.792 \to +0.841$ | $+0.062$ |
-| `ENT_LADY_MACBETH` | `resolve` | $+0.484 \to +0.495$ | $+0.032$ |
-| `ENT_LADY_MACBETH` | `ruthlessness` | $+0.783 \to +0.791$ | $+0.022$ |
-| `ENT_DUNCAN` | `trust` | $+0.870 \to +0.875$ | $+0.023$ |
-| `ENT_DUNCAN` | `leadership` | $+0.906 \to +0.911$ | $+0.023$ |
+| `ENT_LADY_MACBETH` | `guilt` | $+0.792 \to +0.876$ | $+0.104$ |
+| `ENT_LADY_MACBETH` | `ambition` | $+0.878 \to +0.904$ | $+0.082$ |
+| `ENT_MACDUFF` | `loyalty` | $+0.836 \to +0.850$ | $+0.079$ |
+| `ENT_LENNOX` | `loyalty` | $+0.115 \to +0.137$ | $+0.066$ |
+| `ENT_LADY_MACBETH` | `ruthlessness` | $+0.902 \to +0.913$ | $+0.030$ |
 
-`rule3_pruned_interventions =
-["ENT_MACBETH.traits.ambition"]`. The static-graph Rule 3 check
-flags the do-surgery as vacuous on the world-cropped diagram (the
-mutilated AMWN has no surviving directed path from `ambition` to the
-chosen target set), but advisory mode keeps it in the simulation so
-the abduction-driven downstream still mutates. This is exactly the
-over-strict d-separation behaviour the closed-world caveat warns
-about (§2.2); opt-in `rule3_pruning_mode="prune"` would short-circuit.
+`rule3_pruned_interventions = []`. On this fixture the world-cropped
+diagram retains a surviving directed path from `ambition` to the
+target set, so the static-graph Rule 3 pre-flight does *not* flag the
+do-surgery as vacuous — the counterfactual runs in full without
+advisory pruning. (The over-strict closed-world d-separation case
+from §2.2 is the *opposite* outcome; opt-in
+`rule3_pruning_mode="prune"` would short-circuit when it does fire.)
 
 **Vacuous-intervention pre-flight.** Running
 `do(ENT_DUNCAN.traits.kindness = 0)` against
-`target_node_ids=[ENT_BANQUO]` exercises the Rule-3 path explicitly:
-the engine still produces five propagation mutations
-(`ENT_LADY_MACBETH.guilt: +0.015 \to +0.063`, `ENT_LENNOX.loyalty:
-+0.830 \to +0.855`, …) because in advisory mode the do is applied
-even when Rule 3 flags it. `rule3_pruned_interventions` would carry
-the flag in prune mode.
+`target_node_ids=[ENT_BANQUO]` exercises the absent-axis path
+explicitly: `kindness` is not a trait Duncan carries, so the engine
+materialises it at the `0.0` baseline, the do-clamp is a zero-shift
+no-op, and the run reduces to the seven Rung-1 propagation mutations
+(`ENT_LADY_MACBETH.guilt: +0.000 \to +0.081`, `ENT_LENNOX.loyalty:
++0.115 \to +0.137`, …). `rule3_pruned_interventions = []`.
 
 **Romeo and Juliet — `do(ENT_FRIAR_LAURENCE.traits.diligence = 1)`.**
-The same engine on the bundled fixture produces 17 trait mutations
-across Mercutio, Tybalt, Paris, Balthasar, Benvolio, and Rosaline —
-including `ENT_BALTHASAR.loyalty: +0.851 \to +0.946` (impact
-$+0.233$) and `ENT_MERCUTIO.loyalty: +0.988 \to +1.000` (impact
-$+0.175$) — showing that a counterfactually diligent friar shifts
-the supporting cast's allegiance vectors well beyond Romeo and
-Juliet themselves.
+The same engine on the bundled fixture produces 13 trait mutations
+across Friar John, Tybalt, and Juliet — including
+`ENT_FRIAR_JOHN.obedience` pinned at $+1.000$ (impact $+0.149$),
+`ENT_JULIET.obedience: +0.778 \to +0.850$ (impact $+0.128$), and
+`ENT_JULIET.courage: +0.920 \to +0.974$ (impact $+0.078$) — showing
+that a counterfactually diligent friar shifts the supporting cast's
+obedience and resolve vectors well beyond Romeo and Juliet themselves.
 
-**Gone Girl — abduction with no surviving propagation.**
+**Gone Girl — abduction dominates, propagation is sparse.**
 `engine.execute(rung=3, interventions={"ENT_AMY.traits.deceit": 0},
 evidence_node_ids=[ENT_NICK, ENT_AMY])` populates substantial
-`hidden_deltas` (`ENT_NICK.adaptability: +0.839`,
-`resentment: +0.640`, `ENT_AMY.narcissism: -0.196`,
-`manipulation: -0.100`) and zero `mutations` — the abduction
-fully explains the observed Nick/Amy state without any post-hoc
-forward propagation needing to fire. This is the engine reporting
-that the do-surgery + evidence is *consistent* with the observed
-downstream, the strongest Rung-3 outcome shape.
+`hidden_deltas` (`ENT_NICK.cowardice: +0.421`,
+`charm: -0.344`, `ENT_AMY.performativity: +0.360`,
+`narcissism: -0.196`) and only three post-abduction `mutations`
+(`ENT_GILPIN.impatience: +0.660 \to +0.685`,
+`ENT_TANNER.cunning: +0.968 \to +0.987`,
+`ENT_TANNER.showmanship: +0.953 \to +0.972`) — the abduction
+largely explains the observed Nick/Amy state, leaving only a thin
+ripple of forward propagation onto the investigators. This is the
+engine reporting that the do-surgery + evidence is nearly
+*consistent* with the observed downstream, a strong Rung-3 shape.
 
 ### 2.6 Post-audit Pearl/AMWN hardening (2026-05-26)
 
@@ -977,59 +986,62 @@ The four scorers were calibrated and audited against the
 [`example_worlds/`](../example_worlds) corpus (20 hand-curated
 canonical fixtures spanning tragedy, mystery, comedy, romance,
 modernist fragmentation and ensemble heist). Sampling each
-fixture at 7 evenly-spaced syuzhet anchors (140 score evaluations
-per metric) gives the following per-scorer scale summary:
+fixture at its evenly-spaced syuzhet anchors (162 score
+evaluations per metric across the corpus) gives the following
+per-scorer scale summary:
 
 | Scorer            | min  | median | mean | max  | non-zero |
 |-------------------|------|--------|------|------|----------|
-| `mystery`         | 0.17 | 0.53   | 0.57 | 1.00 | 162/162  |
-| `dramatic_irony`  | 0.00 | 0.45   | 0.45 | 0.90 | 161/162  |
-| `suspense`        | 0.00 | 0.16   | 0.14 | 0.39 | 132/162  |
-| `surprise` (local)| 0.00 | 0.03   | 0.05 | 0.24 | 129/162  |
+| `mystery`         | 0.28 | 0.66   | 0.64 | 0.85 | 162/162  |
+| `dramatic_irony`  | 0.00 | 0.49   | 0.48 | 0.88 | 161/162  |
+| `suspense`        | 0.00 | 0.59   | 0.54 | 0.95 | 142/162  |
+| `surprise` (local)| 0.00 | 0.15   | 0.25 | 0.77 | 141/162  |
 
 The four scorers occupy different absolute bands by design.
 Mystery is a population fraction (hidden ancestors over total
-ancestors) and naturally lives near 1.0 early in the syuzhet,
-falling monotonically as causes are revealed. Dramatic irony is
-a per-character revealed-mass *gap fraction* (Sternberg) and lives
-in a wide rise-peak-fall band centred on 0.45. Suspense
-discharges to 0 at the terminal anchor of every world (no
-unrevealed threats remain) and lives in the lower 0.0–0.4 band
-because the saturation constant *K* in the stakes denominator
-intentionally damps the gauge. Surprise (in *local* anchor mode,
-the per-step Itti-Baldi spike) only registers at canonical
-revelation points and is otherwise near zero — which is the
-expected sparse-spike behaviour the literature predicts.
+ancestors) and naturally lives near the top of its range early in
+the syuzhet, falling monotonically as causes are revealed.
+Dramatic irony is a per-character revealed-mass *gap fraction*
+(Sternberg) and lives in a wide rise-peak-fall band centred on
+0.49. Suspense climbs through the body of each world (peaking as
+high as 0.95) and then discharges to exactly 0 at the terminal
+anchor of every fixture once no unrevealed threats remain — the
+zero terminal is what drags the non-zero count to 142/162 (one
+forced zero per world). Surprise (in *local* anchor mode, the
+per-step Itti-Baldi spike) registers sharply at canonical
+revelation points (up to 0.77) and is otherwise low — a median of
+0.15 against a mean of 0.25 is the expected sparse-spike signature
+the literature predicts.
 
 Canonical signatures the audit confirms:
 
-* **`macbeth`** — mystery monotone fall 0.99 → 0.28; irony rise-fall
-  0.21 → 0.62 → 0.41 (Macduff hearing of his family); surprise
-  effectively 0 (Shakespeare telegraphs every reveal).
-* **`death_on_the_nile`** — mystery 1.00 → 0.29; irony peaks at
-  anchor 4 (0.65) on Poirot's withheld knowledge; surprise
-  spike 0.19 at the denouement reveal.
-* **`gone_girl`** — mystery 0.96 → 0.32; irony arc 0.19 → 0.50
-  (Amy's diary deception); surprise 0.20 at the mid-novel
+* **`macbeth`** — mystery monotone fall 0.84 → 0.46; irony rise-fall
+  0.34 → 0.47 → 0.33 (Macduff hearing of his family); surprise
+  spikes to 0.70 at the staged reveals (anchors 4 and 8).
+* **`death_on_the_nile`** — mystery 0.84 → 0.45; irony peaks at
+  anchor 5 (0.39) on Poirot's withheld knowledge; surprise
+  spike 0.60 early on the first misdirection.
+* **`gone_girl`** — mystery 0.84 → 0.47; irony arc 0.35 → 0.67
+  (Amy's diary deception); surprise 0.42 at the mid-novel
   perspective shift.
-* **`reservoir_dogs`** — mystery 0.91 → 0.37; irony mid-act
-  spike at anchor 5 (0.54) on Mr Orange's identity; surprise
-  spike 0.19 at the in-medias-res flashback structure (the
-  anachrony component dominates the trait-KL component).
-* **`wuthering_heights`** — mystery 0.99 → 0.18; irony
-  rise-peak-fall 0.13 → 0.67 → 0.42; surprise 0.24 spike at the
+* **`reservoir_dogs`** — mystery 0.83 → 0.53; irony mid-act
+  rise to 0.28 on Mr Orange's identity; surprise spike 0.71 at
+  the in-medias-res flashback structure (the anachrony component
+  dominates the trait-KL component).
+* **`wuthering_heights`** — mystery 0.81 → 0.33; irony
+  rise-peak-fall 0.25 → 0.70 → 0.58; surprise 0.51 spike at the
   in-medias-res frame opening (Lockwood arrives, Nelly's
   retrospective floods backward in fabula time).
-* **`tinker_tailor_soldier_spy`** — terminal suspense peak 0.39
-  before the mole reveal collapses the ledger; irony plateau
-  0.39–0.55 across the long investigation.
+* **`tinker_tailor_soldier_spy`** — terminal suspense peak 0.76
+  before the mole reveal collapses the ledger to 0; irony plateau
+  0.30–0.39 across the long investigation.
 
 The six emotion scorers (`grief`, `rage`, `joy`, `regret`,
 `love`, `fear`) score per-entity *closeness* to a per-effect
 trait target rather than a per-syuzhet timeline quantity, so
 they appear flat across anchors but exhibit corpus-wide
-variation: median values (0.10–0.76 across emotions) and
-non-zero rates (62–85 % of (world, anchor) cells) confirm the
+variation: median values (0.35–0.50 across emotions) and
+non-zero rates (70–85 % of (world, anchor) cells) confirm the
 trait-trajectory dispatch resolves real per-character signal on
 every fixture in the corpus. (A regression — the assembler's
 trait-trajectory loop reading only `ego_payload` and silently

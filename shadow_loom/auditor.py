@@ -695,8 +695,8 @@ class AuditorConfig(BaseModel):
         le=8,
         description=(
             "Maximum audit → rewrite cycles before giving up. Counts the "
-            "initial render's audit as iteration 1, so default=3 yields "
-            "up to 2 refinement attempts. The plausibility bypass "
+            "initial render's audit as iteration 1, so default=4 yields "
+            "up to 3 refinement attempts. The plausibility bypass "
             "(see ``run_feedback_loop``) fires after ceil(max_iterations/2) "
             "iterations when only soft-affective violations remain, so "
             "plausible prose typically exits after 2 cycles. "
@@ -5700,7 +5700,7 @@ def run_feedback_loop(
                 converged=False,
                 iterations=iteration + 1,
                 history=history,
-                final_graph_version=graph_version,
+                final_graph_version=(versioned.version if versioned else 0),
                 change_impact=cycle_impact,
                 engine_thresholds_passed=False,
                 engine_threshold_failures=(

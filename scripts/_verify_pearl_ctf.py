@@ -49,7 +49,11 @@ from shadow_loom.amwn import (  # noqa: E402
 )
 from shadow_loom.causal_physics import CausalPhysicsEngine  # noqa: E402
 from shadow_loom.extract_graph import extract_ego_graph_from_memory  # noqa: E402
-from shadow_loom.instantiator import AMWNInstantiator  # noqa: E402
+from shadow_loom.instantiator import (  # noqa: E402
+    AMWNInstantiator,
+    _entity_trait_inertia_default,
+    _inertia_epsilon,
+)
 from shadow_loom.query_models import (  # noqa: E402
     DoBelief, DoConcern, DoEvent, DoProposition, DoTrait,
 )
@@ -130,17 +134,51 @@ def verify_rung2_trait(ws, focus, intervention, target):
 
     # Snapshot the sandbox right after surgery to verify the
     # do-mutilation invariant before propagation re-adds ambient edges.
+    # P0-5 minimal per-axis mutilation (Pearl G_{\bar X}): surgery severs
+    # only edges feeding the *intervened axis* — those whose ``trait_target``
+    # equals the axis, plus untyped edges (``trait_target is None``) that
+    # could fire onto any axis. Edges explicitly targeting a *different*
+    # axis on the same entity are intentionally preserved, so counting all
+    # in-causal edges into the node over-reports. Mirror the engine's
+    # severance predicate (instantiator ``_intervene_state``) instead.
     eng, sandbox = _new_engine(ws, focus, "intervention")
     AMWNInstantiator.execute_interventions(sandbox, intervention)
+
     in_causal_post_surgery = [
         (u, v) for u, v, d in sandbox.in_edges(intervened_nid, data=True)
         if d.get("edge_type") == "causal"
+        and d.get("trait_target") in (None, trait)
     ]
-    _check(
-        f"R2 do-mutilation: {intervened_nid} has 0 in-causal edges immediately after surgery",
-        not in_causal_post_surgery,
-        detail=f"surviving={len(in_causal_post_surgery)}",
+
+    # The do-mutilation invariant only applies when surgery actually FIRES.
+    # The inertia gate (instantiator ``_intervene_state``) blocks a do() whose
+    # |desired_shift| <= inertia and returns *without severing edges* — e.g. a
+    # do(=0.0) on an absent axis, which materialises at the 0.0 baseline for a
+    # zero shift. Such a no-op leaves edges intact by design, so asserting
+    # G_{\bar X} on it would be a false failure. Replicate the engine's gate on
+    # the *original* (pre-surgery) value/inertia to decide applicability.
+    _orig_ent = getattr(ws, "entities", {}).get(intervened_nid)
+    _orig_tv = (getattr(_orig_ent, "traits", {}) or {}).get(trait) if _orig_ent else None
+    cur_val = float(_orig_tv.value) if _orig_tv is not None else 0.0
+    cur_inertia = (
+        float(_orig_tv.inertia) if _orig_tv is not None
+        else _entity_trait_inertia_default()
     )
+    surgery_fired = abs(new_value - cur_val) > cur_inertia + _inertia_epsilon()
+    if surgery_fired:
+        _check(
+            f"R2 do-mutilation: {intervened_nid}.{trait} axis has 0 incoming "
+            f"causal edges (axis-targeting or untyped) immediately after surgery",
+            not in_causal_post_surgery,
+            detail=f"surviving={len(in_causal_post_surgery)}",
+        )
+    else:
+        _check(
+            f"R2 do-mutilation N/A: do({intervened_nid}.{trait}={new_value}) "
+            f"inertia-blocked (no surgery fired) — invariant vacuous",
+            True,
+            detail=f"current={cur_val} inertia={cur_inertia:.2f} target={new_value}",
+        )
 
     # Run the full execute() and verify the intervened TRAIT is pinned —
     # the post-propagation invariant.

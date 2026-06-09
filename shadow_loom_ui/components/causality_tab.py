@@ -809,7 +809,7 @@ def build_affective_dashboard(state: AppState) -> None:
 
         def _update_event_label():
             ws = state.world_state
-            if ws is None or ws is None:
+            if ws is None:
                 event_at_cursor.text = "\u2014"
                 return
             try:

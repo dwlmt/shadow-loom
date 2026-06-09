@@ -924,7 +924,7 @@ def compute_mystery_unified(
     """Carroll erotetic mystery: entropy over hidden causes of known effects.
 
     For each effect proposition the audience confidently knows
-    happened, sums Shannon entropy of the softmax-normalised
+    happened, sums Shannon entropy of the sum-normalised (proportional)
     causal_force distribution over its *unrevealed* ancestors in the
     causal graph.
     """
@@ -999,7 +999,7 @@ def compute_mystery_unified(
                 continue
         if len(weights) < 2:
             continue
-        # Softmax-normalise then entropy.
+        # Sum-normalise (proportional) then entropy.
         s = sum(weights)
         if s <= 0:
             continue

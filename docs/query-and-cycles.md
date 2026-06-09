@@ -99,6 +99,15 @@ addressees are exempt from the cascade — they reach the event through
 `via_channel_id` from wherever they already are. See
 [design-decisions.md §D22](design-decisions.md#d22-events-have-an-explicit-spatial-anchor-eventnodeat_location_id).
 
+Under the default `PipelineConfig.branch_policy="auto"`, a `do(X)`
+intervention launched from the **factual mainline** auto-forks to a fresh
+**shadow** branch (`world_id="shadow"`) — surgical "what changes if X"
+probes never mutate canon. When the active head is *already* a shadow
+branch, chained interventions stay on that fork rather than spawning a
+sibling, so a scenario iterates in place. A mainline intervention is still
+available explicitly via `branch_policy="mainline"`. See
+[`pipeline.py::_resolve_branch_policy`](../shadow_loom/pipeline.py).
+
 ### 3. `CounterfactualQuery` — Rung 3, "abduction + intervention"
 
 ```python

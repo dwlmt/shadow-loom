@@ -750,7 +750,8 @@ class CausalPhysicsEngine:
         Back-propagate present-day evidence into the historical sandbox.
 
         For entity evidence: computes per-trait hidden_delta, blends traits
-        50 % toward factual values, and back-propagates missing beliefs.
+        toward factual values (Bayesian precision-weighted update by default;
+        inertia-damped in legacy mode), and back-propagates missing beliefs.
 
         For event evidence: propagates through causal edges weighted by
         evidence_strength.
@@ -1116,11 +1117,17 @@ class CausalPhysicsEngine:
             except (TypeError, ValueError):
                 continue
             traits = (self.sandbox.nodes[node_id].get("traits") or {})
-            cur = traits.get(trait_name) or {}
-            try:
-                _old_f = float(cur.get("value")) if isinstance(cur, dict) and cur.get("value") is not None else None
-            except (TypeError, ValueError):
-                _old_f = None
+            cur = traits.get(trait_name)
+            if cur is None:
+                # Absent axis: the do-clamp materialises it at the 0.0
+                # baseline (see AMWNInstantiator._intervene_state), so the
+                # observable diff is measured from 0.0 — never a NaN old_value.
+                _old_f = 0.0
+            else:
+                try:
+                    _old_f = float(cur.get("value")) if isinstance(cur, dict) and cur.get("value") is not None else None
+                except (TypeError, ValueError):
+                    _old_f = None
             _direct_trait_snapshot.append((node_id, trait_name, _old_f, _new_f))
 
         AMWNInstantiator.execute_interventions(self.sandbox, interventions)

@@ -779,24 +779,27 @@ the full 2469-test suite is green.
 
 As an internal sanity check, the four structural-affect scorers
 were audited against the bundled twenty-fixture corpus
-(\texttt{example\_worlds/}) at seven evenly-spaced syuzhet anchors
-per fixture, giving 162 score evaluations per metric (one fixture
-emits a flat-zero suspense column at its terminal anchor and so
-contributes only six points). The per-scorer scale summary is
-mystery $0.17/0.53/1.00$ (min/median/max), dramatic-irony
-$0.00/0.45/0.90$, suspense $0.00/0.16/0.39$, surprise (per-step
-local mode) $0.00/0.03/0.24$ --- the four scorers occupy
+(\texttt{example\_worlds/}) at the evenly-spaced syuzhet anchors
+of each fixture, giving 162 score evaluations per metric across
+the corpus. The per-scorer scale summary is
+mystery $0.28/0.66/0.85$ (min/median/max), dramatic-irony
+$0.00/0.49/0.88$, suspense $0.00/0.59/0.95$, surprise (per-step
+local mode) $0.00/0.15/0.77$ --- the four scorers occupy
 different absolute bands by design (mystery is a population
-fraction near $1$ early in the syuzhet; surprise is a per-step
-KL spike near $0$ between revelation points). The audit confirms
-the canonical signatures the underlying theory predicts: monotone
-mystery decline across every world; rise-peak-fall irony arcs in
-$16/20$ worlds (Macduff hearing of his family, Poirot's
-denouement, Nick's letter to Daisy); terminal-anchor suspense
-discharge in every world (no unrevealed threats remain); surprise
-spikes only at canonical revelation points (Reservoir Dogs Mr
-Orange flashback $0.19$, Gone Girl mid-novel perspective shift
-$0.20$, Wuthering Heights in-medias-res frame $0.24$). All
+fraction near the top of its range early in the syuzhet; suspense
+climbs through the body of each world and discharges to exactly
+$0$ at the terminal anchor; surprise is a per-step KL spike that
+is low between revelation points, median $0.15$ against mean
+$0.25$). The audit confirms the canonical signatures the
+underlying theory predicts: monotone mystery decline across every
+world; rise-peak-fall irony arcs (Macduff hearing of his family,
+Poirot's denouement, Amy's diary deception); terminal-anchor
+suspense discharge in every world (no unrevealed threats remain),
+which forces one zero per fixture and explains the $142/162$
+non-zero suspense count; surprise spikes only at canonical
+revelation points (Reservoir Dogs Mr Orange flashback $0.71$,
+Gone Girl mid-novel perspective shift $0.42$, Wuthering Heights
+in-medias-res frame $0.51$). All
 scorer constants are externalised through
 \texttt{DirectiveAssemblySettings} (env-var prefix
 \texttt{DIRECTIVE\_ASSEMBLY\_*}); the audit script

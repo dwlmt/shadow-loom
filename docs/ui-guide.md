@@ -88,25 +88,13 @@ Write-mode queries (`observation` / `intervention` / `counterfactual` /
 route and surface in whichever tab consumes their result
 (Story / Reasoning / Audit / Affective).
 
-> *Developer note*: the underlying `GeneralQuery` model still exists in
-> [`shadow_loom/query_models.py`](../shadow_loom/query_models.py) and is
-> retained as a last-resort fallback inside the parser, but the chat bar
-> no longer offers an explicit **Ask** mode \u2014 free-form questions
-> should be issued in **Interrogation** mode instead.
-
-Read-only queries do **not** create a new `VersionRow`. Their result is
-rendered in the dedicated **Answer panel**
-([`components/answer_panel.py`](../shadow_loom_ui/components/answer_panel.py))
-that sits directly above the chat bar: a card with the model's claim, a
-confidence badge (🟢 ≥ 70 / 🟡 40–69 / 🔴 < 40), an evidence-id list
-(linking back to the graph nodes consulted), and any caveats. The panel
-clears on `VERSION_CHANGED` and `PROJECT_LOADED` so a stale answer never
-lingers across versions.
-
-Write-mode queries (`observation` / `intervention` / `counterfactual` /
-`directive` / `evaluate` / `manual_edit`) take their normal pipeline
-route and surface in whichever tab consumes their result
-(Story / Reasoning / Audit / Affective).
+> *Developer note*: **Ask** (the `GeneralQuery` model in
+> [`shadow_loom/query_models.py`](../shadow_loom/query_models.py)) is the
+> chat bar's read-only default and the first entry in the mode picker
+> ([`components/chat.py`](../shadow_loom_ui/components/chat.py)). What was
+> removed is automatic mode *detection* — which mis-routed creative
+> requests to read-only modes — so users now pick the mode explicitly
+> rather than relying on the parser to guess.
 
 ## 1. Story tab
 

@@ -652,7 +652,7 @@ generated prose:
 
 If the auditor returns non-zero loss the refinement loop in
 `auditor.py::run_feedback_loop()` regenerates with the auditor's feedback
-appended to the brief, up to `AuditorConfig.max_iterations` (default 6). On
+appended to the brief, up to `AuditorConfig.max_iterations` (default 4). On
 success the new world state is
 committed back to the canonical graph.
 

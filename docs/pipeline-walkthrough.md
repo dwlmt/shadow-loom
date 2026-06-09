@@ -392,7 +392,7 @@ The result is a `FeedbackLoopResult` containing:
   deterministic gate, separate from the LLM auditor's verdict
 
 If the auditor returns non-zero loss the loop regenerates (up to
-`AuditorConfig.max_iterations`, default 6) with the auditor's feedback
+`AuditorConfig.max_iterations`, default 4) with the auditor's feedback
 appended to the brief.
 
 The pipeline records a `GenerationStepRecord` and an `AuditStepRecord`,
