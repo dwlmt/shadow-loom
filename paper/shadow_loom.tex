@@ -791,7 +791,8 @@ climbs through the body of each world and discharges to exactly
 $0$ at the terminal anchor; surprise is a per-step KL spike that
 is low between revelation points, median $0.15$ against mean
 $0.25$). The audit confirms the canonical signatures the
-underlying theory predicts: monotone mystery decline across every
+underlying theory predicts (Figure~\ref{fig:affective-arcs}):
+monotone mystery decline across every
 world; rise-peak-fall irony arcs (Macduff hearing of his family,
 Poirot's denouement, Amy's diary deception); terminal-anchor
 suspense discharge in every world (no unrevealed threats remain),
@@ -804,6 +805,21 @@ scorer constants are externalised through
 \texttt{DirectiveAssemblySettings} (env-var prefix
 \texttt{DIRECTIVE\_ASSEMBLY\_*}); the audit script
 \texttt{scripts/audit\_affective.py} reproduces the table.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/affective_arcs.pdf}
+\caption{Structural-affect trajectories across syuzhet progress for four
+bundled fixtures (engine output, frequency-ranked top-six focal cast per
+world). The canonical signatures the theory predicts are visible: a
+monotone \emph{mystery} decline (blue), a rise-peak-fall \emph{dramatic
+irony} arc (orange), \emph{suspense} (green) that climbs through the body
+of each world and discharges to exactly $0$ at the terminal anchor (the
+Wilmot despair/safety boundary, $w_{\text{hope}}=0$), and \emph{surprise}
+(pink) as a per-step KL spike that fires only at revelation points.
+Reproduce via \texttt{scripts/\_make\_paper\_figures.py}.}
+\label{fig:affective-arcs}
+\end{figure}
 
 \paragraph{LLM-call hardening (2026-06-08, fourteenth-pass).}
 A subsequent context-budget audit closed two further
@@ -1351,13 +1367,30 @@ threshold (or, under
 \texttt{execute\_distribution}, a Monte-Carlo Bernoulli draw); a
 post-pass \emph{baseline drift} optionally pulls mutated traits
 back toward type by $(1 - \iota_u)\cdot \rho$. Both are off by
-default so the canonical engine is bit-for-bit reproducible. The
+default so the canonical engine is bit-for-bit reproducible.
+Figure~\ref{fig:macbeth-traits} shows the rule producing real
+inertia-gated trait trajectories over fabula time. The
 result is a structured
 \texttt{CausalPhysicsResult\{mutations, blocked, hidden\_deltas,
 intervened\_nodes, rule3\_pruned\_interventions,
 rule2\_redundant\_evidence, noisy\_or\_probabilities,
 pruned\_beliefs\_count, pruned\_utterance\_event\_ids,
 disabled\_channel\_ids\}}.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/macbeth_traits.pdf}
+\caption{Trait state for \texttt{ENT\_MACBETH} reconstructed over
+fabula time via \texttt{reconstruct\_entity\_at}, illustrating the
+inertia-gated propagation rule (Eq.~\ref{eq:impact}). \texttt{ambition}
+shocks once at the witches' prophecy and then holds (high inertia);
+\texttt{guilt} steps up at the murder and again at Banquo's ghost; and
+\texttt{paranoia} peaks at Banquo's murder before relaxing after the
+second prophecy falsely reassures him. Values are exact engine output,
+not hand-authored. Reproduce via
+\texttt{scripts/\_make\_paper\_figures.py}.}
+\label{fig:macbeth-traits}
+\end{figure}
 
 \subsection{Narrative physics (affective calculus)}
 \label{app:narrative}
