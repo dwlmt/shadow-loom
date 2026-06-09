@@ -399,16 +399,16 @@ agent to decide what to do next without re-querying.
 
 ## 6. Typical agent workflow
 
-```
-list_projects
-  └── open_project(project_id=…)            ← manifest, IDs, current version
-        └── inspect(node_id="ENT_MACBETH")  ← deepen context
-        └── ask("Who knows about the dagger?")
-        └── narrate("Macbeth hesitates outside Duncan's chamber")
-              └── (server: parse → physics → render → audit → save → set_active)
-        └── direct("dramatic_irony", entity_ids=["ENT_LADY_MACBETH"], intensity=0.9)
-        └── evaluate(focus_entity_ids=["ENT_MACBETH"])
-        └── branch(version=4, label="bloodier-ending")
+```mermaid
+flowchart TD
+    LP["list_projects"] --> OP["open_project(project_id=…)<br/>manifest · IDs · current version"]
+    OP --> INS["inspect(node_id='ENT_MACBETH')<br/>deepen context"]
+    OP --> ASK["ask('Who knows about the dagger?')"]
+    OP --> NAR["narrate('Macbeth hesitates outside the chamber')"]
+    NAR --> SRV["server: parse → physics → render → audit → save → set_active"]
+    OP --> DIR["direct('dramatic_irony', entity_ids=['ENT_LADY_MACBETH'], intensity=0.9)"]
+    OP --> EVAL["evaluate(focus_entity_ids=['ENT_MACBETH'])"]
+    OP --> BR["branch(version=4, label='bloodier-ending')"]
 ```
 
 ---

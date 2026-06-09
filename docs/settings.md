@@ -14,29 +14,27 @@ environment overrides `GenerationSettings.max_tokens`.
 
 ## 1. How configuration flows
 
-```
-config.env / shell env
-         │
-         ▼
-shadow_loom/settings.py          ← single source of truth
-    ├─ CoreSettings              (DATABASE_URL, *_API_KEY, *_BASE_URL)
-    ├─ GenerationSettings        (GENERATION_*)
-    ├─ QueryParsingSettings      (QUERY_PARSING_*)
-    ├─ AuditorSettings           (AUDITOR_*)
-    ├─ ExtractionSettings        (EXTRACTION_*)
-    ├─ CausalPhysicsSettings     (PHYSICS_*)
-    ├─ DirectiveAssemblySettings (DIRECTIVE_ASSEMBLY_*)
-    ├─ MCPSettings               (MCP_*)
-    ├─ PipelineSettings          (PIPELINE_*)
-    ├─ UISettings                (UI_*)
-    └─ OAuthSettings             (STORAGE_SECRET, *_CLIENT_ID/SECRET)
-         │
-         ▼
-*_config_kwargs() builders       ← hand the right slice to each module
-         │
-         ▼
-GenerationConfig, AuditorConfig, ExtractionConfig, QueryParsingConfig
-(per-module Pydantic dataclasses with the same defaults)
+```mermaid
+flowchart TD
+    ENV["config.env / shell env"] --> S["shadow_loom/settings.py<br/>single source of truth"]
+    S --> GROUP
+    GROUP --> B["*_config_kwargs() builders<br/>hand the right slice to each module"]
+    B --> CFG["GenerationConfig · AuditorConfig · ExtractionConfig · QueryParsingConfig<br/>per-module Pydantic dataclasses with the same defaults"]
+
+    subgraph GROUP ["settings groups (Pydantic BaseSettings)"]
+        direction TB
+        C1["CoreSettings — DATABASE_URL, *_API_KEY, *_BASE_URL"]
+        C2["GenerationSettings — GENERATION_*"]
+        C3["QueryParsingSettings — QUERY_PARSING_*"]
+        C4["AuditorSettings — AUDITOR_*"]
+        C5["ExtractionSettings — EXTRACTION_*"]
+        C6["CausalPhysicsSettings — PHYSICS_*"]
+        C7["DirectiveAssemblySettings — DIRECTIVE_ASSEMBLY_*"]
+        C8["MCPSettings — MCP_*"]
+        C9["PipelineSettings — PIPELINE_*"]
+        C10["UISettings — UI_*"]
+        C11["OAuthSettings — STORAGE_SECRET, *_CLIENT_ID/SECRET"]
+    end
 ```
 
 The dataclass `*Config` objects (in [`generation.py`](../shadow_loom/generation.py),

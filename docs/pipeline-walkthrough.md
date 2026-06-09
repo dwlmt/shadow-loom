@@ -19,38 +19,26 @@ It returns a `PipelineResult` containing the prose, the physics state, the
 auditor verdict, the versioned world model after merge, and a
 `PipelineHistory` recording every step.
 
-```
-                ┌──────────────────────────────────────────────┐
-raw_text  ───▶  │ Step 1: Ingestion (5-pass extraction)        │
-                └──────────────────┬───────────────────────────┘
-                                   ▼
-world_state  ─▶ ┌──────────────────────────────────────────────┐
-                │ Step 0: Wrap in VersionedWorldModel          │
-                └──────────────────┬───────────────────────────┘
-                                   ▼
-                ┌──────────────────────────────────────────────┐
-                │ Step 2: Narrative Physics (query routing)    │
-                │   • observation/general/interrogate → return │
-                │   • intervention/counterfactual → causal eng.│
-                │   • directive → causal + affective + brief   │
-                │   • manual_edit → skip to Step 6             │
-                │   • evaluate → full-story scorecard, return  │
-                └──────────────────┬───────────────────────────┘
-                          implausible? ──── return early ─────▶
-                                   ▼
-                ┌──────────────────────────────────────────────┐
-                │ Steps 3–4: Brief Assembly + LLM Generation   │
-                └──────────────────┬───────────────────────────┘
-                                   ▼
-                ┌──────────────────────────────────────────────┐
-                │ Step 5: Audit + Refinement Loop              │
-                └──────────────────┬───────────────────────────┘
-                                   ▼
-                ┌──────────────────────────────────────────────┐
-                │ Steps 6–7: Prose → Topology → Merge          │
-                └──────────────────┬───────────────────────────┘
-                                   ▼
-                            PipelineResult
+```mermaid
+flowchart TD
+    raw([raw_text]) --> S1["Step 1: Ingestion<br/>5-pass extraction"]
+    S1 --> WS([world_state])
+    WS --> S0["Step 0: Wrap in VersionedWorldModel"]
+    S0 --> S2{"Step 2: Narrative Physics<br/>query routing"}
+
+    S2 -->|"observation / general /<br/>interrogate / evaluate"| EARLY["Early return<br/>no prose, no version write"]
+    S2 -->|"intervention / counterfactual"| ENG["Causal engine<br/>Rung 2 / Rung 3"]
+    S2 -->|directive| DIR["Causal + affective + brief"]
+    S2 -->|manual_edit| MAN["Skip to Steps 6–7"]
+    S2 -.->|implausible| EARLY
+
+    ENG --> S34["Steps 3–4: Brief Assembly +<br/>LLM Generation"]
+    DIR --> S34
+    S34 --> S5["Step 5: Audit + Refinement Loop"]
+    S5 --> S67["Steps 6–7: Prose → Topology → Merge"]
+    MAN --> S67
+    S67 --> RES([PipelineResult])
+    EARLY --> RES
 ```
 
 ---

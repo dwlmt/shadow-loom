@@ -108,6 +108,45 @@ engine knows about (see [architecture.md §3](architecture.md)):
 | `affordance_gate` | `OBJ_BLOODY_DAGGERS.affordance("kill")` gates `EVT_DUNCAN_MURDER` | gate check inside `propagate()` |
 | `ambient_propagation` | `LOC_HEATH.supernatural=0.9` boosts prophecy belief uptake | per-tick ambient sweep |
 
+The graph below shows all five modalities firing on the canonical Macbeth
+chain. Each edge style maps to a different `propagate()` pathway: solid
+arrows are `chain_reaction` event activation, dotted arrows are `mutation`
+trait shocks, the thick arrow is `mutation_social`, the gate node guards
+`affordance_gate`, and the dashed box is the `ambient_propagation` sweep.
+
+```mermaid
+flowchart TD
+    HEATH["LOC_HEATH<br/>supernatural = 0.9"]:::ambient
+    PROPHECY["EVT_WITCHES_PROPHECY_1"]
+    AMBITION(["ENT_MACBETH.ambition ▲"]):::trait
+    PERSUADE["EVT_LADY_MACBETH_PERSUADES"]
+    POWER{{"REL(MACBETH, LADY)<br/>power_dynamic ▲"}}:::social
+    DAGGERS["OBJ_BLOODY_DAGGERS<br/>affordance: kill"]:::gate
+    MURDER["EVT_DUNCAN_MURDER"]
+    GUILT(["ENT_MACBETH.guilt ▲"]):::trait
+    PARANOIA(["ENT_MACBETH.paranoia ▲"]):::trait
+    FLEES["EVT_MALCOLM_FLEES"]
+    CROWNED["EVT_MACBETH_CROWNED"]
+    GHOST["EVT_BANQUO_GHOST"]
+
+    HEATH -. ambient .-> PROPHECY
+    PROPHECY -. mutation .-> AMBITION
+    PERSUADE == mutation_social ==> POWER
+    POWER -. mutation .-> AMBITION
+    AMBITION --> MURDER
+    DAGGERS -.->|gate| MURDER
+    MURDER ==> FLEES
+    MURDER ==> CROWNED
+    MURDER -. mutation .-> GUILT
+    GHOST -. mutation .-> GUILT
+    GUILT -. mutation .-> PARANOIA
+
+    classDef trait fill:#fde2e2,stroke:#c0392b;
+    classDef social fill:#e2ecfd,stroke:#2c3e9e;
+    classDef gate fill:#fff4d6,stroke:#b8860b;
+    classDef ambient fill:#eafbe7,stroke:#27ae60,stroke-dasharray:4 3;
+```
+
 ### Rung 2 vs Rung 3 — intervention and counterfactual
 
 This is where the causal engine earns its name (see
@@ -149,6 +188,41 @@ Under default `branch_policy="auto"` the counterfactual run lands on a
 never polluted; the analyst can diff the shadow against canon in the UI's
 **Causality** tab and, if convinced, promote it via
 `db.promote_branch`.
+
+The two rungs share the do-operator but differ in whether abduction runs
+first. The intervention forks, clamps the target event, and propagates
+forward; the counterfactual first pins the observed downstream as evidence
+(abduction), *then* clamps an upstream cause and re-propagates — which is
+why its answer is weaker and lands on its own shadow `world_id`.
+
+```mermaid
+flowchart LR
+    Q["What-if prompt"] --> ROUTER["narrative_physics<br/>router"]
+    ROUTER -->|query_type = intervention| R2
+    ROUTER -->|query_type = counterfactual| R3
+
+    subgraph R2 ["Rung 2 — Intervention"]
+        direction TB
+        I1["_check_intervention_plausibility"] --> I2["fork AMWN sandbox"]
+        I2 --> I3["apply_do_operator<br/>EVT_DUNCAN_MURDER = ⊘"]
+        I3 --> I4["propagate() forward"]
+        I4 --> I5["chain_reaction edges<br/>lose activation"]
+    end
+
+    subgraph R3 ["Rung 3 — Counterfactual"]
+        direction TB
+        C1["fork AMWN sandbox"] --> C2["abduction_update<br/>pin observed downstream"]
+        C2 --> C3["apply_do_operator<br/>EVT_WITCHES_PROPHECY_1 = ⊘"]
+        C3 --> C4["re-propagate"]
+        C4 --> C5["weaker answer<br/>(tyranny over-determined)"]
+    end
+
+    R2 --> CANON["canon graph<br/>(rung 2 in place)"]
+    R3 --> SHADOW["shadow branch<br/>new world_id → promote_branch"]
+
+    classDef branch fill:#f3e8ff,stroke:#7d3c98;
+    class SHADOW branch;
+```
 
 ---
 
@@ -209,6 +283,33 @@ participant's `Belief` set. Simon's shouted lie that Mrs Otterbourne
 "saw who killed the maid" is a `truth_value="false"` utterance that
 nevertheless updates Jacqueline's belief about the threat — exactly
 because beliefs are about *perceived* state, not truth.
+
+The diagram traces the lounge shooting through its channels into divergent
+belief sets. Edge labels are the per-participant `intelligibility` weights;
+note that the same event writes a `confidence=0.9` "drunken rage" belief
+to Fanthorp while Poirot's "staged" belief only climbs from `0.55` toward
+`0.95` across the timeline — the coexisting posteriors the auditor later
+diffs.
+
+```mermaid
+flowchart LR
+    SHOOT["EVT_LOUNGE_SHOOTING<br/>(staged)"]
+    SHOOT --> PUB["CHN_LOUNGE_PUBLIC"]:::chan
+    SHOOT --> PRIV["CHN_POIROT_LOUISE_PRIVATE"]:::chan
+
+    PUB -->|intel 1.0| B_FANT["ENT_FANTHORP belief<br/>'drunken rage' · conf 0.9"]:::char
+    PUB -->|intel 1.0| B_BYST["bystander beliefs<br/>spread mass"]:::char
+    PRIV -->|"intel 0.4 (oblique)"| B_POIR["ENT_POIROT belief<br/>'staged' · conf 0.55 → 0.95"]:::reader
+
+    WALL["EVT_SIMON_SHOUT<br/>truth_value = false"]
+    WALL --> CSJ["CHN_SIMON_JACQUELINE_PRIVATE"]:::chan
+    CSJ -->|intel 0.95| B_JACQ["ENT_JACQUELINE belief<br/>updates on threat"]:::char
+    CSJ -->|intel 0.05| B_OTT["ENT_OTTERBOURNE<br/>fails to decode intent"]:::char
+
+    classDef chan fill:#e2ecfd,stroke:#2c3e9e;
+    classDef char fill:#fde2e2,stroke:#c0392b;
+    classDef reader fill:#eafbe7,stroke:#27ae60;
+```
 
 ### Affective payoff — dramatic irony as epistemic asymmetry
 
@@ -292,6 +393,38 @@ doesn't change the past — it changes which `Channel`s now back-fill
 their utterances into White's belief set, which is what makes the final
 shot land.
 
+The two clocks below run on the *same* events. The causal engine reads
+the left (`fabula_time`) column for propagation; the affective scorer
+reads the right (`syuzhet_index`) column. The crossing arrows are where
+the film's anachrony lives — `EVT_ORANGE_RECRUITED` is causally early but
+narratively late, so the reveal is large under `KL(P_after || P_before)`
+yet never rewires causality.
+
+```mermaid
+flowchart LR
+    subgraph FAB ["fabula_time (story-world order)"]
+        direction TB
+        F1["≈1000 EVT_ORANGE_RECRUITED"]
+        F2["≈2000 EVT_NASH_RECOGNIZES_ORANGE"]
+        F3["≈3000 EVT_HEIST_OFFSCREEN"]
+        F4["≈4000 EVT_WAREHOUSE_STANDOFF"]
+        F1 --> F2 --> F3 --> F4
+    end
+    subgraph SYU ["syuzhet_index (reader learns)"]
+        direction TB
+        S1["1 diner scene"]
+        S2["18 warehouse standoff"]
+        S3["42 EVT_ORANGE_RECRUITED shown"]
+        S4["55 EVT_ORANGE_REVEALED_AS_COP"]
+        S1 --> S2 --> S3 --> S4
+    end
+    F4 -. "narrated early" .-> S2
+    F1 -. "narrated late" .-> S3
+    S4 -.->|"surprise = KL(P_after ‖ P_before)"| SCORE([affective scorer]):::score
+
+    classDef score fill:#fff4d6,stroke:#b8860b;
+```
+
 ---
 
 ## 4. Romeo and Juliet — directives and the affective scorer
@@ -335,6 +468,32 @@ it cannot invent a causal edge, shift a trait outside its envelope, or
 add an utterance through a channel that doesn't exist. This is the heart
 of the constrained-generation approach — the LLM is a *renderer*, not a
 simulator.
+
+The directive cycle fans out one sandbox per candidate event, prunes the
+implausible ones at the spatial/affordance gate, scores the survivors,
+and wraps the winner in typed `ConstraintBlock`s before generation ever
+runs:
+
+```mermaid
+flowchart TD
+    REQ["directive:<br/>raise dramatic_irony to 0.85<br/>in the tomb scene"]
+    REQ --> ENUM["DirectiveAssembler<br/>evaluate_candidate_events()"]
+    ENUM --> C1["Friar's letter intercepted"]
+    ENUM --> C2["Balthasar arrives faster"]
+    ENUM --> C3["Juliet wakes one minute earlier"]
+    C1 --> FORK1["fork sandbox + do-operator + propagate"]
+    C2 --> FORK2["fork sandbox + do-operator + propagate"]
+    C3 --> FORK3["fork sandbox + do-operator + propagate"]
+    FORK2 -->|"fails spatial reachability"| DROP["dropped by<br/>_check_intervention_plausibility"]:::drop
+    FORK1 --> SCORE["compute_affective_feedback"]
+    FORK3 --> SCORE
+    SCORE -->|"highest KL(reader ‖ romeo), no new utterance"| WIN["winner:<br/>Friar's letter intercepted"]:::win
+    WIN --> BRIEF["CreativeBrief<br/>typed ConstraintBlocks<br/>(must / must-not / trait envelope / syuzhet window)"]
+    BRIEF --> GEN["constrained generation"]
+
+    classDef drop fill:#f0f0f0,stroke:#888,color:#888;
+    classDef win fill:#eafbe7,stroke:#27ae60;
+```
 
 ---
 
@@ -409,6 +568,32 @@ Two further safeguards keep iteration counts bounded:
   `llm_passed=True` instead of regenerating — cosmetic density drift
   isn't worth a full re-render.
 
+The loop below shows both gates in action on Amy's lying-narrator prose:
+the deterministic engine gate (miracle steps, trait drift, affective
+deviation) and the LLM literary gate must *both* pass to converge.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Generate
+    Generate: Generate prose under brief
+    Generate --> Audit
+    Audit: Three parallel audits
+    note right of Audit
+        Causal — miracle steps
+        Abduction — is the diary truthful?
+        Affective — dramatic_irony drift
+    end note
+    Audit --> Gate
+    Gate: compute_overall_pass
+    Gate --> Regenerate: engine gate fail OR llm gate fail
+    Regenerate: Regenerate (+ NON-REGRESSION CONSTRAINTS)
+    Regenerate --> Audit
+    Gate --> Converged: only minor style drift (short-circuit)
+    Gate --> Converged: engine_thresholds_passed AND llm_pass
+    Converged: final_scene to re-extraction (Step 6)
+    Converged --> [*]
+```
+
 > **Validator callout — utterance temporal coherence.** An utterance like
 > `EventNode(event_type='utterance', truth_value='true', fabula_time=2000, target_ids=['EVT_FUTURE_EVENT'])`
 > where `EVT_FUTURE_EVENT.fabula_time=6000` is **rejected** by the ingestion
@@ -467,6 +652,32 @@ hand-waving: ambient propagation is just a per-tick scalar contribution
 to the noisy-OR aggregation in
 [`causal_physics.py::_noisy_or_aggregate`](../shadow_loom/causal_physics.py).
 
+The world-model aspect on display here is the **`GlobalTrait` as
+common-cause parent**: one node with its own `state_timeline` fans into
+many events, so a single `do(WORLD_PARTY_SURVEILLANCE = 0.1)` cascades a
+regime-change counterfactual across the whole graph. Location ambients
+add a second, per-place bias on top:
+
+```mermaid
+flowchart TD
+    WS["GlobalTrait WORLD_PARTY_SURVEILLANCE<br/>state_timeline: 0.6 → 0.9 (Two Minutes Hate)"]:::world
+    WS -->|common-cause| E1["EVT_WINSTON_MICROEXPRESSION"]
+    WS -->|common-cause| E2["EVT_PARSONS_DENOUNCED"]
+    WS -->|common-cause| E3["EVT_TELESCREEN_BARKS"]
+    CANTEEN["LOC_CANTEEN<br/>supervision 0.85 / concealment 0.05"]:::loc
+    MANSIONS["LOC_VICTORY_MANSIONS<br/>supervision 0.4 / concealment 0.7"]:::loc
+    CANTEEN -. "ambient +0.15 paranoia" .-> PAR(["ENT_WINSTON.paranoia ▲▲"]):::trait
+    MANSIONS -. "ambient +0.04 paranoia" .-> PAR
+    E1 --> PAR
+    DO["do(WORLD_PARTY_SURVEILLANCE = 0.1)"]:::cf
+    DO -. "regime-change counterfactual" .-> WS
+
+    classDef world fill:#e2ecfd,stroke:#2c3e9e;
+    classDef loc fill:#eafbe7,stroke:#27ae60;
+    classDef trait fill:#fde2e2,stroke:#c0392b;
+    classDef cf fill:#f3e8ff,stroke:#7d3c98,stroke-dasharray:4 3;
+```
+
 ---
 
 ## 7. A Fish Called Wanda — objects, affordances, and chain reactions
@@ -511,6 +722,30 @@ downstream gag that depended on the lost fish through `chain_reaction`
 edges. The output is a clean dependency tree the author can browse in
 the UI's **Causality** tab — useful for screenwriters debugging which
 beats can be cut without unravelling the third act.
+
+The **object/affordance layer** is the aspect this fixture exercises:
+each event is gated on an object affording the action, the actors being
+co-located, and the affordance still being present. A blocked gate emits
+a `BlockedPropagation` that becomes a *must-not* constraint:
+
+```mermaid
+flowchart LR
+    TANK["OBJ_KEN_FISH_TANK<br/>affordances: house_pets, be_swallowed_from"]:::obj
+    FISH["fish present"]:::cond
+    LOC["Otto + tank co-located"]:::cond
+    TANK -->|affordance_gate| GATE{{"gate check<br/>inside propagate()"}}
+    FISH --> GATE
+    LOC --> GATE
+    GATE -->|"satisfied"| EAT["EVT_OTTO_EATS_FISH"]
+    EAT ==>|chain_reaction| BOX["EVT_GET_SAFE_DEPOSIT_BOX"]
+    BOX ==>|chain_reaction| ACCENT["EVT_IDENTIFY_WANDA_ACCENT"]
+    ACCENT ==>|chain_reaction| DIAMOND["EVT_TRACE_DIAMONDS"]
+    GATE -.->|"blocked → BlockedPropagation"| MUSTNOT["must-not constraint<br/>in brief"]:::block
+
+    classDef obj fill:#fff4d6,stroke:#b8860b;
+    classDef cond fill:#eafbe7,stroke:#27ae60;
+    classDef block fill:#f0f0f0,stroke:#888,color:#555;
+```
 
 ### Why this matters for generation
 
@@ -566,6 +801,25 @@ Frankenstein's collapses to negative; the social cascade therefore
 correctly produces *unilateral pursuit* rather than mutual hatred.
 This asymmetry is what generates the novel's tragic structure, and
 it falls out of the data model without any special-case code.
+
+The two directed edges below evolve under separate `propagate_social()`
+passes. After `EVT_CREATURE_KILLS_WILLIAM`, Victor's outward affinity
+collapses while the Creature's affinity toward Victor stays positive —
+the data model produces unilateral pursuit, not mutual hatred:
+
+```mermaid
+flowchart LR
+    V["ENT_FRANKENSTEIN"]
+    C["ENT_CREATURE"]
+    V -->|"affinity −0.8 ▼<br/>fear +0.7 ▲<br/>obligation +0.4 ▲"| C
+    C -->|"affinity +0.5 (stays positive)<br/>fear +0.2<br/>obligation +0.4"| V
+    KILL["EVT_CREATURE_KILLS_WILLIAM"]:::evt
+    KILL -. "mutation_social → V→C axes" .-> V
+    REJECT["EVT_CREATURE_REJECTED (De Lacey)"]:::evt
+    REJECT -. "−0.90 affinity / +0.90 fear (largest delta)" .-> C
+
+    classDef evt fill:#fff4d6,stroke:#b8860b;
+```
 
 ### Per-axis mutation coverage (May 2026 rebuild)
 
@@ -670,6 +924,26 @@ epistemic arcs — the late-act revelation about William Elliot — not
 the White Hart scene.) No murder, no surprise reveal: just observation
 + ambient + belief update. *That* is the Rung-1 cycle at full power.
 
+The Rung-1 cycle runs no `do(·)`: it pins the observed locations, lets
+the location ambient raise audibility, and lets `propagate_social()`
+flip one belief. Everything below is read-and-update, never surgery:
+
+```mermaid
+flowchart LR
+    OBS["ObservationQuery<br/>locations pinned at LOC_WHITE_HART"]
+    OBS --> EGO["build_ego_payload<br/>(no do-operator)"]
+    AMB["LOC_WHITE_HART ambient<br/>bustle = 0.7"]:::amb
+    UTT["EVT_UTT_ANNE_WOMEN_CONSTANCY<br/>via_channel_id = None"]
+    EGO --> SOC["propagate_social()"]
+    AMB -. "raises audibility" .-> SOC
+    UTT --> SOC
+    SOC --> FLIP(["ENT_WENTWORTH belief 'loves me yet'<br/>confidence 0.20 → 0.95"]):::flip
+    FLIP --> CLIMAX["licenses the hand-delivered letter"]
+
+    classDef amb fill:#eafbe7,stroke:#27ae60;
+    classDef flip fill:#fde2e2,stroke:#c0392b;
+```
+
 ### `WORLD_PRIMOGENITURE_ENTAIL` as economic constraint
 
 Sir Walter's debts are **not** an event in the timeline; they are a
@@ -732,6 +1006,24 @@ For Gatsby this returns: Gatsby (direct witness), Daisy (actor),
 **not** Tom (his belief is the `truth_value="false"` cover from
 Gatsby), **not** Wilson. The query *also* returns the missing edge —
 the absence is what the next directive can target.
+
+The interrogation walks belief and channel arcs from the target event to
+each entity at the Plaza, returning one `ProofPath` per knower. The
+dashed nodes are the *absences* — entities whose only belief arc is the
+false cover, which is exactly what dramatic irony (and the next
+directive) keys off:
+
+```mermaid
+flowchart TD
+    EVT["EVT_DAISY_DRIVES_INTO_MYRTLE"]
+    EVT -->|"witnessed"| GAT["ENT_GATSBY<br/>ProofPath: direct witness"]:::knows
+    EVT -->|"actor"| DAI["ENT_DAISY<br/>ProofPath: actor"]:::knows
+    EVT -. "false cover (truth_value=false)<br/>via CHN_GATSBY_TOM" .-> TOM["ENT_TOM<br/>believes Gatsby drove"]:::nope
+    EVT -. "no arc" .-> WIL["ENT_WILSON<br/>no belief node"]:::nope
+
+    classDef knows fill:#eafbe7,stroke:#27ae60;
+    classDef nope fill:#f0f0f0,stroke:#888,stroke-dasharray:4 3,color:#555;
+```
 
 ### Bidirectional asymmetric beliefs
 
@@ -811,6 +1103,21 @@ between snapshots the engine interpolates by holding the last value.
 This is what keeps the graph small (Wuthering Heights has ~60 events
 spanning 50 000 fabula ticks) while still letting causal physics rewind
 to any point.
+
+The **time-depth** aspect is best seen as a timeline: `state_timeline`
+snapshots are journalled only at the fabula ticks where a causal edge
+fires, and `reconstruct_entity_at` holds the last value through the long
+gaps in between.
+
+```mermaid
+timeline
+    title ENT_HEATHCLIFF.state_timeline (Hybrid 4+5)
+    fabula 5000  : Childhood — brought from Liverpool
+    fabula 14000 : Overhears Catherine's marriage decision : flees
+    fabula 22000 : Returns rich and vengeful : ruthlessness 0.4 → 0.85, inertia → 0.7
+    fabula 40000 : Acquires Wuthering Heights mortgage
+    fabula 52000 : Death : status = dead
+```
 
 ### Multi-generational `mutation_social` cascades
 
@@ -915,6 +1222,31 @@ early changes Pip but does not save Magwitch, because the legal-system
 chain is forced by `WORLD_LAWS_REACH_OVER_CRIMINAL_CLASS` rather than
 Pip's awareness.
 
+This is the textbook three-step Rung-3 recipe (abduction → action →
+prediction) and the over-determination split is the payoff: the
+low-inertia trait moves, the high-inertia legal chain does not.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Abduction
+    Abduction: Abduction — pin observed late-novel state
+    note right of Abduction
+        Pip snobbery 0.7, shame 0.85
+        Estella parentage = Magwitch
+        Magwitch status = dying
+    end note
+    Abduction --> Action
+    Action: Action — do(Jaggers visit = truthful variant)
+    Action --> Prediction
+    Prediction: Prediction — re-propagate forward
+    Prediction --> Changed
+    Prediction --> Unchanged
+    Changed: Pip snobbery peaks 0.4 (low-inertia, snaps)
+    Unchanged: Magwitch deportation chain unchanged\n(forced by WORLD_LAWS_REACH_OVER_CRIMINAL_CLASS)
+    Changed --> [*]
+    Unchanged --> [*]
+```
+
 ### `EvaluationQuery` — the full-story scorecard
 
 After enough Pip chapters have been ingested, run:
@@ -980,6 +1312,30 @@ latter mutation is forced by `WORLD_HEART_OF_DARKNESS` instead. The
 intersection lets the engine attribute each character beat to the
 *right* common-cause for the brief.
 
+Where 1984 has one regime trait, here four parallel `WORLD_*` latents
+press on every event — but each can only reach traits inside its
+`affected_domains`, so the engine routes each beat to the *right*
+common-cause:
+
+```mermaid
+flowchart LR
+    W1["WORLD_VIETNAM_WAR"]:::world
+    W2["WORLD_HEART_OF_DARKNESS"]:::world
+    W3["WORLD_CHAIN_OF_COMMAND<br/>domains: obedience, duty, moral_disengagement"]:::world
+    W4["WORLD_RIVER_AS_FATE"]:::world
+    EVT["every event downstream of Saigon"]
+    W1 --> EVT
+    W2 --> EVT
+    W3 --> EVT
+    W4 --> EVT
+    W3 -->|"licensed (domain match)"| OBED(["ENT_WILLARD.obedience"]):::trait
+    W3 -. "blocked (out of domain)" .-x DISS(["ENT_WILLARD.dissociation"]):::trait
+    W2 -->|"licensed"| DISS
+
+    classDef world fill:#e2ecfd,stroke:#2c3e9e;
+    classDef trait fill:#fde2e2,stroke:#c0392b;
+```
+
 ### Ambient stacking on cognition
 
 The PBR carries a stack of three ambients —
@@ -1036,6 +1392,14 @@ syuzhet_anchor    P(threat)    P(hope)    suspense
   21 (flat)          0.85        0.55       0.30     # threat overtakes
   28 (returns home)  0.95        0.10       0.85     # peak suspense
   31 (Dolly arrives) 1.00        0.00       0.00     # despair: hope = 0
+```
+
+```mermaid
+xychart-beta
+    title "Brief Encounter suspense — peak then despair-collapse"
+    x-axis ["8 botanical", "14 kardomah", "21 flat", "28 home", "31 Dolly"]
+    y-axis "suspense" 0 --> 1
+    bar [0.00, 0.00, 0.30, 0.85, 0.00]
 ```
 
 The final `0.0` is the engine *correctly* refusing to call this scene
@@ -1137,6 +1501,19 @@ the `promote_branch` tool moves one to `factual` if the author wants
 it adopted. The full per-branch diff is journalled, so promotions are
 reversible. (See [mcp-guide.md](mcp-guide.md) for the tool list.)
 
+```mermaid
+gitGraph
+    commit id: "ingest canon"
+    commit id: "Feyre takes bargain"
+    branch shadow-refuses-bargain
+    checkout shadow-refuses-bargain
+    commit id: "do(refuse bargain)"
+    commit id: "curse never lifts"
+    checkout main
+    commit id: "canon continues"
+    merge shadow-refuses-bargain id: "promote_branch"
+```
+
 Internally, a shadow branch does **not** duplicate the whole world.
 Each shadow merge that mutates a shared node (an entity who is
 alive in canon but dies in the shadow, a magic object whose owner
@@ -1199,6 +1576,20 @@ controlling the comic timing. Run `compute_suspense_score` on
 back to ≈0.05 — exactly the low-stakes ceiling sitcom requires, and
 exactly what `WORLD_HOME_FRONT_SPIRIT.value=0.7` (a *protective* world
 trait) damps it to.
+
+```mermaid
+flowchart LR
+    A["Mainwaring asserts authority"] ==> B["Wilson gently questions"]
+    B ==> C["Pike says something stupid"]
+    C ==> D["Jones: fixed-bayonet solution"]
+    D ==> E["Frazer prophesies doom"]
+    E ==> F["resolution"]
+    F -.->|"next episode (propagation_delay)"| A
+    WHFS["WORLD_HOME_FRONT_SPIRIT = 0.7<br/>(protective)"]:::world
+    WHFS -. "damps suspense ceiling ≈0.4 → 0.05" .-> E
+
+    classDef world fill:#e2ecfd,stroke:#2c3e9e;
+```
 
 This is a useful negative-space example: the engine *can* score sitcom,
 and what it scores is *correct* (sitcom suspense should not climb above

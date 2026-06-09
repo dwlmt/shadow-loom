@@ -28,6 +28,21 @@ a pub/sub event bus. Every tab subscribes to the events it cares about
 `SYUZHET_CURSOR_CHANGED`, `VERSION_CHANGED`, `ACTIVE_PATH_CHANGED`,
 `PIPELINE_RESULT`, `QUERY_STARTED`).
 
+```mermaid
+flowchart LR
+    CHAT["chat / command bar"] -->|dispatch query| PIPE["pipeline"]
+    SIDEBAR["version sidebar"] -->|load_db_version| BUS
+    PIPE -->|PIPELINE_RESULT| BUS
+    BUS(["AppState pub/sub bus"]):::bus
+    BUS -->|WORLD_STATE_CHANGED| WORLD["world · social"]
+    BUS -->|FABULA / SYUZHET cursor| STORY["story · explorer"]
+    BUS -->|PIPELINE_RESULT| REASON["reasoning · audit"]
+    BUS -->|WORLD_STATE_CHANGED| AFFECT["affective"]
+    BUS -->|VERSION_CHANGED / ACTIVE_PATH_CHANGED| EDIT["editor · export · research"]
+
+    classDef bus fill:#e2ecfd,stroke:#2c3e9e;
+```
+
 Every panel header carries a clickable info-icon **help popover**
 ([`components/help_popover.py`](../shadow_loom_ui/components/help_popover.py))
 that opens a Markdown reference for that surface — what the panel does,

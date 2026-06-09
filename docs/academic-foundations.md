@@ -51,6 +51,26 @@ Why we keep both: the affective scorers (mystery, dramatic irony, suspense,
 surprise — see §3) all reduce to set operations between the *fabula
 projection* and the *syuzhet projection* of the causal graph.
 
+```mermaid
+flowchart LR
+    subgraph FAB ["fabula_time — chronological story-world"]
+        direction LR
+        f1["planning"] --> f2["heist"] --> f3["betrayal"] --> f4["reveal"]
+    end
+    subgraph SYU ["syuzhet_index — order of narration"]
+        direction LR
+        s1["heist"] --> s2["reveal<br/>(flash-forward)"] --> s3["planning<br/>(flashback)"] --> s4["betrayal"]
+    end
+    f2 -. same event .-> s1
+    f4 -. same event .-> s2
+    f1 -. same event .-> s3
+    f3 -. same event .-> s4
+```
+
+*Two projections of one event set (a Reservoir-Dogs-style anachrony):
+the renderer reorders fabula into syuzhet, while the physics engine
+reasons over fabula order.*
+
 ### 1.2 Greimas' actantial model (`GlobalTrait`, `RelationshipEdge`)
 
 `GlobalTrait` (`WORLD_*` nodes) is our implementation of Greimas' "Power"
@@ -133,6 +153,18 @@ conventions (`AMWN`, `do_intervene`, `abduction_update`,
 
 Our query taxonomy directly mirrors Judea Pearl's "Ladder of Causation":
 observation → intervention → counterfactual.
+
+```mermaid
+flowchart LR
+    R1["<b>Rung 1 — Association</b><br/>P(Y | X)<br/>ObservationQuery<br/>'what is / what follows?'"]
+    R2["<b>Rung 2 — Intervention</b><br/>P(Y | do(X))<br/>InterventionQuery<br/>'what if we change X?'"]
+    R3["<b>Rung 3 — Counterfactual</b><br/>P(Y_x | X', Y')<br/>CounterfactualQuery<br/>'what would have been?'"]
+    R1 -->|"+ do-operator<br/>graph surgery (sever in-edges)"| R2
+    R2 -->|"+ abduction<br/>infer latent U from evidence"| R3
+```
+
+Each rung is provably non-collapsible (Bareinboim *et al.* 2022): a
+higher rung answers questions the lower rung's data cannot identify.
 
 * Pearl, J. (2009). *Causality: Models, Reasoning, and Inference* (2nd ed.). Cambridge UP. DOI 10.1017/CBO9780511803161. — canonical reference for SCMs and the three-rung hierarchy.
 * Pearl, J. & Mackenzie, D. (2018). *The Book of Why: The New Science of Cause and Effect*. Basic Books. — accessible exposition.
@@ -257,6 +289,22 @@ applied via abduction, its outgoing causal edges are masked from
 the subsequent forward propagation pass to prevent
 double-counting.
 
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Abduction
+    Abduction --> Action
+    Action --> Prediction
+    Prediction --> [*]
+    Abduction: 1. Abduction — infer latent traits U from present evidence (precision-weighted Bayesian posterior)
+    Action: 2. Action — do(historical_interventions), sever incoming edges
+    Prediction: 3. Prediction — forward cascade under the inertia gate
+```
+
+*Pearl's three-step counterfactual recipe (Causality §7), implemented
+in `causal_physics.py`; the engine reports the inferred latent shifts
+as `hidden_deltas` and the forward cascade as `mutations`.*
+
 The philosophical and computational basis:
 
 * Pearl, J. (2000/2009). *Causality* §7 ("The logic of structure-based counterfactuals"). — the abduction–action–prediction recipe for rung-3 (Counterfactual) queries. Our pipeline implements the same three steps in `causal_physics.py`.
@@ -302,6 +350,26 @@ The numbers below are the actual `CausalPhysicsResult.mutations`,
 The focal cast is
 `[ENT_MACBETH, ENT_LADY_MACBETH, ENT_DUNCAN, ENT_BANQUO, ENT_MACDUFF]`
 in every run.
+
+The Rung-2 surgery and forward cascade for
+`do(ENT_MACBETH.traits.ambition = 0)` looks like this on the real
+graph (exact values from the dump below):
+
+```mermaid
+flowchart TD
+    DO(["do(ENT_MACBETH.ambition = 0)"]) --> MB["ENT_MACBETH<br/>ambition 0.883 → 0.000<br/>(clamped)"]
+    PERS["EVT_LADY_MACBETH_PERSUADES"] -. "severed (G_X̄)" .-> MB
+    HEATH["LOC_HEATH ambient"] -. "severed (G_X̄)" .-> MB
+
+    MB --> LM["ENT_LADY_MACBETH<br/>guilt 0.000 → 0.092<br/>ambition 0.841 → 0.867<br/>ruthlessness 0.997 → 1.000"]
+    MB --> MD["ENT_MACDUFF<br/>loyalty 0.836 → 0.850"]
+    MB --> LEN["ENT_LENNOX<br/>loyalty 0.115 → 0.137"]
+    MB --> MAL["ENT_MALCOLM<br/>leadership 0.149 → 0.163<br/>courage 0.531 → 0.543"]
+    MB --> DUN["ENT_DUNCAN<br/>benevolence 0.993 → 0.998"]
+
+    classDef clamp fill:#ffe0e0,stroke:#b00020,color:#000;
+    class DO,MB clamp;
+```
 
 **Rung 1 — Observation** (`engine.execute(rung=2, interventions={})`,
 i.e. forward propagation of ambient sources only):
@@ -693,6 +761,24 @@ magnitude ambiguity.
 Our four named structural effects (mystery, dramatic irony, suspense,
 surprise) extend Meir Sternberg's classical *curiosity / suspense /
 surprise* triad with dramatic irony as a fourth axis.
+
+```mermaid
+flowchart TB
+    GAP["narrative information gap<br/>(between reader and story-world)"]
+    GAP --> PAST["gap about the PAST<br/>hidden causes"]
+    GAP --> FUT["gap about the FUTURE<br/>unrevealed threats"]
+    GAP --> SPR["concealed, then sprung<br/>expectation violated"]
+    GAP --> ASY["reader knows &gt; character knows"]
+
+    PAST --> MYS["<b>mystery / curiosity</b><br/>hidden_ancestors / total_ancestors"]
+    FUT --> SUS["<b>suspense</b><br/>balance × stakes"]
+    SPR --> SUR["<b>surprise</b><br/>KL divergence on reveal"]
+    ASY --> IRO["<b>dramatic irony</b><br/>epistemic-asymmetry gap fraction"]
+```
+
+*The triad is organised by which temporal direction the information
+gap points; dramatic irony is the orthogonal reader-vs-character axis
+Shadow-Loom adds.*
 
 `compute_mystery_score()` operationalises Sternberg's *curiosity*
 axis as a *fraction-of-hidden-causal-ancestors* gauge, with each

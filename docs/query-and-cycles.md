@@ -343,22 +343,16 @@ Below is the **per-type realisation** — what actually happens in the engine.
 
 ### 3.1 Observation cycle (Rung 1)
 
-```
-parse_query → ObservationQuery
-       │
-Step 2: if focus_entity_ids:                       # Multi-Ego mode
-            ego = extract_ego_graph_from_memory(ws, focus_entity_ids, temporal_anchor)
-            physics_state = ego.model_dump()
-        else:                                       # Omniscient mode
-            physics_state = extract_full_world_state(ws, temporal_anchor)
-        return {status:"success", directives: observations}
-       │
-Steps 3–4: brief = _build_brief_for_query(...)     # synthesised from observations
-           scene = render_from_query(...)
-       │
-Step 5: render_and_audit / run_feedback_loop       # causal + abduction + affective
-       │
-Steps 6–7: extract_topology_from_prose → vwm.merge(source="pipeline")
+```mermaid
+flowchart TD
+    P["parse_query → ObservationQuery"] --> Q{"focus_entity_ids set?"}
+    Q -->|"yes · Multi-Ego mode"| EGO["extract_ego_graph_from_memory<br/>physics_state = ego.model_dump()"]
+    Q -->|"no · Omniscient mode"| FULL["extract_full_world_state"]
+    EGO --> OBS["Step 2 returns<br/>directives = observations"]
+    FULL --> OBS
+    OBS --> BR["Steps 3–4<br/>_build_brief_for_query → render_from_query"]
+    BR --> AU["Step 5<br/>render_and_audit / run_feedback_loop<br/>causal + abduction + affective"]
+    AU --> MG["Steps 6–7<br/>extract_topology_from_prose → vwm.merge('pipeline')"]
 ```
 
 The Observation cycle is the simplest "advance the clock" path — no
@@ -367,27 +361,25 @@ model picks up the new prose.
 
 ### 3.2 Intervention cycle (Rung 2)
 
-```
-parse_query → InterventionQuery
-       │
-Step 2:
-  ① _check_intervention_plausibility(interventions, ws)
-      → if every non-spawn target is unknown → return implausible
-  ② focus = _resolve_focus_entities(interventions, ws)
-  ③ ego  = extract_ego_graph_from_memory(ws, focus, temporal_anchor)
-  ④ sandbox = AMWNInstantiator.create_sandbox(ego, "intervention")
-  ⑤ engine = CausalPhysicsEngine(sandbox, ws)
-     result = engine.execute(rung=2, interventions, target_node_ids)
-        – ctf-calculus pre-flight (Rule 3 prunes vacuous interventions,
-          Rule 2 flags d-separated evidence) — Correa & Bareinboim 2025
-        – do-surgery: spatial / inventory / relationship / state mutation /
-          genesis / comms; sever incoming causal edges into intervened nodes
-        – propagation: topological sort, per-trait signed delta, inertia gate,
-          spatial affordance gating
-  ⑥ _check_engine_vacuity(result, rung=2) → tier-2 implausibility if no
-     intervened_nodes AND no mutations AND no social_mutations
-       │
-Steps 3–7: brief → render → audit → re-extract → merge
+```mermaid
+flowchart TD
+    P["parse_query → InterventionQuery"] --> C1["① _check_intervention_plausibility<br/>every non-spawn target unknown → implausible"]
+    C1 --> C2["② _resolve_focus_entities"]
+    C2 --> C3["③ extract_ego_graph_from_memory"]
+    C3 --> C4["④ AMWNInstantiator.create_sandbox('intervention')"]
+    C4 --> C5["⑤ CausalPhysicsEngine.execute(rung=2)"]
+    C5 --> ENG
+    ENG --> C6{"⑥ _check_engine_vacuity<br/>no intervened_nodes AND no mutations<br/>AND no social_mutations?"}
+    C6 -->|"vacuous"| IMPL["tier-2 implausibility · no version write"]
+    C6 -->|"effective"| ST["Steps 3–7<br/>brief → render → audit → re-extract → merge"]
+
+    subgraph ENG ["engine.execute — Rung 2"]
+        direction TB
+        PRE["ctf-calculus pre-flight<br/>Rule 3 prunes vacuous · Rule 2 flags d-separated<br/>(Correa & Bareinboim 2025)"]
+        SURG["do-surgery: spatial / inventory / relationship /<br/>state / genesis / comms<br/>sever incoming causal edges into intervened nodes"]
+        PROP["propagation: topological sort · per-trait signed delta<br/>inertia gate · spatial affordance gating"]
+        PRE --> SURG --> PROP
+    end
 ```
 
 The Intervention cycle is where do-calculus actually runs. The two
@@ -396,29 +388,26 @@ model is **never** mutated by a request that had no effect.
 
 ### 3.3 Counterfactual cycle (Rung 3)
 
-```
-parse_query → CounterfactualQuery
-       │
-Step 2:
-  ① _check_intervention_plausibility(historical_interventions, ws)
-  ② past_anchor = _calculate_past_anchor(historical_interventions, ws)
-       → if no event matches → temporal-paradox implausibility
-  ③ ego = extract_ego_graph_from_memory(ws, focus, past_anchor)
-  ④ sandbox = AMWNInstantiator.create_sandbox(ego, "counterfactual")
-  ⑤ engine.execute(rung=3, historical_interventions, evidence_node_ids,
-                   target_node_ids)
-        – ABDUCTION: back-propagate present evidence into the historical
-          sandbox; the default `abduction_blend_mode="bayesian"` updates
-          each entity trait by a precision-weighted posterior (trait
-          inertia as the precision of the historical prior); beliefs
-          propagate backward subject to per-channel intelligibility
-          gating; MECHANISM_TRAIT_MAP gates which mechanisms touch which
-          trait families
-        – ACTION: do(historical_interventions)
-        – PROPAGATION: forward cascade as in Rung 2
-  ⑥ _check_engine_vacuity(result, rung=3) — also checks hidden_deltas
-       │
-Steps 3–7: brief → render → audit → re-extract → merge
+```mermaid
+flowchart TD
+    P["parse_query → CounterfactualQuery"] --> C1["① _check_intervention_plausibility"]
+    C1 --> C2{"② _calculate_past_anchor<br/>any event matches?"}
+    C2 -->|"no match"| TP["temporal-paradox implausibility"]
+    C2 -->|"matched"| C3["③ extract_ego_graph_from_memory(past_anchor)"]
+    C3 --> C4["④ create_sandbox('counterfactual')"]
+    C4 --> C5["⑤ engine.execute(rung=3)"]
+    C5 --> ENG
+    ENG --> C6{"⑥ _check_engine_vacuity<br/>(also checks hidden_deltas)"}
+    C6 -->|"vacuous"| IMPL["tier-2 implausibility"]
+    C6 -->|"effective"| ST["Steps 3–7<br/>brief → render → audit → re-extract → merge"]
+
+    subgraph ENG ["engine.execute — Rung 3 (abduction–action–prediction)"]
+        direction TB
+        ABD["ABDUCTION: back-propagate present evidence into historical sandbox<br/>bayesian blend — precision-weighted posterior (inertia = prior precision)<br/>beliefs propagate backward under per-channel intelligibility<br/>MECHANISM_TRAIT_MAP gates mechanism→trait families"]
+        ACT["ACTION: do(historical_interventions)"]
+        PRP["PREDICTION: forward cascade as in Rung 2"]
+        ABD --> ACT --> PRP
+    end
 ```
 
 The result includes `hidden_deltas` — the latent variable updates abduction
@@ -443,41 +432,40 @@ discovered. These are surfaced in the brief so the renderer can dramatise
 
 ### 3.4 Directive cycle (affective optimisation)
 
+```mermaid
+flowchart TD
+    P["parse_query → DirectiveQuery"] --> C1{"① any target_entity_id known?"}
+    C1 -->|"none (unless forced)"| IMPL["implausible<br/>forced → first known entity as POV"]
+    C1 -->|"known"| C2["② extract_ego_graph_from_memory"]
+    C2 --> C3["③ DirectiveAssembler.assemble(request, syuzhet_anchor)"]
+    C3 --> EVAL
+    EVAL --> RANK
+    RANK --> WRAP["wrap winner in CreativeBrief — typed ConstraintBlocks:<br/>do-not-reveal · MUST-NOT-learn guards · withheld-event lists<br/>per-trait shift constraints · headroom evidence"]
+    WRAP --> RET["④ return creative_brief"]
+    RET --> R4["Step 4: render_and_audit(brief) — brief already built"]
+    R4 --> R5["Step 5: same audit loop as other prose queries"]
+    R5 --> R67["Steps 6–7: re-extract → merge"]
+
+    subgraph EVAL ["evaluate_candidate_events"]
+        direction TB
+        FORK["fork sandbox per candidate intervention · run physics"]
+        PRUNE["prune affordance / inertia / propagation violators"]
+        FORK --> PRUNE
+    end
+    subgraph RANK ["rank survivors — affective scorer"]
+        direction TB
+        M["mystery = hidden_ancestors / total_ancestors"]
+        DI["dramatic_irony = mean (revealed-but-unknown mass) / (revealed mass + K)"]
+        SU["suspense = balance × stakes (Wilmot & Keller 2020)"]
+        SR["surprise = mean per-trait (1 − exp(−KL(p,q)))"]
+        EM["emotions = mean closeness to per-effect trait targets"]
+    end
 ```
-parse_query → DirectiveQuery
-       │
-Step 2:
-  ① if every target_entity_id is unknown → implausible
-     (or, when forced, fall back to first known entity as POV)
-  ② ego = extract_ego_graph_from_memory(ws, target_entity_ids, temporal_anchor)
-  ③ assembler = DirectiveAssembler(sandbox=None, ego, ws)
-     brief = assembler.assemble(request, syuzhet_anchor)
-        – evaluate_candidate_events: fork sandbox per candidate intervention;
-          run physics; prune affordance/inertia/propagation violators
-        – rank survivors with the affective scorer:
-            mystery        = hidden_ancestors / total_ancestors
-            dramatic_irony = mean over focal entities of
-                                 (revealed-but-unknown event mass)
-                                 / (revealed event mass + K)
-            suspense       = balance × stakes        (Wilmot & Keller 2020)
-            surprise       = mean per-trait (1 - exp(-KL(p || q)))
-                             (cumulative form for the optimiser;
-                              Itti-Baldi local form KL(q_s || q_{s-1})
-                              is used by the time-series chart)
-            emotions       = mean closeness to per-effect trait targets
-                             (positive + inverse indicators, shared
-                              `_EFFECT_TRAITS` table)
-        – wrap winner in CreativeBrief with typed ConstraintBlocks
-            (do-not-reveal lines, MUST-NOT-learn guards, withheld-event lists,
-             per-trait shift constraints, headroom evidence)
-  ④ return {status:"success", creative_brief: brief.model_dump(), ...}
-       │
-Step 4: render_and_audit(brief, ws, ...)         # brief already built
-       │
-Step 5: same audit loop as other prose queries
-       │
-Steps 6–7: re-extract → merge
-```
+
+The optimiser ranks on the **cumulative** surprise form; the
+Itti-Baldi local form `KL(q_s || q_{s-1})` is what the time-series
+chart plots. The positive and inverse emotion indicators share the
+`_EFFECT_TRAITS` table.
 
 The brief is the **only** thing the renderer LLM sees. The renderer cannot
 invent causal edges or shift entity state — its job is to dramatise the
@@ -485,20 +473,12 @@ mathematical envelope.
 
 ### 3.5 Interrogate cycle (graph RAG + LLM answer)
 
-```
-parse_query → InterrogationQuery
-       │
-Step 2: physics_state = extract_full_world_state(ws, temporal_anchor)
-Step 2.5: card = answer_question(question, physics_state,
-                                  query_type="interrogate",
-                                  require_proof, world_state, config)
-          physics_result.update(answer=card.answer,
-                                confidence=card.confidence,
-                                caveats=card.caveats,
-                                evidence_node_ids=card.evidence_node_ids,
-                                proof=[{id, kind:"evidence"}, ...])
-       │
-return PipelineResult                              # NO Steps 3–7, NO version write
+```mermaid
+flowchart TD
+    P["parse_query → InterrogationQuery"] --> S2["Step 2<br/>physics_state = extract_full_world_state"]
+    S2 --> S25["Step 2.5: answer_question<br/>query_type='interrogate' · require_proof"]
+    S25 --> UPD["physics_result.update(answer, confidence, caveats,<br/>evidence_node_ids, proof=[{id, kind:'evidence'}, …])"]
+    UPD --> RET["return PipelineResult<br/>NO Steps 3–7 · NO version write"]
 ```
 
 The pipeline early-returns after the answer step. No prose is rendered
@@ -510,16 +490,12 @@ backs the answer.
 
 ### 3.6 General cycle (full-graph Q&A + LLM answer)
 
-```
-parse_query → GeneralQuery
-       │
-Step 2: physics_state = extract_full_world_state(ws, temporal_anchor)
-Step 2.5: card = answer_question(question, physics_state,
-                                  query_type="general", ...)
-          physics_result.update(answer, confidence, caveats,
-                                evidence_node_ids, proof)
-       │
-return PipelineResult                              # NO Steps 3–7, NO version write
+```mermaid
+flowchart TD
+    P["parse_query → GeneralQuery"] --> S2["Step 2<br/>physics_state = extract_full_world_state"]
+    S2 --> S25["Step 2.5: answer_question(query_type='general')"]
+    S25 --> UPD["physics_result.update(answer, confidence, caveats,<br/>evidence_node_ids, proof)"]
+    UPD --> RET["return PipelineResult<br/>NO Steps 3–7 · NO version write"]
 ```
 
 Same shape as `interrogate` but the omniscient state (including topology
@@ -527,16 +503,11 @@ unless the caller turns it off) is the context the LLM answers from.
 
 ### 3.7 Manual-edit cycle
 
-```
-parse_query → ManualEditQuery     # or constructed directly from MCP `write`
-       │
-Step 2: returns {status:"manual_edit", edited_prose}
-       │
-Step 4: result.prose = query.edited_prose          # NO Step 3, NO Step 5
-        result.scene = GeneratedScene(prose, rendering_mode="manual_edit")
-       │
-Steps 6–7: extract_topology_from_prose(prose, ws)
-           vwm.merge(topology, source="manual_edit", description=…)
+```mermaid
+flowchart TD
+    P["parse_query → ManualEditQuery<br/>or constructed directly from MCP write"] --> S2["Step 2 returns<br/>{status: 'manual_edit', edited_prose}"]
+    S2 --> S4["Step 4: result.prose = query.edited_prose<br/>scene = GeneratedScene(rendering_mode='manual_edit')<br/>NO Step 3 · NO Step 5"]
+    S4 --> S67["Steps 6–7<br/>extract_topology_from_prose → vwm.merge(source='manual_edit')"]
 ```
 
 This is the surface that lets a user **author directly into the world
@@ -546,20 +517,22 @@ new prose. The MCP `write` tool is the canonical entry point.
 
 ### 3.8 Evaluate cycle
 
-```
-parse_query → EvaluationQuery
-       │
-Step 2: physics_state = extract_full_world_state(ws, temporal_anchor)
-        return {status:"success", query_type:"evaluate"}
-       │
-Step 2.5: _run_evaluation_branch(query, ws, vwm, cfg, physics_result)
-            – collect all prose across versions (vwm.history)
-            – compute_causal_feedback over the combined story
-            – compute_affective_feedback over focus_entity_ids
-            – LLM literary critique (StoryQualitySynthesis)
-            – assemble NarrativeOrderObject + overall_pass
-       │
-return PipelineResult(evaluation_result=…)         # NO Steps 3–7
+```mermaid
+flowchart TD
+    P["parse_query → EvaluationQuery"] --> S2["Step 2<br/>physics_state = extract_full_world_state<br/>return {status:'success', query_type:'evaluate'}"]
+    S2 --> S25["Step 2.5: _run_evaluation_branch"]
+    S25 --> EV
+    EV --> RET["return PipelineResult(evaluation_result=…)<br/>NO Steps 3–7"]
+
+    subgraph EV ["_run_evaluation_branch — whole project"]
+        direction TB
+        A["collect all prose across versions (vwm.history)"]
+        B["compute_causal_feedback over combined story"]
+        C["compute_affective_feedback over focus_entity_ids"]
+        D["LLM literary critique (StoryQualitySynthesis)"]
+        E["assemble NarrativeOrderObject + overall_pass"]
+        A --> B --> C --> D --> E
+    end
 ```
 
 `evaluate` is the only query type that operates on the **whole project

@@ -8,6 +8,43 @@ For the conceptual / theoretical grounding of the ideas described here, see
 [academic-foundations.md](academic-foundations.md). For the *why* behind each
 choice, see [design-decisions.md](design-decisions.md).
 
+The pipeline runs in five phases (twelve numbered steps):
+
+```mermaid
+flowchart TD
+    raw([raw text]) --> P1
+    P1 --> P2 --> P3 --> P4 --> P5 --> out([versioned WorldStateV1 + prose])
+
+    subgraph P1 ["Phase 1 — World State & Initialisation"]
+        direction TB
+        s1["Step 1 · Ontology ingestion (5-pass)"]
+        s2["Step 2 · Topology extraction (per-chunk)"]
+        s3["Step 3 · Epistemic synchronisation"]
+        s4["Step 4 · Director intent"]
+        s5["Step 5 · Ego-graph extraction"]
+        s1 --> s2 --> s3 --> s4 --> s5
+    end
+    subgraph P2 ["Phase 2 — Mathematical Simulation"]
+        direction TB
+        s6["Step 6 · AMWN sandbox"]
+        s7["Step 7 · Causal physics (Pearl 3 rungs)"]
+        s8["Step 8 · Affective calculus"]
+        s6 --> s7 --> s8
+    end
+    subgraph P3 ["Phase 3 — Generative Constraint"]
+        s9["Step 9 · CreativeBrief assembly"]
+    end
+    subgraph P4 ["Phase 4 — Prose Generation"]
+        s10["Step 10 · Constrained LLM render"]
+    end
+    subgraph P5 ["Phase 5 — Audit & Refinement"]
+        direction TB
+        s11["Step 11 · LLM-as-judge audit"]
+        s12["Step 12 · Refine / re-extract / merge"]
+        s11 --> s12
+    end
+```
+
 ---
 
 ## 1. The data model — `WorldStateV1`
@@ -35,6 +72,35 @@ Pydantic v2 with `model_validator` constraints.
 | `SpatialEdge` | location→location | Optional `is_locked` + `barrier_item_id`. |
 
 Note: communication is no longer modelled as an edge. Standing capability lives on the `Channel` *node*; discrete messages are first-class `EventNode`s with `event_type="utterance"` referencing a channel via `via_channel_id`.
+
+```mermaid
+erDiagram
+    WorldStateV1 ||--o{ Location : "LOC_"
+    WorldStateV1 ||--o{ NarrativeObject : "OBJ_"
+    WorldStateV1 ||--o{ Entity : "ENT_"
+    WorldStateV1 ||--o{ EventNode : "EVT_"
+    WorldStateV1 ||--o{ GlobalTrait : "WORLD_"
+    WorldStateV1 ||--o{ Channel : "CHN_"
+    WorldStateV1 ||--o{ Proposition : "PROP_"
+
+    Entity ||--o{ TraitVector : "traits"
+    Entity ||--o{ Belief : "beliefs"
+    Entity ||--o{ Concern : "concerns (CCN_)"
+    Entity ||--o{ EntityStateSnapshot : "state_timeline"
+    Location ||--o{ AmbientVector : "ambient_state"
+    NarrativeObject ||--o{ Affordance : "affordances"
+
+    Entity ||--o{ RelationshipEdge : "entity-entity (per-axis metrics)"
+    EventNode ||--o{ CausalEdge : "5 modalities"
+    Location ||--o{ SpatialEdge : "location-location"
+    EventNode }o--|| Location : "at_location_id"
+    EventNode }o--o| Channel : "via_channel_id (utterance)"
+    Concern }o--|| Proposition : "about proposition_id"
+    Belief }o--o| EventNode : "acquired_via_event_id"
+```
+
+Every node and edge also carries an AMWN `world_id` tag
+(`factual` / `shadow`); see §1 *AMWN tagging* below.
 
 ### Temporal sub-models (the "Hybrid 4+5" design)
 
@@ -753,6 +819,21 @@ single, rotating-by-beat, or ensemble semantics, and
 `additional_pov_locks` carrying the rest of the licensed roster
 under the non-single policies.
 
+```mermaid
+flowchart TD
+    B(["CreativeBrief.pov_lock"]) --> L1["Layer 1 · Render-time contract<br/>generation.py — HARD prompt constraint"]
+    L1 --> L2{"Layer 2 · Scene-output mirror<br/>GeneratedScene.pov_entity matches?"}
+    L2 -->|"mismatch"| FIX["coerce metadata + record reasoning_failure"]
+    L2 -->|"match"| L3
+    FIX --> L3{"Layer 3 · Deterministic prose regex<br/>non-POV interiority > threshold?"}
+    L3 -->|"breach"| V["synthesise critical violation pre-LLM"]
+    L3 -->|"clean"| L4
+    V --> L4{"Layer 4 · LLM auditor<br/>head-hops / omniscient asides?"}
+    L4 -->|"fail"| L5["Layer 5 · Refinement re-injection<br/>restate lock + &lt;&lt;&lt;VIOLATION&gt;&gt;&gt; markers"]
+    L4 -->|"pass"| OK([POV-locked scene])
+    L5 -->|"rewrite"| L1
+```
+
 ### Layer 1 — Render-time contract (`shadow_loom/generation.py`)
 
 `assemble_rendering_prompt` injects `pov_lock` into the generation
@@ -878,6 +959,23 @@ Which branch a pipeline run lands on is decided by
 `PipelineConfig.branch_policy: Literal["auto", "mainline", "shadow"]`
 (default `"auto"`). Under `auto`, counterfactual queries fork to a fresh
 shadow `world_id`; everything else stays on the factual mainline.
+
+```mermaid
+gitGraph
+    commit id: "v1 ingestion"
+    commit id: "v2 pipeline"
+    branch shadow-bloodier
+    checkout shadow-bloodier
+    commit id: "v3 counterfactual"
+    commit id: "v4 refine"
+    checkout main
+    commit id: "v5 pipeline"
+    merge shadow-bloodier id: "v6 promote_branch"
+```
+
+*The `main` line is the factual mainline; `promote_branch` copies a
+shadow version onto a new factual `VersionRow` whose ancestor is the
+current factual head.*
 `VersionedWorldModel.merge(world_id=..., branch_label=...)` re-tags the
 merged nodes/edges so per-branch retrieval stays clean.
 

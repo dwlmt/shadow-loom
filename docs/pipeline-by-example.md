@@ -406,6 +406,36 @@ links outside the slice (e.g. the witches' second prophecy at t=13000)
 have to be explicitly carried in by the query author or surfaced by the
 brief.
 
+The ego-payload is the Markov blanket around the focus, sliced from the
+full graph. Everything outside the dashed boundary (e.g. the second
+prophecy at t=13000) is excluded unless explicitly carried in:
+
+```mermaid
+flowchart TD
+    FULL["full WorldStateV1<br/>(all entities, all fabula time)"]:::full
+    FULL -->|"build_ego_payload<br/>focus=ENT_MACBETH, t≈6000, memory_limit"| SLICE
+    subgraph SLICE ["ego-payload (Markov blanket)"]
+        direction TB
+        FOCUS(["focus: ENT_MACBETH<br/>ambition 0.85, guilt not yet shocked"]):::focus
+        PRES["present_entities:<br/>LADY_MACBETH, DUNCAN, BANQUO"]
+        OBJ["present_objects:<br/>BLOODY_DAGGERS, LETTER"]
+        LOC["current_locations:<br/>LOC_INVERNESS_CASTLE + ambient"]
+        MEM["recent_memory:<br/>REBELLION_DEFEATED, PROPHECY_1, CAWDOR, PERSUADES"]
+        UTT["relevant utterances:<br/>UTT_PROPHECY_HEATH, UTT_DUNCAN_BESTOWS_CAWDOR"]
+        FOCUS --- PRES
+        FOCUS --- OBJ
+        FOCUS --- LOC
+        FOCUS --- MEM
+        FOCUS --- UTT
+    end
+    OUT["EVT_WITCHES_PROPHECY_2 (t=13000)<br/>outside slice — carried in only if needed"]:::out
+    SLICE -. excluded .-> OUT
+
+    classDef full fill:#e2ecfd,stroke:#2c3e9e;
+    classDef focus fill:#fde2e2,stroke:#c0392b;
+    classDef out fill:#f0f0f0,stroke:#888,stroke-dasharray:4 3,color:#555;
+```
+
 ### 2.2 The AMWN sandbox — factual vs shadow worlds
 
 [`AMWNInstantiator.create_sandbox`](../shadow_loom/instantiator.py)
@@ -442,6 +472,32 @@ returns a shallow `model_copy` swapping the projected dicts in
 without touching the factual baseline. See
 [architecture.md §1 "AMWN node-splitting sidecar"](architecture.md#amwn-node-splitting-sidecar-correa--bareinboim-icml-2025)
 for the full contract.
+
+Factual and shadow share an ancestor graph and diverge at the
+intervention point. The factual baseline is never mutated; shadow writes
+land in per-branch sidecars, and reads project them in via
+`projected_for_branch`:
+
+```mermaid
+flowchart TD
+    ANC["shared ancestor graph<br/>(ego-payload)"]
+    ANC -->|"query_type ∈ observation/interrogate"| FACT["world_id = factual<br/>(read-only physics)"]:::fact
+    ANC -->|"query_type ∈ intervention/counterfactual"| SHA["world_id = shadow<br/>do(·) surgery here"]:::sha
+    SHA -->|"merge writes split copy"| SIDE
+    subgraph SIDE ["WorldStateV1 sidecars (keyed by branch_label → id)"]
+        direction LR
+        SE["shadow_entities"]
+        SO["shadow_objects"]
+        SP["shadow_propositions"]
+        SW["shadow_world_traits"]
+    end
+    SIDE -->|"projected_for_branch<br/>(shallow model_copy)"| READ["shadow read view"]
+    SHA -.->|"promote_branch"| CANON["new factual VersionRow"]:::fact
+    FACT -. "baseline untouched" .- BASE["factual records"]
+
+    classDef fact fill:#eafbe7,stroke:#27ae60;
+    classDef sha fill:#f3e8ff,stroke:#7d3c98;
+```
 
 ---
 
@@ -679,6 +735,50 @@ state_timeline are not re-fired* — propagating them would double-count.
 The engine relies on `reconstruct_entity_at()` for the historical state
 and only forward-propagates actually-changed nodes.
 
+When several edges target the same trait in one tick they are combined
+by **noisy-OR** — the same independent-causes aggregation Pearl uses for
+a binary node — then gated against inertia before the trait moves:
+
+```mermaid
+flowchart LR
+    PRIOR(["prior: guilt = 0.10<br/>inertia = 0.50"]):::prior
+    E1["EVT_DUNCAN_MURDER<br/>impact 2.9"]
+    E2["EVT_BANQUO_GHOST<br/>impact 3.81"]
+    AMB["LOC_DUNSINANE tension 0.9<br/>×(1 + 0.3·0.9)"]:::amb
+    E1 --> OR
+    E2 --> OR
+    AMB -. "ambient multiplier" .-> OR
+    OR{{"noisy-OR aggregate<br/>1 − ∏(1 − wₐ·vₐ)"}}:::or
+    OR --> GATE{"impact > inertia ?<br/>3.81 > 0.50"}
+    GATE -->|yes| POST(["posterior: guilt = 0.85<br/>(bounded by [0,1] headroom)"]):::post
+    GATE -->|no| NOOP["blocked / no change"]:::noop
+
+    classDef prior fill:#e2ecfd,stroke:#2c3e9e;
+    classDef post fill:#fde2e2,stroke:#c0392b;
+    classDef or fill:#fff4d6,stroke:#b8860b;
+    classDef amb fill:#eafbe7,stroke:#27ae60;
+    classDef noop fill:#f0f0f0,stroke:#888,color:#555;
+```
+
+Replaying the journalled snapshots through `reconstruct_entity_at()`
+gives the trait's actual path over fabula time. Below is the real
+`ENT_MACBETH` trajectory the engine produces — guilt steps up at the
+murder (t=6000) and Banquo's ghost (t=11000), while paranoia spikes at
+the murder of Banquo and then *relaxes* after the second prophecy
+falsely reassures him (t=13000):
+
+```mermaid
+xychart-beta
+    title "ENT_MACBETH trait state over fabula time (engine reconstruction)"
+    x-axis [0, 2000, 5000, 6000, 10000, 11000, 13000, 17000, 19000]
+    y-axis "trait value" 0 --> 1
+    line [0.10, 0.10, 0.10, 0.70, 0.70, 0.85, 0.85, 0.85, 0.85]
+    line [0.20, 0.20, 0.20, 0.55, 0.70, 0.85, 0.55, 0.55, 0.55]
+```
+
+(Upper line = `guilt`, lower line = `paranoia`; `ambition` shocks once
+at the prophecy t=2000 to 0.85 and then holds — a high-inertia trait.)
+
 ### 3.6 Social propagation and belief revision
 
 `propagate_social()` is the parallel pass for `RelationshipEdge` and the
@@ -705,6 +805,23 @@ the shooting was staged"`, so the incoming evidence only nudges his
 confidence to ~0.6 — not enough to flip the perceived state. The two
 beliefs *coexist* in the world state, and that coexistence is what makes
 the dramatic-irony score in §4.2 below meaningful.
+
+The same utterance produces *different* posteriors per listener: the
+update is `intelligibility × strength_weight × truth_weight`, damped by
+each listener's prior inertia. High-inertia priors resist the update —
+which is exactly why Poirot's belief survives the public account:
+
+```mermaid
+flowchart LR
+    UTT["EVT_UTT_LOUNGE_SHOOTING_STAGED<br/>truth_value = true (weight 1.0)"]
+    UTT --> CH["CHN_LOUNGE_PUBLIC"]:::chan
+    CH -->|"intel 0.95 · low prior inertia"| BYST(["bystanders: confidence → 0.85<br/>'impulsive drunken rage'"]):::flip
+    CH -->|"intel 0.95 · prior inertia 0.65"| POIR(["Poirot: 0.55 → ~0.6<br/>'staged' (state does not flip)"]):::hold
+
+    classDef chan fill:#e2ecfd,stroke:#2c3e9e;
+    classDef flip fill:#fde2e2,stroke:#c0392b;
+    classDef hold fill:#eafbe7,stroke:#27ae60;
+```
 
 ---
 
@@ -744,6 +861,14 @@ slaughter and the moving forest have closed most of the structural
 gaps. Reproduce via
 [`scripts/_dump_scorer_components.py`](../scripts/_dump_scorer_components.py).
 
+```mermaid
+xychart-beta
+    title "Macbeth mystery score by syuzhet anchor (engine output)"
+    x-axis [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 32]
+    y-axis "mystery" 0 --> 1
+    line [0.99, 0.93, 0.87, 0.73, 0.66, 0.61, 0.59, 0.55, 0.41, 0.37, 0.28, 0.28]
+```
+
 ### 4.2 Dramatic irony — Death on the Nile
 
 `compute_dramatic_irony_score` measures, per focal character, the
@@ -771,6 +896,14 @@ Race, Richetti), the engine returns the canonical rise-peak-fall arc
 syuzhet anchor:    1     4     7     10    13    16    19    22    25    28    30
 dramatic_irony:  0.14  0.30  0.26  0.40  0.48  0.58  0.47  0.42  0.37  0.50  0.28
                                                   ↑ peak
+```
+
+```mermaid
+xychart-beta
+    title "Death on the Nile dramatic-irony arc (rise-peak-fall)"
+    x-axis [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 30]
+    y-axis "dramatic_irony" 0 --> 1
+    line [0.14, 0.30, 0.26, 0.40, 0.48, 0.58, 0.47, 0.42, 0.37, 0.50, 0.28]
 ```
 
 The peak at anchor 16 lands precisely as Poirot's deduction outpaces
