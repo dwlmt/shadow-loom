@@ -5,7 +5,7 @@ import logging
 
 from pydantic import BaseModel, Field, model_validator, field_validator
 from pydantic import ValidationInfo
-from typing import Annotated, Any, Iterable, List, Dict, Optional, Literal
+from typing import Annotated, Any, Iterable, List, Dict, Optional, Literal, Set
 
 _logger = logging.getLogger(__name__)
 
@@ -1885,7 +1885,12 @@ class SpatialEdge(AMWNEdge):
 
 # --- 4. TEMPORAL RECONSTRUCTION ---
 
-def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> Dict[str, Any]:
+def reconstruct_entity_at(
+    entity: "Entity",
+    fabula_time: int,
+    *,
+    exclude_triggered_by: Optional[Set[str]] = None,
+) -> Dict[str, Any]:
     """Reconstruct an entity's mutable state at a given fabula_time.
 
     Starts from the Entity's initial (pre-story) fields and replays
@@ -1893,6 +1898,20 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> Dict[str, Any]:
 
     Returns a dict with keys: traits, beliefs, status, location_id.
     Trait values are dicts ``{"value": float, "inertia": float}``.
+
+    ``exclude_triggered_by`` (2026-05-30 audit): when supplied, any
+    snapshot whose ``triggered_by`` is in the set is skipped. Mirrors
+    the merge-time scrub in
+    :func:`shadow_loom.extract_graph._get_or_clone_shadow_entity` so
+    callers building a brief from the factual ``WorldStateV1`` against
+    a do-surgery's ``pruned_utterance_event_ids`` see the same
+    post-prune entity state the auditor will see after the shadow
+    clone materialises. Without this filter, a counterfactual brief
+    reading the factual world reports a death / status / location
+    change caused by a now-pruned event (e.g. Mrs Coady's
+    ``status="dead"`` snapshot triggered by the pruned heart-attack
+    event in *A Fish Called Wanda*), and the renderer/auditor
+    silently re-narrate the absent event.
     """
     # Seed from initial state
     # Audit R18-24: include ``evidence_strength`` so reconstructed
@@ -1917,6 +1936,7 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> Dict[str, Any]:
     # write-side guard in ``VersionedWorldModel.merge`` now blocks
     # that, but persisted worlds may still carry historical drift.
     holder_world = getattr(entity, "world_id", "factual") or "factual"
+    excluded: Set[str] = set(exclude_triggered_by or ())
     # Audit R17-4: stable secondary key on ``triggered_by`` so two
     # snapshots at the same fabula tick replay in a deterministic order
     # even after serialization roundtrips reshuffle insertion order.
@@ -1928,6 +1948,11 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> Dict[str, Any]:
             break
         snap_world = getattr(snap, "world_id", holder_world) or holder_world
         if snap_world != holder_world:
+            continue
+        # Audit 2026-05-30: drop snapshots whose causal trigger was
+        # pruned by the do-surgery (closure-aware). Mirrors the
+        # merge-time scrub in ``_get_or_clone_shadow_entity``.
+        if excluded and getattr(snap, "triggered_by", None) in excluded:
             continue
         # Merge trait updates
         for k, tv in snap.traits.items():
@@ -1999,6 +2024,18 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> Dict[str, Any]:
     # Filter beliefs by temporal anchor
     beliefs = [b for b in beliefs if b.get("established_at_fabula", 0) <= fabula_time]
 
+    # Audit 2026-05-30: also drop beliefs whose ``acquired_via_event_id``
+    # was pruned by the do-surgery — mirrors the merge-time scrub in
+    # :func:`shadow_loom.extract_graph._get_or_clone_shadow_entity`
+    # so a counterfactual brief reading the factual ``Entity.beliefs``
+    # does not surface beliefs whose only causal grounding was an
+    # event the surgery erased.
+    if excluded:
+        beliefs = [
+            b for b in beliefs
+            if b.get("acquired_via_event_id") not in excluded
+        ]
+
     return {
         "traits": traits,
         "beliefs": beliefs,
@@ -2007,7 +2044,12 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> Dict[str, Any]:
     }
 
 
-def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> Dict[str, Any]:
+def reconstruct_world_trait_at(
+    trait: "GlobalTrait",
+    fabula_time: int,
+    *,
+    exclude_triggered_by: Optional[Set[str]] = None,
+) -> Dict[str, Any]:
     """Reconstruct a world trait's state at a given fabula_time.
 
     Starts from the GlobalTrait's initial magnitude and replays
@@ -2015,6 +2057,12 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> Dict[s
 
     Returns a dict with keys: magnitude, description.
     magnitude is a dict ``{"value": float, "inertia": float}``.
+
+    ``exclude_triggered_by`` (2026-05-30 audit): skip snapshots whose
+    ``triggered_by`` is in the set so a counterfactual brief sees the
+    world-trait magnitude as it was BEFORE the do-surgery's pruned
+    cascade fired. Mirrors the brief-time filter in
+    :func:`shadow_loom.directive_assembly.build_world_invariant_constraints`.
     """
     # Audit R18-24: include ``evidence_strength`` on the world-trait
     # magnitude payload, mirroring the entity-trait fix above.
@@ -2033,6 +2081,7 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> Dict[s
     # advance the factual mainline's trait magnitude in every
     # downstream replay (auditor, prose renderer, social/world tabs).
     holder_world = getattr(trait, "world_id", "factual") or "factual"
+    excluded: Set[str] = set(exclude_triggered_by or ())
     # Audit R17-4: stable secondary key on ``triggered_by``.
     for snap in sorted(
         trait.state_timeline,
@@ -2042,6 +2091,8 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> Dict[s
             break
         snap_world = getattr(snap, "world_id", holder_world) or holder_world
         if snap_world != holder_world:
+            continue
+        if excluded and getattr(snap, "triggered_by", None) in excluded:
             continue
         if snap.magnitude is not None:
             magnitude = {
@@ -2058,7 +2109,12 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> Dict[s
     }
 
 
-def reconstruct_object_at(obj: "NarrativeObject", fabula_time: int) -> Dict[str, Any]:
+def reconstruct_object_at(
+    obj: "NarrativeObject",
+    fabula_time: int,
+    *,
+    exclude_triggered_by: Optional[Set[str]] = None,
+) -> Dict[str, Any]:
     """Reconstruct a :class:`NarrativeObject`'s mutable state at a given fabula_time.
 
     Starts from the object's initial fields and replays
@@ -2073,6 +2129,12 @@ def reconstruct_object_at(obj: "NarrativeObject", fabula_time: int) -> Dict[str,
     ``properties``. Snapshots are merged in fabula order; explicit
     null-clear flags (``set_location_null`` / ``set_owner_null``)
     distinguish "no change" from "cleared because picked up / dropped".
+
+    ``exclude_triggered_by`` (2026-05-30 audit): skip snapshots whose
+    ``triggered_by`` is in the set, mirroring
+    :func:`reconstruct_entity_at` so a counterfactual brief built
+    against the factual ``WorldStateV1`` sees objects in their
+    pre-pruned-event location / ownership / property state.
     """
     location_id: Optional[str] = obj.location_id
     owner_id: Optional[str] = obj.owner_id
@@ -2084,6 +2146,7 @@ def reconstruct_object_at(obj: "NarrativeObject", fabula_time: int) -> Dict[str,
     # the ``object_updates`` cross-branch write guard in
     # ``VersionedWorldModel.merge``.
     holder_world = getattr(obj, "world_id", "factual") or "factual"
+    excluded: Set[str] = set(exclude_triggered_by or ())
     # Audit R17-4: stable secondary key on ``triggered_by``.
     for snap in sorted(
         obj.state_timeline,
@@ -2093,6 +2156,8 @@ def reconstruct_object_at(obj: "NarrativeObject", fabula_time: int) -> Dict[str,
             break
         snap_world = getattr(snap, "world_id", holder_world) or holder_world
         if snap_world != holder_world:
+            continue
+        if excluded and getattr(snap, "triggered_by", None) in excluded:
             continue
         # Location: explicit clear wins, then explicit set, else no change.
         if snap.set_location_null:
@@ -2272,7 +2337,12 @@ def event_location_at(
     return None
 
 
-def reconstruct_proposition_at(prop: "Proposition", fabula_time: int) -> dict:
+def reconstruct_proposition_at(
+    prop: "Proposition",
+    fabula_time: int,
+    *,
+    exclude_triggered_by: Optional[Set[str]] = None,
+) -> dict:
     """Reconstruct a proposition's mutable framing state at a given fabula_time.
 
     Starts from the Proposition's initial fields and replays
@@ -2285,6 +2355,14 @@ def reconstruct_proposition_at(prop: "Proposition", fabula_time: int) -> dict:
     The returned ``truth_at`` value is the latest committed truth from
     ``Proposition.truth_at_fabula`` at or before *fabula_time*; ``None``
     if the proposition has not yet committed at that time.
+
+    ``exclude_triggered_by`` (2026-05-30 audit): skip framing
+    snapshots whose ``triggered_by`` is in the set (e.g. stakes
+    escalations triggered by a pruned cascade event), mirroring
+    :func:`reconstruct_entity_at`. The ``truth_at_fabula`` channel
+    is NOT scrubbed here — use
+    :func:`shadow_loom.directive_assembly.compute_suppressed_truth_commits`
+    to compute the suppressed (proposition_id, tick) set for that.
     """
     stakes = prop.stakes
     audience_default_prior = prop.audience_default_prior
@@ -2296,6 +2374,7 @@ def reconstruct_proposition_at(prop: "Proposition", fabula_time: int) -> dict:
     # ``PropositionSnapshot`` would silently mutate the factual
     # mainline's stakes/prior/description at every replay.
     holder_world = getattr(prop, "world_id", "factual") or "factual"
+    excluded: Set[str] = set(exclude_triggered_by or ())
     # Audit R17-4: stable secondary key on ``triggered_by``.
     for snap in sorted(
         prop.state_timeline,
@@ -2305,6 +2384,8 @@ def reconstruct_proposition_at(prop: "Proposition", fabula_time: int) -> dict:
             break
         snap_world = getattr(snap, "world_id", holder_world) or holder_world
         if snap_world != holder_world:
+            continue
+        if excluded and getattr(snap, "triggered_by", None) in excluded:
             continue
         if snap.stakes is not None:
             stakes = snap.stakes
@@ -2338,7 +2419,12 @@ def reconstruct_proposition_at(prop: "Proposition", fabula_time: int) -> dict:
     }
 
 
-def reconstruct_concern_at(concern: "Concern", fabula_time: int) -> dict:
+def reconstruct_concern_at(
+    concern: "Concern",
+    fabula_time: int,
+    *,
+    exclude_triggered_by: Optional[Set[str]] = None,
+) -> dict:
     """Reconstruct a concern's mutable state at a given fabula_time.
 
     Starts from the Concern's initial fields and replays
@@ -2351,6 +2437,13 @@ def reconstruct_concern_at(concern: "Concern", fabula_time: int) -> dict:
     Returns an ``active`` flag honoring the (possibly updated)
     ``activation_fabula_window`` so callers don't need to repeat the
     window check.
+
+    ``exclude_triggered_by`` (2026-05-30 audit): skip salience /
+    polarity / window snapshots whose ``triggered_by`` was pruned by
+    the do-surgery cascade, mirroring the merge-time scrub in
+    :func:`shadow_loom.extract_graph._get_or_clone_shadow_entity`.
+    Without this filter a counterfactual brief surfaces concern
+    bumps attributed to events that did not occur in this AMWN world.
     """
     salience = concern.salience
     polarity = concern.polarity
@@ -2366,6 +2459,7 @@ def reconstruct_concern_at(concern: "Concern", fabula_time: int) -> dict:
     # replay (audience suspense, irony, social weight all key off
     # this).
     holder_world = getattr(concern, "world_id", "factual") or "factual"
+    excluded: Set[str] = set(exclude_triggered_by or ())
     # Audit R17-4: stable secondary key on ``triggered_by``.
     for snap in sorted(
         concern.state_timeline,
@@ -2375,6 +2469,8 @@ def reconstruct_concern_at(concern: "Concern", fabula_time: int) -> dict:
             break
         snap_world = getattr(snap, "world_id", holder_world) or holder_world
         if snap_world != holder_world:
+            continue
+        if excluded and getattr(snap, "triggered_by", None) in excluded:
             continue
         if snap.salience is not None:
             salience = snap.salience
@@ -2408,6 +2504,7 @@ def reconstruct_relationship_at(
     *,
     causal_edges: "Iterable[CausalEdge]",
     events: "Iterable[EventNode]",
+    exclude_event_ids: Optional[Set[str]] = None,
 ) -> dict:
     """Reconstruct a :class:`RelationshipEdge`'s per-axis metric values
     at a given fabula_time.
@@ -2438,10 +2535,21 @@ def reconstruct_relationship_at(
     replay better approximates the propagator's anchoring behaviour
     on real plot data \u2014 institutional dyads with high inertia
     (Party\u2192Winston) no longer rewind by raw authored amplitudes.
+
+    ``exclude_event_ids`` (2026-05-30 audit): events the do-surgery
+    erased. Every ``mutation_social`` edge whose ``source_id`` is in
+    this set is rolled back UNCONDITIONALLY (even when the event
+    fabula_time is at or before the read tick), because in the
+    counterfactual world the mutation did not occur and the dyad's
+    *current* metric value on the factual ``RelationshipEdge`` still
+    folds it in. Mirrors the per-entity / per-object / per-trait
+    ``exclude_triggered_by`` filter on the snapshot-based
+    reconstruct helpers.
     """
     src = edge.source_entity_id
     tgt = edge.target_entity_id
     holder_world = getattr(edge, "world_id", "factual") or "factual"
+    excluded: Set[str] = set(exclude_event_ids or ())
 
     event_index = {e.id: e for e in events}
     metrics_now: Dict[str, float] = {}
@@ -2470,10 +2578,12 @@ def reconstruct_relationship_at(
         if c_world != holder_world:
             continue
         evt = event_index[cedge.source_id]
-        if evt.fabula_time <= fabula_time:
-            # Mutation already in the past at the read tick — keep it.
+        is_pruned = excluded and cedge.source_id in excluded
+        if evt.fabula_time <= fabula_time and not is_pruned:
+            # Mutation already in the past at the read tick \u2014 keep it.
             continue
-        # Mutation is in the future relative to the read tick — undo it.
+        # Either the mutation is in the future relative to the read tick,
+        # or its originating event was erased by the do-surgery: undo it.
         axis = cedge.trait_target
         if axis not in metrics_now:
             continue

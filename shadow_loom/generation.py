@@ -5543,10 +5543,30 @@ def _build_exclusion_constraints(
     ``factual_contrast_summary``.
     """
     blocks: List[ConstraintBlock] = []
-    pruned_utts = [u for u in (pruned_utterance_event_ids or []) if u]
+    pruned_full = [u for u in (pruned_utterance_event_ids or []) if u]
     disabled_chs = [c for c in (disabled_channel_ids or []) if c]
-    if pruned_utts:
+    if pruned_full:
         events_by_id = {e.id: e for e in getattr(world_state, "events", []) or []}
+        # Audit 2026-05-30: ``pruned_utterance_event_ids`` carries the
+        # full do-surgery closure (utterance roots + chain_reaction
+        # descendants). Non-utterance descendants (e.g. an "outcome"
+        # heart attack pulled in because its parent utterance was
+        # pruned) are surfaced for the renderer via
+        # :func:`build_prevented_event_constraints` and
+        # :func:`build_prune_cascade_context_constraints`, so list
+        # ONLY utterance-type events here \u2014 otherwise we emit
+        # "speaker=unknown" stub lines under an "ERASED UTTERANCES"
+        # heading that misleads the renderer. The evidence dict
+        # still carries the full closure so the auditor's
+        # :func:`_prevented_event_reenacted_violations` deterministic
+        # check sees every pruned id.
+        pruned_utts = [
+            uid for uid in pruned_full
+            if (uid in events_by_id and
+                getattr(events_by_id[uid], "event_type", None) == "utterance")
+            or uid not in events_by_id  # unknown id \u2014 keep, conservative
+        ]
+    if pruned_full and pruned_utts:
         lines: List[str] = []
         for uid in pruned_utts[:20]:
             evt = events_by_id.get(uid)
@@ -5610,7 +5630,7 @@ def _build_exclusion_constraints(
                 "act-shape is what is forbidden, not just the wording.\n"
                 + "\n".join(lines)
             ),
-            evidence={"pruned_utterance_event_ids": pruned_utts},
+            evidence={"pruned_utterance_event_ids": pruned_full},
         ))
     if disabled_chs:
         chs_by_id = getattr(world_state, "channels", {}) or {}
@@ -6024,6 +6044,7 @@ def build_intervention_brief(
     ))
     constraints.extend(build_prevented_event_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     # Severed-chain CONTEXT + positive substitution. Without these
     # the renderer routinely confabulates a substitute failure mode
@@ -6042,18 +6063,23 @@ def build_intervention_brief(
     ))
     constraints.extend(build_false_proposition_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     constraints.extend(build_true_proposition_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     constraints.extend(build_world_invariant_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     constraints.extend(build_unrealised_concern_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     constraints.extend(build_false_belief_grounding_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     constraints.extend(build_object_coherence_constraints(
         world_state,
@@ -6672,6 +6698,7 @@ def build_counterfactual_brief(
     ))
     constraints.extend(build_prevented_event_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     # Severed-chain CONTEXT + positive substitution (same pair as
     # the Rung-2 brief above). Closes the gap that lets the renderer
@@ -6690,12 +6717,20 @@ def build_counterfactual_brief(
     ))
     constraints.extend(build_false_proposition_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     # AUDIT brief/auditor consistency: positive proposition mirror so
     # Rung-3 prose carries both "do not enact FALSE" and "must honour
     # TRUE" commitments from the pre-divergence world slice.
+    # ``pruned_event_ids`` suppresses TRUE commits whose only event
+    # justification was severed by this run's do-surgery — without
+    # this the auditor would force re-enacting the now-uncaused
+    # outcome (e.g. Mrs Coady still dying via frailty after the
+    # heart-attack event triggered by Ken killing her dogs has been
+    # counterfactually prevented).
     constraints.extend(build_true_proposition_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     # AUDIT P0 counterfactual brief: WORLD_* invariants block. Without
     # this the renderer is free to soften / contradict load-bearing
@@ -6705,12 +6740,15 @@ def build_counterfactual_brief(
     # the rest of the storyworld.
     constraints.extend(build_world_invariant_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     constraints.extend(build_unrealised_concern_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     constraints.extend(build_false_belief_grounding_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
+        pruned_event_ids=set(pruned_utterance_event_ids or []),
     ))
     constraints.extend(build_object_coherence_constraints(
         world_state,

@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Literal, Set, Tuple
 import networkx as nx
 from pydantic import BaseModel, Field
 
-from shadow_loom.models import WorldStateV1, NarrativeStyle, reconstruct_entity_at, reconstruct_object_at, reconstruct_world_trait_at, event_location_at
+from shadow_loom.models import WorldStateV1, NarrativeStyle, reconstruct_entity_at, reconstruct_object_at, reconstruct_world_trait_at, reconstruct_relationship_at, event_location_at
 from shadow_loom.causal_closure import (
     chain_reaction_parents_from_world_state,
     edges_within_closure,
@@ -1989,6 +1989,7 @@ def build_object_coherence_constraints(
     fabula_anchor: Optional[int],
     *,
     world_label: str = "this",
+    pruned_event_ids: Optional[Set[str]] = None,
 ) -> List[ConstraintBlock]:
     """HARD constraints anchoring narrative objects to their physics state.
 
@@ -2012,9 +2013,12 @@ def build_object_coherence_constraints(
     if not getattr(world_state, "objects", None):
         return []
     blocks: List[ConstraintBlock] = []
+    _pruned = set(pruned_event_ids or ()) or None
     for obj_id, obj in world_state.objects.items():
         if fabula_anchor is not None and obj.state_timeline:
-            recon = reconstruct_object_at(obj, fabula_anchor)
+            recon = reconstruct_object_at(
+                obj, fabula_anchor, exclude_triggered_by=_pruned,
+            )
             location_id = recon["location_id"]
             owner_id = recon["owner_id"]
             properties = recon["properties"]
@@ -2078,6 +2082,7 @@ def build_event_copresence_constraints(
     *,
     world_label: str = "this",
     window: int = 1,
+    pruned_event_ids: Optional[Set[str]] = None,
 ) -> List[ConstraintBlock]:
     """HARD constraints binding the prose to the engine's event-location
     and co-presence ledger.
@@ -2100,13 +2105,31 @@ def build_event_copresence_constraints(
 
     The auditor's deterministic ``_event_copresence_violations``
     pass consumes these constraints' ``evidence`` payloads.
+
+    Events whose ``event_type`` is one of the negative-physics tags
+    (``prevented`` / ``never_happened`` / ``removed``) are skipped \u2014
+    they belong in the PREVENTED EVENTS block, not the
+    must-depict-at block. When ``pruned_event_ids`` is supplied
+    (counterfactual / intervention paths) events in that set are
+    also skipped so the brief does not contradict itself by telling
+    the renderer to both stage and not-stage the same event.
     """
     if not getattr(world_state, "events", None):
         return []
     blocks: List[ConstraintBlock] = []
     entities = world_state.entities or {}
     locations = world_state.locations or {}
+    _negative_tags = {"prevented", "never_happened", "removed"}
+    _pruned = set(pruned_event_ids or [])
     for evt in world_state.events:
+        # Skip events the physics has tagged as not occurring, and
+        # any explicitly pruned by the active do-surgery \u2014
+        # otherwise the brief simultaneously says "do NOT stage this"
+        # (PREVENTED EVENTS) and "MUST depict here" (this block).
+        if getattr(evt, "event_type", None) in _negative_tags:
+            continue
+        if getattr(evt, "id", None) in _pruned:
+            continue
         loc_id = getattr(evt, "at_location_id", None)
         if not loc_id:
             continue
@@ -2158,7 +2181,18 @@ def build_event_copresence_constraints(
             if eid in seen_b:
                 continue
             try:
-                snap = reconstruct_entity_at(ent, ft)
+                # 2026-05-30 audit: thread ``pruned_event_ids`` so the
+                # phantom-witness ledger reflects the post-prune
+                # location of each candidate entity. Without this, an
+                # entity whose location was changed by a do-pruned
+                # event would be flagged "elsewhere" using the
+                # severed snapshot and either tagged for absent-
+                # clause (false positive) or, conversely, not flagged
+                # when the prune restored them to the event location
+                # (false negative).
+                snap = reconstruct_entity_at(
+                    ent, ft, exclude_triggered_by=_pruned or None,
+                )
             except Exception:
                 continue
             other_loc = snap.get("location_id") if isinstance(snap, dict) else None
@@ -2215,16 +2249,31 @@ def build_prevented_event_constraints(
     syuzhet_anchor: Optional[int],
     *,
     world_label: str = "this",
+    pruned_event_ids: Optional[Set[str]] = None,
 ) -> List[ConstraintBlock]:
     """HARD constraints for events the physics records as NOT occurring.
 
     Rendered prose must not stage any event whose ``event_type`` is in
     :data:`_PREVENTED_EVENT_TYPES` (``prevented`` / ``never_happened`` /
-    ``removed``). These tags are emitted by the instantiator and the
-    Rung-2/3 surgery paths to mark non-occurrences in the canonical
-    record; without surfacing them on the brief the renderer reliably
-    re-narrates them as having happened (the event row still carries a
+    ``removed``) **or** whose id is in ``pruned_event_ids`` (the
+    do-surgery closure expansion in
+    :mod:`shadow_loom.causal_physics` /
+    :func:`shadow_loom.pipeline._compute_shadow_prune_closure`). These
+    tags are emitted by the instantiator and the Rung-2/3 surgery
+    paths to mark non-occurrences in the canonical record; without
+    surfacing them on the brief the renderer reliably re-narrates
+    them as having happened (the event row still carries a
     natural-language description).
+
+    The ``pruned_event_ids`` branch (2026-05-30 audit) closes a real
+    gap: the do-surgery flips ``event_type`` only on the direct
+    surgery target. Chain-reaction descendants pulled in by the
+    closure (e.g. ``EVT_KEN_KILLS_DOGS`` is the do-target, but the
+    closure adds ``EVT_MRS_COADY_DIES_HEART_ATTACK``) keep their
+    original ``event_type`` such as ``"outcome"`` and so are NOT
+    matched by the event_type filter. Without surfacing them here
+    the renderer's PREVENTED EVENTS block lists only the root, even
+    though both must be absent from prose.
 
     Applied to every brief builder (observation / intervention /
     counterfactual / directive) so the "what NOT to do" half of causal
@@ -2238,14 +2287,22 @@ def build_prevented_event_constraints(
     # Compare like-to-like by translating the syuzhet anchor to a
     # fabula cutoff.
     cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
+    pruned_set: Set[str] = set(pruned_event_ids or set())
     prevented = []
+    closure_only_ids: Set[str] = set()
     for e in events:
-        if (getattr(e, "event_type", None) or "") not in _PREVENTED_EVENT_TYPES:
+        eid = getattr(e, "id", None) or ""
+        et = getattr(e, "event_type", None) or ""
+        via_type = et in _PREVENTED_EVENT_TYPES
+        via_closure = bool(eid) and eid in pruned_set
+        if not (via_type or via_closure):
             continue
         ft = getattr(e, "fabula_time", None)
         if cap is not None and ft is not None and ft > cap:
             continue
         prevented.append(e)
+        if via_closure and not via_type:
+            closure_only_ids.add(eid)
     if not prevented:
         return []
     lines: List[str] = []
@@ -2256,7 +2313,12 @@ def build_prevented_event_constraints(
         if len(desc) > 120:
             desc = desc[:117] + "..."
         snippet = f" \u2014 {desc}" if desc else ""
-        lines.append(f"  - {eid} [{et}]{snippet}")
+        tag = (
+            f"[{et}, pruned via do-surgery closure]"
+            if eid in closure_only_ids
+            else f"[{et}]"
+        )
+        lines.append(f"  - {eid} {tag}{snippet}")
     if len(prevented) > 20:
         lines.append(f"  - ...and {len(prevented) - 20} more.")
     return [ConstraintBlock(
@@ -2274,7 +2336,18 @@ def build_prevented_event_constraints(
             "itself.\n"
             + "\n".join(lines)
         ),
-        evidence={"prevented_event_ids": [getattr(e, "id", "?") for e in prevented]},
+        evidence={
+            "prevented_event_ids": [getattr(e, "id", "?") for e in prevented],
+            "pruned_via_closure_event_ids": sorted(closure_only_ids),
+            # 2026-05-30 audit: also surface the full do-surgery
+            # closure here so the auditor's
+            # ``_prevented_event_reenacted_violations`` deterministic
+            # check has a stable evidence channel even when
+            # ``_build_exclusion_constraints`` emits no
+            # ``=== ERASED UTTERANCES (HARD) ===`` block (e.g. when
+            # every pruned id is a non-utterance event).
+            "pruned_utterance_event_ids": sorted(pruned_set),
+        },
     )]
 
 
@@ -2542,11 +2615,119 @@ def build_dependent_state_substitution_constraints(
     )]
 
 
+def compute_suppressed_truth_commits(
+    world_state: WorldStateV1,
+    pruned_event_ids: Optional[Set[str]],
+) -> Set[Tuple[str, int]]:
+    """Compute ``(proposition_id, fabula_time)`` pairs whose
+    ``Proposition.truth_at_fabula`` commits should be ignored because
+    the only event(s) that justified them have been severed by a
+    do-surgery.
+
+    Brief-assembly mirror of the merge-time provenance scrub in
+    :mod:`shadow_loom.extract_graph` (around ``_apply_affect_to_world``).
+    Without this pass the counterfactual brief still tells the
+    renderer / auditor that a proposition is "TRUE @ T=…" even though
+    the supporting event was pruned this run — so the auditor
+    enforces depicting the now-uncaused outcome (e.g. Mrs Coady still
+    dies of frailty after the heart-attack event triggered by Ken
+    killing her dogs has been counterfactually prevented).
+
+    Returns an empty set when ``pruned_event_ids`` is empty / None.
+    Covers two suppression channels (matching the merge-time logic):
+
+    1. **Event provenance.** For each pruned event with a
+       ``fabula_time``, mark any commit at that tick whose
+       ``proposition_id`` matches the event's
+       ``asserts_proposition_id`` / ``denies_proposition_id`` /
+       ``resolves_proposition_ids``.
+    2. **Referent sweep.** For each proposition, examine
+       ``referent_ids``: any commit whose ``fabula_time`` exactly
+       matches a pruned event-referent's fabula_time is suppressed.
+       When *every* event-typed referent of the proposition is
+       pruned, also suppress every commit at-or-after the earliest
+       pruned referent's tick (Pearl-style: with no surviving
+       event-justification the post-divergence truth track is no
+       longer supported).
+    """
+    if not pruned_event_ids:
+        return set()
+    sup_ids = set(pruned_event_ids)
+    suppressed: Set[Tuple[str, int]] = set()
+    suppressed_event_fts: Dict[str, int] = {}
+    events = getattr(world_state, "events", None) or []
+    for evt in events:
+        eid = getattr(evt, "id", None)
+        if not eid or eid not in sup_ids:
+            continue
+        ft = getattr(evt, "fabula_time", None)
+        if ft is None:
+            continue
+        try:
+            ft_i = int(ft)
+        except (TypeError, ValueError):
+            continue
+        suppressed_event_fts[eid] = ft_i
+        for pid in (
+            getattr(evt, "asserts_proposition_id", None),
+            getattr(evt, "denies_proposition_id", None),
+        ):
+            if pid:
+                suppressed.add((pid, ft_i))
+        for pid in getattr(evt, "resolves_proposition_ids", None) or []:
+            if pid:
+                suppressed.add((pid, ft_i))
+
+    if not suppressed_event_fts:
+        return suppressed
+
+    evt_index = {getattr(e, "id", None) for e in events if getattr(e, "id", None)}
+    props = getattr(world_state, "propositions", None) or []
+    prop_iter = list(props.values()) if isinstance(props, dict) else list(props)
+    for prop in prop_iter:
+        pid = getattr(prop, "proposition_id", None) or getattr(prop, "id", None)
+        if not pid:
+            continue
+        refs = getattr(prop, "referent_ids", None) or []
+        event_refs = [r for r in refs if r in evt_index]
+        if not event_refs:
+            continue
+        suppressed_event_refs = [r for r in event_refs if r in suppressed_event_fts]
+        if not suppressed_event_refs:
+            continue
+        hit_fts = {suppressed_event_fts[r] for r in suppressed_event_refs}
+        truths = getattr(prop, "truth_at_fabula", None) or {}
+        # Always: drop ticks that exactly match a suppressed
+        # referent event's fabula_time.
+        for ft_key in truths:
+            try:
+                ft_i = int(ft_key)
+            except (TypeError, ValueError):
+                continue
+            if ft_i in hit_fts:
+                suppressed.add((pid, ft_i))
+        # When every event-typed referent is pruned, drop every
+        # commit at-or-after the earliest suppressed referent's
+        # fabula_time — the post-divergence truth track has no
+        # surviving event justification.
+        if len(suppressed_event_refs) == len(event_refs):
+            gate_ft = min(hit_fts)
+            for ft_key in truths:
+                try:
+                    ft_i = int(ft_key)
+                except (TypeError, ValueError):
+                    continue
+                if ft_i >= gate_ft:
+                    suppressed.add((pid, ft_i))
+    return suppressed
+
+
 def build_false_proposition_constraints(
     world_state: WorldStateV1,
     syuzhet_anchor: Optional[int],
     *,
     world_label: str = "this",
+    pruned_event_ids: Optional[Set[str]] = None,
 ) -> List[ConstraintBlock]:
     """HARD constraints for propositions committed FALSE at the anchor.
 
@@ -2559,6 +2740,12 @@ def build_false_proposition_constraints(
     Characters may still *believe* them (and that gap powers
     dramatic-irony / surprise effects); the constraint targets the
     narration layer, not the belief layer.
+
+    When ``pruned_event_ids`` is supplied (counterfactual / intervention
+    briefs), truth commits whose only event justification was severed
+    by the do-surgery are suppressed via
+    :func:`compute_suppressed_truth_commits` so the renderer / auditor
+    is not asked to enact a now-uncaused outcome.
     """
     props = getattr(world_state, "propositions", None) or []
     if not props:
@@ -2570,6 +2757,9 @@ def build_false_proposition_constraints(
     else:
         prop_iter = list(props)
     cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
+    suppressed_commits = compute_suppressed_truth_commits(
+        world_state, pruned_event_ids,
+    )
     falsified: List[tuple] = []
     for p in prop_iter:
         pid = getattr(p, "id", None) or getattr(p, "proposition_id", None) or "?"
@@ -2579,7 +2769,8 @@ def build_false_proposition_constraints(
         applicable = [
             (int(t), bool(v))
             for t, v in truth_map.items()
-            if cap is None or int(t) <= cap
+            if (cap is None or int(t) <= cap)
+            and (pid, int(t)) not in suppressed_commits
         ]
         if not applicable:
             continue
@@ -2621,6 +2812,7 @@ def build_true_proposition_constraints(
     *,
     world_label: str = "this",
     max_lines: int = 20,
+    pruned_event_ids: Optional[Set[str]] = None,
 ) -> List[ConstraintBlock]:
     """HARD constraints for propositions committed TRUE at the anchor.
 
@@ -2634,12 +2826,24 @@ def build_true_proposition_constraints(
 
     Characters may still *disbelieve* these (dramatic irony); the
     constraint targets the narration layer only.
+
+    When ``pruned_event_ids`` is supplied (counterfactual / intervention
+    briefs), TRUE-committed propositions whose only event justification
+    was severed by the do-surgery are dropped via
+    :func:`compute_suppressed_truth_commits` — otherwise the auditor
+    would force the renderer to enact an outcome whose cause was just
+    counterfactually prevented (e.g. Mrs Coady still dying after the
+    heart-attack event triggered by Ken killing her dogs has been
+    severed).
     """
     props = getattr(world_state, "propositions", None) or []
     if not props:
         return []
     prop_iter = list(props.values()) if isinstance(props, dict) else list(props)
     cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
+    suppressed_commits = compute_suppressed_truth_commits(
+        world_state, pruned_event_ids,
+    )
     committed_true: List[tuple] = []
     for p in prop_iter:
         pid = getattr(p, "id", None) or getattr(p, "proposition_id", None) or "?"
@@ -2649,7 +2853,8 @@ def build_true_proposition_constraints(
         applicable = [
             (int(t), bool(v))
             for t, v in truth_map.items()
-            if cap is None or int(t) <= cap
+            if (cap is None or int(t) <= cap)
+            and (pid, int(t)) not in suppressed_commits
         ]
         if not applicable:
             continue
@@ -2692,6 +2897,7 @@ def build_world_invariant_constraints(
     world_label: str = "this",
     intensity_floor: float = 0.5,
     max_lines: int = 12,
+    pruned_event_ids: Optional[Set[str]] = None,
 ) -> List[ConstraintBlock]:
     """HARD constraint enumerating WORLD_ traits at or above ``intensity_floor``.
 
@@ -2703,6 +2909,14 @@ def build_world_invariant_constraints(
     system rules, wartime economy). Without this block a Rung-3
     counterfactual brief carries no positive evidence of the world
     laws the new scene must continue to satisfy (AUDIT P0).
+
+    When ``pruned_event_ids`` is supplied (counterfactual /
+    intervention paths), ``WorldTraitSnapshot`` entries whose
+    ``triggered_by`` was severed by the do-surgery are excluded from
+    the reconstruction; the trait falls back to the most recent
+    surviving snapshot (or the base magnitude). Without this, a
+    surveillance/wartime trait that was only intensified by the
+    now-pruned event would still be surfaced as load-bearing.
     """
     world_traits = getattr(world_state, "world_traits", None) or {}
     if not world_traits:
@@ -2710,6 +2924,7 @@ def build_world_invariant_constraints(
     # P4 (2026-05-29 ninth-pass audit): state_timeline.fabula_time
     # gates need a fabula-axis cutoff.
     cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
+    pruned_set: Set[str] = set(pruned_event_ids or [])
     invariants: List[tuple] = []
     for wid, wt in world_traits.items():
         base = getattr(wt, "magnitude", None)
@@ -2723,6 +2938,10 @@ def build_world_invariant_constraints(
                 if getattr(snap, "fabula_time", None) is not None
                 and int(snap.fabula_time) <= cap
                 and getattr(snap, "magnitude", None) is not None
+                and (
+                    not pruned_set
+                    or getattr(snap, "triggered_by", None) not in pruned_set
+                )
             ]
             if applicable:
                 applicable.sort(key=lambda s: int(s.fabula_time))
@@ -2730,11 +2949,19 @@ def build_world_invariant_constraints(
                 effective_value = float(getattr(latest.magnitude, "value", base_value) or base_value)
                 effective_t = int(latest.fabula_time)
         elif timeline:
-            # No anchor: take the last snapshot in declaration order.
-            last_snap = timeline[-1]
-            if getattr(last_snap, "magnitude", None) is not None:
-                effective_value = float(getattr(last_snap.magnitude, "value", base_value) or base_value)
-                effective_t = int(getattr(last_snap, "fabula_time", 0) or 0)
+            # No anchor: take the last surviving snapshot in
+            # declaration order (skipping any whose ``triggered_by``
+            # is in the prune set).
+            survivors = [
+                snap for snap in timeline
+                if not pruned_set
+                or getattr(snap, "triggered_by", None) not in pruned_set
+            ]
+            if survivors:
+                last_snap = survivors[-1]
+                if getattr(last_snap, "magnitude", None) is not None:
+                    effective_value = float(getattr(last_snap.magnitude, "value", base_value) or base_value)
+                    effective_t = int(getattr(last_snap, "fabula_time", 0) or 0)
         if effective_value < intensity_floor:
             continue
         invariants.append((wid, wt, effective_value, effective_t))
@@ -2771,6 +2998,8 @@ def build_world_invariant_constraints(
 def _latest_proposition_truth_map(
     world_state: WorldStateV1,
     syuzhet_anchor: Optional[int],
+    *,
+    pruned_event_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Optional[bool]]:
     """Return ``{proposition_id: latest_committed_truth_or_None}``
     sliced to ``syuzhet_anchor``.
@@ -2778,6 +3007,14 @@ def _latest_proposition_truth_map(
     ``None`` entries flag propositions whose latest commit is *open*
     at the anchor (no truth value yet); callers can treat them as
     "uncommitted" and skip pink-elephant emission.
+
+    When ``pruned_event_ids`` is supplied (counterfactual /
+    intervention paths), commits whose only event justification was
+    severed by the do-surgery are excluded via
+    :func:`compute_suppressed_truth_commits` — without this the
+    concern / belief grounding helpers would emit pink-elephant blocks
+    keyed to a proposition whose truth state is no longer supported
+    by any surviving event.
     """
     out: Dict[str, Optional[bool]] = {}
     props = getattr(world_state, "propositions", None) or []
@@ -2788,6 +3025,9 @@ def _latest_proposition_truth_map(
     # P3 (2026-05-29 ninth-pass audit): truth_at_fabula keys are
     # fabula_time; syuzhet_anchor must be translated.
     cap = _syuzhet_to_fabula_cutoff(world_state, syuzhet_anchor)
+    suppressed_commits = compute_suppressed_truth_commits(
+        world_state, pruned_event_ids,
+    )
     for p in prop_iter:
         pid = getattr(p, "id", None) or getattr(p, "proposition_id", None)
         if not pid:
@@ -2799,7 +3039,8 @@ def _latest_proposition_truth_map(
         applicable = [
             (int(t), bool(v))
             for t, v in truth_map.items()
-            if cap is None or int(t) <= cap
+            if (cap is None or int(t) <= cap)
+            and (pid, int(t)) not in suppressed_commits
         ]
         if not applicable:
             out[pid] = None
@@ -2814,9 +3055,18 @@ def build_unrealised_concern_constraints(
     syuzhet_anchor: Optional[int],
     *,
     world_label: str = "this",
+    pruned_event_ids: Optional[Set[str]] = None,
 ) -> List[ConstraintBlock]:
     """HARD pink-elephant block for concerns whose underlying
     proposition will NOT have come true at this scene's anchor.
+
+    When ``pruned_event_ids`` is supplied (counterfactual / intervention
+    paths), proposition truth values whose only event justification was
+    severed by the do-surgery are treated as uncommitted via
+    :func:`compute_suppressed_truth_commits` — otherwise the
+    pink-elephant block would still tell the renderer "do NOT show
+    desire fulfilled" for a proposition whose FALSE commit just lost
+    its supporting event.
 
     The renderer\u2019s temptation, given a richly motivated character,
     is to grant the protagonist their desire (or vindicate their
@@ -2833,7 +3083,10 @@ def build_unrealised_concern_constraints(
     Belief-side mismatches (the character still *believes* the
     proposition is true) remain allowed and feed dramatic irony.
     """
-    truth_map = _latest_proposition_truth_map(world_state, syuzhet_anchor)
+    truth_map = _latest_proposition_truth_map(
+        world_state, syuzhet_anchor,
+        pruned_event_ids=pruned_event_ids,
+    )
     if not truth_map:
         return []
     entities = getattr(world_state, "entities", None) or {}
@@ -2920,9 +3173,18 @@ def build_false_belief_grounding_constraints(
     syuzhet_anchor: Optional[int],
     *,
     world_label: str = "this",
+    pruned_event_ids: Optional[Set[str]] = None,
 ) -> List[ConstraintBlock]:
     """HARD pink-elephant block for beliefs whose linked proposition
     is committed FALSE at the anchor.
+
+    When ``pruned_event_ids`` is supplied (counterfactual / intervention
+    paths), proposition truth values whose only event justification was
+    severed by the do-surgery are treated as uncommitted via
+    :func:`compute_suppressed_truth_commits` — otherwise the helper
+    would still grade an on-page belief as "believing a falsehood"
+    when the underlying FALSE commit's supporting event has been
+    counterfactually removed.
 
     Pairs with :func:`build_false_proposition_constraints` from the
     *belief* side: enumerates the entities who currently hold a
@@ -2933,7 +3195,10 @@ def build_false_belief_grounding_constraints(
     routinely \u201cresolves\u201d a sympathetic believer's stance into
     fact by accident.
     """
-    truth_map = _latest_proposition_truth_map(world_state, syuzhet_anchor)
+    truth_map = _latest_proposition_truth_map(
+        world_state, syuzhet_anchor,
+        pruned_event_ids=pruned_event_ids,
+    )
     if not truth_map:
         return []
     entities = getattr(world_state, "entities", None) or {}
@@ -3022,10 +3287,23 @@ class DirectiveAssembler:
         ego_payload: Dict[str, Any],
         world_state: WorldStateV1,
         settings: Optional["DirectiveAssemblySettings"] = None,
+        *,
+        pruned_event_ids: Optional[Set[str]] = None,
     ) -> None:
         self.sandbox = sandbox
         self.ego = ego_payload
         self.world_state = world_state
+        # 2026-05-30 audit: the closure-aware set of event ids the
+        # active do-surgery has erased from the *factual* timeline.
+        # Every per-method state reconstruction (status / location /
+        # traits / object owner / world-trait magnitude / propositions /
+        # concerns / relationships) consults this set so the brief
+        # baseline reflects the post-prune world. Without it, the
+        # canonical ``triggered_by``-stamped snapshots leak the death,
+        # poisoning, theft, etc. that the surgery removed, and the
+        # epistemic-gap / phantom-witness / object-coherence layers
+        # contradict the PREVENTED EVENTS block.
+        self._pruned_event_ids: Set[str] = set(pruned_event_ids or ())
         # Resolve scorer tunables from settings (lazy import to avoid
         # any circular dependency at module-load time). Every class
         # attribute that begins with ``_MYSTERY_``, ``_IRONY_``,
@@ -3076,6 +3354,8 @@ class DirectiveAssembler:
         self,
         entity_ids: List[str],
         syuzhet_anchor: Optional[int] = None,
+        *,
+        pruned_event_ids: Optional[Set[str]] = None,
     ) -> List[EpistemicGap]:
         """Compare each entity's beliefs against the objective graph state.
 
@@ -3086,9 +3366,20 @@ class DirectiveAssembler:
         contaminated dramatic-irony and mystery directives — the brief
         would compute gaps against knowledge the entity hasn't acquired
         yet at this point in the syuzhet.
+
+        ``pruned_event_ids`` (2026-05-30 audit): the do-surgery's
+        closure-aware set of erased event IDs. Threaded into
+        :meth:`_resolve_actual_state` so the "objective" state we
+        compare against is the post-prune world (Mrs Coady is NOT
+        dead in a branch that prevented Ken killing her dogs), not
+        the factual ground truth.
         """
         gaps: List[EpistemicGap] = []
         anchor_t = self._syuzhet_anchor_to_fabula_time(syuzhet_anchor)
+        # Fall back to the assembler-level prune set when the caller
+        # did not pass one (the standard counterfactual-brief path).
+        if pruned_event_ids is None:
+            pruned_event_ids = self._pruned_event_ids or None
 
         for eid in entity_ids:
             ent_data = self._find_entity(eid)
@@ -3104,7 +3395,10 @@ class DirectiveAssembler:
                 believed = belief.get("perceived_state", "")
                 confidence = belief.get("confidence", 0.5)
 
-                actual = self._resolve_actual_state(target_id, anchor_t=anchor_t)
+                actual = self._resolve_actual_state(
+                    target_id, anchor_t=anchor_t,
+                    pruned_event_ids=pruned_event_ids,
+                )
 
                 gap_type, magnitude = self._classify_gap(believed, actual, confidence)
                 logger.debug("[DirectiveAssembly·Epistemic] %s belief about %s: believed=%r actual=%r → gap=%s mag=%.2f",
@@ -3142,6 +3436,8 @@ class DirectiveAssembler:
         self,
         entity_ids: List[str],
         syuzhet_anchor: Optional[int] = None,
+        *,
+        pruned_event_ids: Optional[Set[str]] = None,
     ) -> List[TraitTrajectory]:
         """Compute current value + headroom for each trait of given entities.
 
@@ -3173,7 +3469,13 @@ class DirectiveAssembler:
                 ent = self.world_state.entities.get(eid)
                 if ent is None or not getattr(ent, "traits", None):
                     continue
-                snap = reconstruct_entity_at(ent, anchor_t)
+                snap = reconstruct_entity_at(
+                    ent, anchor_t,
+                    exclude_triggered_by=(
+                        set(pruned_event_ids or self._pruned_event_ids or ())
+                        or None
+                    ),
+                )
                 trait_iter = snap.get("traits", {}).items()
                 resolve = lambda t, k, d: t.get(k, d)
             else:
@@ -3225,9 +3527,21 @@ class DirectiveAssembler:
         """
         anchor_t = self._syuzhet_anchor_to_fabula_time(syuzhet_anchor)
         shifts: List[WorldTraitShift] = []
+        # 2026-05-30 Phase-13 audit: drop snapshots whose
+        # ``triggered_by`` was erased by an active do-surgery so the
+        # WORLD_ trait baseline shown in the brief reflects the
+        # counterfactual regime, not the pre-surgery leak. Mirrors
+        # ``exclude_triggered_by`` in ``reconstruct_world_trait_at``.
+        pruned = self._pruned_event_ids
         for wt_id, wt in (self.world_state.world_traits or {}).items():
+            raw_timeline = getattr(wt, "state_timeline", []) or []
+            if pruned:
+                raw_timeline = [
+                    s for s in raw_timeline
+                    if getattr(s, "triggered_by", None) not in pruned
+                ]
             timeline = sorted(
-                getattr(wt, "state_timeline", []) or [],
+                raw_timeline,
                 key=lambda s: s.fabula_time,
             )
             if not timeline:
@@ -3271,7 +3585,11 @@ class DirectiveAssembler:
     # ------------------------------------------------------------------
     # Relationship tension computation
     # ------------------------------------------------------------------
-    def compute_relationship_tensions(self, entity_ids: List[str]) -> List[RelationshipTension]:
+    def compute_relationship_tensions(
+        self,
+        entity_ids: List[str],
+        syuzhet_anchor: Optional[int] = None,
+    ) -> List[RelationshipTension]:
         """Compute relationship tensions involving the given entities.
 
         Per-axis observed/evidence-aware:
@@ -3290,18 +3608,66 @@ class DirectiveAssembler:
         eid_set = set(entity_ids)
         es_weight = {"weak": 1.0 / 3.0, "moderate": 2.0 / 3.0, "strong": 1.0}
 
-        def _axis(rel: dict, axis: str) -> tuple[float, str, bool]:
+        # 2026-05-30 Phase-13 audit: when a do-surgery has pruned
+        # events, the ego payload's ``relevant_relationships`` still
+        # carries the *post-mutation* per-axis values (the ego builder
+        # reads ``world_state.social_topology`` directly, pre-prune).
+        # Roll each affected dyad back via
+        # ``reconstruct_relationship_at(..., exclude_event_ids=pruned)``
+        # so the brief's RELATIONSHIP TENSIONS block (rendered to both
+        # the LLM scene-renderer and the auditor) reflects the
+        # counterfactual social geometry, not the leaked factual one.
+        rollback_values: Dict[Tuple[str, str], Dict[str, float]] = {}
+        if self._pruned_event_ids:
+            anchor_t = self._syuzhet_anchor_to_fabula_time(syuzhet_anchor)
+            if anchor_t is None and self.world_state.events:
+                anchor_t = max(e.fabula_time for e in self.world_state.events)
+            if anchor_t is not None:
+                edge_index = {
+                    (e.source_entity_id, e.target_entity_id): e
+                    for e in self.world_state.social_topology
+                }
+                for rel in self.ego.get("relevant_relationships", []):
+                    src = rel.get("source_entity_id", "")
+                    tgt = rel.get("target_entity_id", "")
+                    if src not in eid_set and tgt not in eid_set:
+                        continue
+                    edge = edge_index.get((src, tgt))
+                    if edge is None:
+                        continue
+                    rolled = reconstruct_relationship_at(
+                        edge, anchor_t,
+                        causal_edges=self.world_state.causal_topology,
+                        events=self.world_state.events,
+                        exclude_event_ids=self._pruned_event_ids,
+                    )
+                    if rolled:
+                        rollback_values[(src, tgt)] = rolled
+
+        def _axis(rel: dict, axis: str, src: str = "", tgt: str = "") -> tuple[float, str, bool]:
             metrics = rel.get("metrics") if isinstance(rel.get("metrics"), dict) else None
             if metrics and isinstance(metrics.get(axis), dict):
                 m = metrics[axis]
+                val = float(m.get("value", 0.0))
+                # Prune-aware override: counterfactual value supersedes
+                # the leaked factual reading. Evidence/observed flags
+                # remain unchanged (the *strength of measurement* is
+                # an authorial property, not a per-tick fact).
+                rolled = rollback_values.get((src, tgt))
+                if rolled is not None and axis in rolled:
+                    val = float(rolled[axis])
                 return (
-                    float(m.get("value", 0.0)),
+                    val,
                     str(m.get("evidence_strength", "moderate")),
                     bool(m.get("observed", True)),
                 )
             # Legacy fallback: flat key, assume observed if present.
             if axis in rel and isinstance(rel.get(axis), (int, float)):
-                return float(rel[axis]), "moderate", True
+                val = float(rel[axis])
+                rolled = rollback_values.get((src, tgt))
+                if rolled is not None and axis in rolled:
+                    val = float(rolled[axis])
+                return val, "moderate", True
             return 0.0, "weak", False
 
         for rel in self.ego.get("relevant_relationships", []):
@@ -3310,9 +3676,9 @@ class DirectiveAssembler:
             if src not in eid_set and tgt not in eid_set:
                 continue
 
-            aff, aff_es, aff_obs = _axis(rel, "affinity")
-            fear, fear_es, fear_obs = _axis(rel, "fear")
-            power, power_es, power_obs = _axis(rel, "power_dynamic")
+            aff, aff_es, aff_obs = _axis(rel, "affinity", src, tgt)
+            fear, fear_es, fear_obs = _axis(rel, "fear", src, tgt)
+            power, power_es, power_obs = _axis(rel, "power_dynamic", src, tgt)
 
             # Locate the reverse edge once.
             reverse: dict = {}
@@ -3320,9 +3686,9 @@ class DirectiveAssembler:
                 if rev.get("source_entity_id") == tgt and rev.get("target_entity_id") == src:
                     reverse = rev
                     break
-            r_aff, r_aff_es, r_aff_obs = _axis(reverse, "affinity")
-            r_fear, r_fear_es, r_fear_obs = _axis(reverse, "fear")
-            r_power, r_power_es, r_power_obs = _axis(reverse, "power_dynamic")
+            r_aff, r_aff_es, r_aff_obs = _axis(reverse, "affinity", tgt, src)
+            r_fear, r_fear_es, r_fear_obs = _axis(reverse, "fear", tgt, src)
+            r_power, r_power_es, r_power_obs = _axis(reverse, "power_dynamic", tgt, src)
 
             contributions: list[tuple[float, float]] = []  # (delta, weight)
             if aff_obs and r_aff_obs:
@@ -3365,7 +3731,17 @@ class DirectiveAssembler:
             ``syuzhet_index > syuzhet_anchor`` are *not yet revealed*.
             If ``None``, all events are considered revealed.
         """
-        events = self.world_state.events
+        # 2026-05-30 Phase-13b audit: drop events erased by an active
+        # do-surgery so the fabula/syuzhet rank space (and every
+        # surfaced NarrativeTension item) reflects the counterfactual
+        # timeline. Without this the brief's WITHHELD_CAUSE /
+        # UPCOMING_REVELATION list keeps mentioning a pruned event
+        # alongside the PREVENTED EVENTS block, contradicting itself.
+        pruned = self._pruned_event_ids
+        events = [
+            e for e in self.world_state.events
+            if not pruned or e.id not in pruned
+        ]
         if not events:
             return []
 
@@ -3442,12 +3818,21 @@ class DirectiveAssembler:
             if fabula_anchor is None or evt.fabula_time > fabula_anchor:
                 fabula_anchor = evt.fabula_time
 
+        # 2026-05-30 Phase-13 audit: pruned events must not surface
+        # as hidden channels. A pruned utterance has been erased from
+        # the counterfactual timeline; surfacing it as
+        # ``HiddenChannel(kind="utterance")`` contradicts the
+        # PREVENTED EVENTS block the auditor/renderer already see.
+        pruned = self._pruned_event_ids
+
         # Build channel_id → earliest revealed utterance syuzhet_index.
         channel_first_utt: Dict[str, Optional[int]] = {
             cid: None for cid in self.world_state.channels.keys()
         }
         for evt in self.world_state.events:
             if evt.event_type != "utterance" or not evt.via_channel_id:
+                continue
+            if pruned and evt.id in pruned:
                 continue
             cid = evt.via_channel_id
             if cid not in channel_first_utt:
@@ -3504,6 +3889,8 @@ class DirectiveAssembler:
         for evt in self.world_state.events:
             if evt.event_type != "utterance":
                 continue
+            if pruned and evt.id in pruned:
+                continue
             if evt.syuzhet_index <= syuzhet_anchor:
                 continue
             ch = (
@@ -3553,7 +3940,16 @@ class DirectiveAssembler:
                 if m.observed:
                     rel_axis_es[(rel.source_entity_id, rel.target_entity_id, axis_name)] = m.evidence_strength
         g: nx.MultiDiGraph = nx.MultiDiGraph()
+        # 2026-05-30 Phase-13 audit: omit causal edges whose endpoints
+        # were erased by an active do-surgery. Downstream consumers
+        # (mystery scorer, affective propagation, attribution) iterate
+        # this digraph and would otherwise treat pruned events as live
+        # causal nodes — leaking the counterfactual back into the
+        # rendered scene's causal mechanics.
+        pruned = self._pruned_event_ids
         for ce in self.world_state.causal_topology:
+            if pruned and (ce.source_id in pruned or ce.target_id in pruned):
+                continue
             evidence_w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
             # For mutation_social edges, multiply by the per-axis
             # relationship evidence as a precision floor.
@@ -3590,17 +3986,31 @@ class DirectiveAssembler:
     _fabula_anchor_override: Optional[int] = None
 
     def _revealed_event_ids(self, syuzhet_anchor: Optional[int]) -> set[str]:
-        """Return IDs of events the reader has seen by *syuzhet_anchor*."""
+        """Return IDs of events the reader has seen by *syuzhet_anchor*.
+
+        2026-05-30 audit: also strips ``self._pruned_event_ids`` from
+        the result. Every affective scorer (irony / surprise / mystery
+        / suspense / fear / regret / grief / rage) gates on this set,
+        so dropping pruned events here is the single chokepoint that
+        keeps the surgery's "this did not occur" semantics visible to
+        the whole scorer family without threading a kwarg through
+        every method. The merge-time scrub on
+        ``Entity.state_timeline`` (handled by the ``reconstruct_*_at``
+        ``exclude_triggered_by`` kwarg) covers the snapshot surface;
+        this filter covers the event-iteration surface.
+        """
         fab = getattr(self, "_fabula_anchor_override", None)
+        pruned = self._pruned_event_ids or set()
         if fab is not None:
             return {
                 e.id for e in self.world_state.events
                 if e.fabula_time is not None and e.fabula_time <= fab
+                and e.id not in pruned
             }
         if syuzhet_anchor is None:
-            return {e.id for e in self.world_state.events}
+            return {e.id for e in self.world_state.events if e.id not in pruned}
         return {e.id for e in self.world_state.events
-                if e.syuzhet_index <= syuzhet_anchor}
+                if e.syuzhet_index <= syuzhet_anchor and e.id not in pruned}
 
     # ------------------------------------------------------------------
     # Mystery  (Epistemic Gap — hidden causal ancestors)
@@ -4058,8 +4468,13 @@ class DirectiveAssembler:
             # pre-story baseline. ``reconstruct_entity_at`` also filters
             # by ``established_at_fabula <= fabula_frontier`` so we never
             # credit a character with knowledge from their own future arc.
+            # 2026-05-30 audit: pass ``self._pruned_event_ids`` so a
+            # belief whose ``acquired_via_event_id`` was erased by the
+            # active do-surgery is also stripped from the recon set
+            # (the merge-time scrub mirror, applied at brief time).
             recon_beliefs = reconstruct_entity_at(
-                ent, fabula_frontier
+                ent, fabula_frontier,
+                exclude_triggered_by=self._pruned_event_ids or None,
             ).get("beliefs", [])
 
             # Provenance gate: a belief should only count toward the
@@ -4524,8 +4939,21 @@ class DirectiveAssembler:
         empty dict when the world has no ``social_topology`` — callers
         treat missing entries as neutral (0.0) so worlds without a
         populated topology degrade to the legacy actor/target rule.
+
+        2026-05-30 Phase-13b audit: when ``self._pruned_event_ids`` is
+        non-empty, roll each dyad's affinity back via
+        ``reconstruct_relationship_at(..., exclude_event_ids=pruned)``
+        so downstream consumers (``_bucket_event_for_focal`` /
+        threat-hope / suspense / rescue propagation) see the
+        counterfactual affinity, not the leaked post-mutation value.
         """
         idx: Dict[Tuple[str, str], float] = {}
+        pruned = self._pruned_event_ids
+        rollback_anchor: Optional[int] = None
+        if pruned and self.world_state.events:
+            rollback_anchor = max(
+                e.fabula_time for e in self.world_state.events
+            )
         for rel in self.world_state.social_topology:
             m = rel.metrics.get("affinity")
             if m is None:
@@ -4534,6 +4962,18 @@ class DirectiveAssembler:
                 v = float(m.value)
             except (TypeError, ValueError):
                 continue
+            if pruned and rollback_anchor is not None:
+                rolled = reconstruct_relationship_at(
+                    rel, rollback_anchor,
+                    causal_edges=self.world_state.causal_topology,
+                    events=self.world_state.events,
+                    exclude_event_ids=pruned,
+                )
+                if rolled and "affinity" in rolled:
+                    try:
+                        v = float(rolled["affinity"])
+                    except (TypeError, ValueError):
+                        pass
             idx[(rel.source_entity_id, rel.target_entity_id)] = v
         return idx
 
@@ -4949,6 +5389,15 @@ class DirectiveAssembler:
         revealed = self._revealed_event_ids(syuzhet_anchor)
         all_evt_ids = {e.id for e in self.world_state.events}
         unrevealed = all_evt_ids - revealed
+        # Phase 13c H9: ``_revealed_event_ids`` correctly strips pruned
+        # events from ``revealed``, but they were silently leaking
+        # back into ``unrevealed`` here. With a full-arc anchor the
+        # very pivot we are pretending didn't happen could surface
+        # as the most salient threat. Drop pruned ids from the
+        # candidate pool so suspense never anticipates the
+        # counterfactual itself.
+        if self._pruned_event_ids:
+            unrevealed -= set(self._pruned_event_ids)
         eid_set = set(entity_ids)
 
         affinity_idx = self._build_affinity_index()
@@ -5691,7 +6140,12 @@ class DirectiveAssembler:
 
         def _final_traits(ent) -> Dict[str, float]:
             try:
-                snap = reconstruct_entity_at(ent, t_max)
+                # 2026-05-30 audit: filter prune-set so surprise
+                # baseline reflects post-do-surgery final traits.
+                snap = reconstruct_entity_at(
+                    ent, t_max,
+                    exclude_triggered_by=self._pruned_event_ids or None,
+                )
                 return {
                     k: float(v["value"])
                     for k, v in snap.get("traits", {}).items()
@@ -6429,6 +6883,12 @@ class DirectiveAssembler:
             forked_assembler = DirectiveAssembler(
                 sandbox=forked, ego_payload=forked_ego,
                 world_state=forked_world,
+                # 2026-05-30 audit: thread the per-candidate prune
+                # closure so this candidate's affective scorers
+                # (irony / trajectories / surprise) consult the
+                # post-prune snapshots, not the orphaned factual
+                # ``state_timeline`` entries left behind by surgery.
+                pruned_event_ids=set(physics.pruned_utterance_event_ids or ()),
             )
             aff_score = forked_assembler.compute_affective_score(
                 target_effect, entity_ids, syuzhet_anchor,
@@ -6482,7 +6942,7 @@ class DirectiveAssembler:
         trajectories = self.compute_trait_trajectories(
             entity_ids, syuzhet_anchor=syuzhet_anchor,
         )
-        rel_tensions = self.compute_relationship_tensions(entity_ids)
+        rel_tensions = self.compute_relationship_tensions(entity_ids, syuzhet_anchor=syuzhet_anchor)
         narrative_tensions = self.compute_narrative_tension(syuzhet_anchor)
         hidden_channels = self.compute_hidden_channels(syuzhet_anchor)
 
@@ -7662,7 +8122,11 @@ class DirectiveAssembler:
         return None
 
     def _resolve_actual_state(
-        self, target_id: str, anchor_t: Optional[int] = None,
+        self,
+        target_id: str,
+        anchor_t: Optional[int] = None,
+        *,
+        pruned_event_ids: Optional[Set[str]] = None,
     ) -> str:
         """Look up the objective state of a belief target in the world state.
 
@@ -7674,12 +8138,30 @@ class DirectiveAssembler:
         compared anchor-filtered beliefs against future-leaking truth
         and surfaced "contradicted" gaps for facts that were still
         true at the belief's establishment tick (post-T-10 audit fix).
+
+        ``pruned_event_ids`` (2026-05-30 audit): closure-aware set of
+        events erased by the active do-surgery. Threaded through the
+        reconstruction helpers (``exclude_triggered_by``) so the
+        "actual" state we compare beliefs against is the post-prune
+        world, not the factual ground truth. Without this filter the
+        epistemic-gap classifier would flag every character's
+        memory of a pruned death / poisoning / theft as
+        "contradicted" because the canonical snapshot of the
+        outcome still lives on the factual ``Entity.state_timeline``.
+        And, conversely, events whose ``id`` is in the prune set are
+        treated as ``"unknown"`` regardless of fabula_time \u2014 the
+        renderer/auditor must not be told a do-erased event is
+        ground truth.
         """
+        excluded: Set[str] = set(pruned_event_ids or self._pruned_event_ids or ())
         # Entity status + key traits
         ent = self.world_state.entities.get(target_id)
         if ent:
             if anchor_t is not None:
-                snap = reconstruct_entity_at(ent, anchor_t)
+                snap = reconstruct_entity_at(
+                    ent, anchor_t,
+                    exclude_triggered_by=excluded or None,
+                )
                 status = snap.get("status", ent.status)
                 location_id = snap.get("location_id", ent.location_id)
                 traits = snap.get("traits", {}) or {}
@@ -7704,7 +8186,10 @@ class DirectiveAssembler:
         obj = self.world_state.objects.get(target_id)
         if obj:
             if anchor_t is not None:
-                osnap = reconstruct_object_at(obj, anchor_t)
+                osnap = reconstruct_object_at(
+                    obj, anchor_t,
+                    exclude_triggered_by=excluded or None,
+                )
                 owner = osnap.get("owner_id")
                 props = osnap.get("properties") or {}
             else:
@@ -7723,13 +8208,20 @@ class DirectiveAssembler:
         if evt:
             if anchor_t is not None and int(getattr(evt, "fabula_time", 0)) > anchor_t:
                 return "unknown"
+            # 2026-05-30 audit: a pruned event must NOT surface as
+            # ground truth even when its fabula_time is in the past.
+            if excluded and getattr(evt, "id", None) in excluded:
+                return "unknown"
             return f"event_type={evt.event_type}, actors={evt.actor_ids}"
 
         # World trait magnitude
         wt = self.world_state.world_traits.get(target_id) if hasattr(self.world_state, "world_traits") else None
         if wt:
             if anchor_t is not None:
-                wsnap = reconstruct_world_trait_at(wt, anchor_t)
+                wsnap = reconstruct_world_trait_at(
+                    wt, anchor_t,
+                    exclude_triggered_by=excluded or None,
+                )
                 mag = wsnap.get("magnitude") or {}
                 val = mag.get("value", wt.magnitude.value)
             else:
@@ -7898,6 +8390,13 @@ class DirectiveAssembler:
         revealed = self._revealed_event_ids(syuzhet_anchor)
         all_evt_ids = {e.id for e in self.world_state.events}
         unrevealed = all_evt_ids - revealed
+        # Phase 13c H9: drop pruned events from the unrevealed pool
+        # so ``best_threat`` / ``best_hope`` cannot pick the very
+        # pivot we are pretending didn't happen. ``_revealed_event_ids``
+        # already strips pruned from ``revealed`` (correctly) but the
+        # complement was putting them right back as future threats.
+        if self._pruned_event_ids:
+            unrevealed -= set(self._pruned_event_ids)
         eid_set = set(entity_ids)
 
         # A4: O(events) lookup tables (events_by_id, force_by_target)
@@ -8547,8 +9046,15 @@ class DirectiveAssembler:
         already encountered (``syuzhet_index <= anchor``) are considered.
         """
         eid_set = set(entity_ids)
+        # 2026-05-30 Phase-13b audit: pruned events are erased from
+        # the counterfactual timeline, so they must not surface as the
+        # "actual outcome" or "divergence choice" the regret render
+        # asks the LLM to dwell on. Mirrors the visibility gate.
+        pruned = self._pruned_event_ids
 
         def _visible(evt) -> bool:
+            if pruned and evt.id in pruned:
+                return False
             return syuzhet_anchor is None or evt.syuzhet_index <= syuzhet_anchor
 
         # Build a set of event IDs that have negative causal effects
@@ -8617,8 +9123,18 @@ class DirectiveAssembler:
         """
         eid_set = set(entity_ids)
         causal_g = self._build_causal_digraph()
+        # 2026-05-30 Phase-13b audit: pruned events are erased from
+        # the counterfactual timeline; they must not surface as the
+        # "loss event" the rage render attributes to a perpetrator,
+        # nor as ancestors in the causal-chain trace. The digraph
+        # itself already drops pruned-endpoint edges (Phase-13a fix),
+        # so the ancestor walk benefits transparently; this guard
+        # closes the loss-candidate filter.
+        pruned = self._pruned_event_ids
 
         def _visible(evt) -> bool:
+            if pruned and evt.id in pruned:
+                return False
             return syuzhet_anchor is None or evt.syuzhet_index <= syuzhet_anchor
 
         # Identify events with negative causal effects (trait_delta < 0).

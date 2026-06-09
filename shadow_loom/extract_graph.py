@@ -3192,6 +3192,162 @@ def _apply_deletions(
     def _branch_match(obj) -> bool:
         return _wid(obj) == merge_world_id
 
+    # Record-walk helpers used by the cascade-trim pass below. Defined
+    # once at the top of ``_apply_deletions`` so both the hard-delete
+    # branch (``removed_event_ids``) and the shadow-suppression branch
+    # (``suppressed_event_ids``) can reuse them. Each walks the factual
+    # registry AND every AMWN-split sidecar clone — a clone created on
+    # an earlier merge had its timeline trimmed against the prune set
+    # known at clone-time; the current merge may be expanding that set
+    # (closure widened to include a newly-pruned descendant event), so
+    # existing clones need a fresh trim pass.
+    def _all_entity_records() -> List[Any]:
+        records: List[Any] = list(merged.entities.values())
+        for sidecar in (merged.shadow_entities or {}).values():
+            records.extend(sidecar.values())
+        return records
+
+    def _all_object_records() -> List[Any]:
+        records: List[Any] = list(merged.objects.values())
+        for sidecar in (merged.shadow_objects or {}).values():
+            records.extend(sidecar.values())
+        return records
+
+    def _all_world_trait_records() -> List[Any]:
+        records: List[Any] = list(merged.world_traits.values())
+        for sidecar in (merged.shadow_world_traits or {}).values():
+            records.extend(sidecar.values())
+        return records
+
+    def _all_proposition_records() -> List[Any]:
+        records: List[Any] = list(merged.propositions)
+        for sidecar in (merged.shadow_propositions or {}).values():
+            records.extend(sidecar.values())
+        return records
+
+    def _cascade_trim_provenance(
+        evt_ids: set[str],
+        evt_records: List[Any],
+        *,
+        source: str,
+    ) -> None:
+        """Trim every snapshot / belief / truth-commit whose provenance
+        points at one of the now-gone events in ``evt_ids``.
+
+        Mirrors the runtime closure-scrub used by
+        ``reconstruct_*_at(..., exclude_triggered_by=…)`` so persisted
+        ``WorldStateV1`` state stays consistent with what callers see
+        after a do-surgery / hard-delete. Without this, an event hard-
+        deleted via ``ManualEditQuery.replace_event_ids`` leaves
+        dangling ``triggered_by`` / ``acquired_via_event_id`` refs
+        across entity / object / world_trait / proposition / concern
+        timelines plus belief lists plus ``Proposition.truth_at_fabula``
+        commit keys — the validator would flag them as warnings on the
+        next pass, but the persisted snapshot itself would still report
+        the rolled-back state.
+
+        ``evt_records`` are the *original* event records (captured
+        BEFORE the removal from ``merged.events``) so the proposition-
+        truth cascade has the ``asserts_/denies_/resolves_*`` provenance
+        fields it needs.
+        """
+        if not evt_ids:
+            return
+        for ent in _all_entity_records():
+            ent.state_timeline = [
+                s for s in ent.state_timeline
+                if getattr(s, "triggered_by", None) not in evt_ids
+            ]
+        for obj in _all_object_records():
+            obj.state_timeline = [
+                s for s in obj.state_timeline
+                if getattr(s, "triggered_by", None) not in evt_ids
+            ]
+        for wt in _all_world_trait_records():
+            wt.state_timeline = [
+                s for s in wt.state_timeline
+                if getattr(s, "triggered_by", None) not in evt_ids
+            ]
+        for prop in _all_proposition_records():
+            if getattr(prop, "state_timeline", None):
+                prop.state_timeline = [
+                    s for s in prop.state_timeline
+                    if getattr(s, "triggered_by", None) not in evt_ids
+                ]
+        for ent in _all_entity_records():
+            for concern in ent.concerns:
+                if getattr(concern, "state_timeline", None):
+                    concern.state_timeline = [
+                        s for s in concern.state_timeline
+                        if getattr(s, "triggered_by", None) not in evt_ids
+                    ]
+            ent.beliefs = [
+                b for b in ent.beliefs
+                if getattr(b, "acquired_via_event_id", None) not in evt_ids
+            ]
+        # Proposition.truth_at_fabula commits: drop entries whose only
+        # justification was an asserting/denying/resolving event that
+        # is now gone. Conservative rule (no schema change): drop
+        # ``truth_at_fabula[ft]`` iff some gone event committed to that
+        # prop at ``ft`` AND no surviving event commits to the same
+        # prop at the same ``ft``. Entries with no event-level
+        # provenance at all (story-prior commits, physics clamps) are
+        # preserved — we cannot show they were caused by removed
+        # events.
+        if not evt_records:
+            return
+
+        def _committed_props_at(evt: Any) -> List[tuple[str, int]]:
+            ft = getattr(evt, "fabula_time", None)
+            if ft is None:
+                return []
+            pairs: List[tuple[str, int]] = []
+            pid_a = getattr(evt, "asserts_proposition_id", None)
+            if pid_a:
+                pairs.append((pid_a, int(ft)))
+            pid_d = getattr(evt, "denies_proposition_id", None)
+            if pid_d:
+                pairs.append((pid_d, int(ft)))
+            for pid_r in getattr(evt, "resolves_proposition_ids", None) or []:
+                pairs.append((pid_r, int(ft)))
+            return pairs
+
+        gone_commits: set[tuple[str, int]] = set()
+        for evt in evt_records:
+            gone_commits.update(_committed_props_at(evt))
+        if not gone_commits:
+            return
+        surviving_commits: set[tuple[str, int]] = set()
+        for evt in merged.events:
+            surviving_commits.update(_committed_props_at(evt))
+        to_drop = gone_commits - surviving_commits
+        if not to_drop:
+            return
+        drop_by_prop: Dict[str, set[int]] = {}
+        for pid, ft in to_drop:
+            drop_by_prop.setdefault(pid, set()).add(ft)
+        dropped_n = 0
+        for prop in _all_proposition_records():
+            fts = drop_by_prop.get(prop.proposition_id)
+            if not fts:
+                continue
+            if not isinstance(prop.truth_at_fabula, dict):
+                continue
+            before_t = len(prop.truth_at_fabula)
+            prop.truth_at_fabula = {
+                int(k): v
+                for k, v in prop.truth_at_fabula.items()
+                if int(k) not in fts
+            }
+            dropped_n += before_t - len(prop.truth_at_fabula)
+        if dropped_n:
+            logger.info(
+                "[merge\u00b7%s] Dropped %d Proposition.truth_at_fabula "
+                "entr%s with removed-event provenance "
+                "(no surviving commit at same fabula_time).",
+                source, dropped_n, "y" if dropped_n == 1 else "ies",
+            )
+
     # --- Events
     if topology.removed_event_ids:
         drop_req = set(topology.removed_event_ids)
@@ -3208,6 +3364,10 @@ def _apply_deletions(
                 "because targets live on the other branch: %s",
                 len(skipped), merge_world_id, sorted(skipped),
             )
+        # Capture the original event records (with provenance fields)
+        # BEFORE removing them from ``merged.events`` so the cascade
+        # trim below can read ``asserts_/denies_/resolves_proposition_*``.
+        dropped_events_records = [e for e in merged.events if e.id in drop]
         before = len(merged.events)
         merged.events = [e for e in merged.events if e.id not in drop]
         removed_n = before - len(merged.events)
@@ -3246,6 +3406,14 @@ def _apply_deletions(
                 source="delete",
                 remaining_causal_topology=merged.causal_topology,
             )
+        # Provenance cascade — parity with the suppression branch
+        # below. Without this, snapshots / beliefs / proposition
+        # truth-commits whose provenance points at a hard-deleted
+        # event remain in ``merged`` with dangling ``triggered_by`` /
+        # ``acquired_via_event_id`` refs. The validator flags them as
+        # warnings on the next pass but the persisted state still
+        # reports the rolled-back values until they get scrubbed.
+        _cascade_trim_provenance(drop, dropped_events_records, source="delete")
 
     # --- Shadow suppression (counterfactual / intervention cascade).
     # Unlike ``removed_event_ids``, suppression bypasses the
@@ -3314,151 +3482,16 @@ def _apply_deletions(
                 source="suppress",
                 remaining_causal_topology=merged.causal_topology,
             )
-        # Cascade: drop entity state_timeline snapshots whose
-        # ``triggered_by`` references a suppressed event (the
-        # entity-level mutation those snapshots applied is no longer
-        # justified). Object, world-trait, proposition, and concern
-        # timelines carry the same field so we walk them too.
-        #
-        # We must walk both the factual ``merged.entities`` dict AND
-        # any previously-materialised AMWN-split copies in
-        # ``merged.shadow_entities`` \u2014 a clone created on an
-        # earlier shadow merge had its timeline trimmed against the
-        # suppression set known at clone-time; the current merge may
-        # be expanding that set (e.g. closure widened to include a
-        # newly-suppressed descendant event), so existing clones
-        # need a fresh trim pass.
-        def _all_entity_records() -> List[Any]:
-            records: List[Any] = list(merged.entities.values())
-            for sidecar in (merged.shadow_entities or {}).values():
-                records.extend(sidecar.values())
-            return records
-
-        def _all_object_records() -> List[Any]:
-            records: List[Any] = list(merged.objects.values())
-            for sidecar in (merged.shadow_objects or {}).values():
-                records.extend(sidecar.values())
-            return records
-
-        def _all_world_trait_records() -> List[Any]:
-            records: List[Any] = list(merged.world_traits.values())
-            for sidecar in (merged.shadow_world_traits or {}).values():
-                records.extend(sidecar.values())
-            return records
-
-        def _all_proposition_records() -> List[Any]:
-            records: List[Any] = list(merged.propositions)
-            for sidecar in (merged.shadow_propositions or {}).values():
-                records.extend(sidecar.values())
-            return records
-        for ent in _all_entity_records():
-            ent.state_timeline = [
-                s for s in ent.state_timeline
-                if getattr(s, "triggered_by", None) not in sup
-            ]
-        for obj in _all_object_records():
-            obj.state_timeline = [
-                s for s in obj.state_timeline
-                if getattr(s, "triggered_by", None) not in sup
-            ]
-        for wt in _all_world_trait_records():
-            wt.state_timeline = [
-                s for s in wt.state_timeline
-                if getattr(s, "triggered_by", None) not in sup
-            ]
-        for prop in _all_proposition_records():
-            if getattr(prop, "state_timeline", None):
-                prop.state_timeline = [
-                    s for s in prop.state_timeline
-                    if getattr(s, "triggered_by", None) not in sup
-                ]
-        for ent in _all_entity_records():
-            for concern in ent.concerns:
-                if getattr(concern, "state_timeline", None):
-                    concern.state_timeline = [
-                        s for s in concern.state_timeline
-                        if getattr(s, "triggered_by", None) not in sup
-                    ]
-        # Cascade: drop beliefs whose ``acquired_via_event_id``
-        # provenance points at a suppressed event. The bridge in
-        # ``_augment_topology_with_sandbox_deltas`` already emits
-        # belief-invalidation snapshots for the direct prune set;
-        # this guards against closure-expansion drift where a
-        # disjunctively-suppressed descendant event was the actual
-        # provenance source. Walks sidecar clones too (same rationale
-        # as the state_timeline trim above).
-        for ent in _all_entity_records():
-            ent.beliefs = [
-                b for b in ent.beliefs
-                if getattr(b, "acquired_via_event_id", None) not in sup
-            ]
-        # Cascade: drop ``Proposition.truth_at_fabula`` entries whose
-        # only justification was an asserting/denying/resolving event
-        # that has now been suppressed. Without this, the proposition
-        # ground-truth dict (which was deep-copied from factual at
-        # ``merge()`` start) keeps reporting the factual outcome on
-        # the shadow branch \u2014 e.g. ``PROP_MRS_COADY_DIES`` remains
-        # ``True`` even after the dog-killing root cause is severed,
-        # so interrogation reads ``True`` while the prose narrates
-        # her alive.
-        #
-        # Provenance rule (conservative, no schema change required):
-        # an entry ``truth_at_fabula[ft]`` is dropped iff some
-        # suppressed event committed to that prop at ``ft`` AND no
-        # surviving event commits to the same prop at the same
-        # ``ft``. Entries with no event-level provenance at all
-        # (story-prior commits, physics clamps without an
-        # originating event) are preserved \u2014 we cannot show they
-        # were caused by suppressed events.
-        if suppressed_events_records:
-            def _committed_props_at(evt: Any) -> List[tuple[str, int]]:
-                """Return ``(prop_id, fabula_time)`` pairs this event commits."""
-                ft = getattr(evt, "fabula_time", None)
-                if ft is None:
-                    return []
-                pairs: List[tuple[str, int]] = []
-                pid_a = getattr(evt, "asserts_proposition_id", None)
-                if pid_a:
-                    pairs.append((pid_a, int(ft)))
-                pid_d = getattr(evt, "denies_proposition_id", None)
-                if pid_d:
-                    pairs.append((pid_d, int(ft)))
-                for pid_r in getattr(evt, "resolves_proposition_ids", None) or []:
-                    pairs.append((pid_r, int(ft)))
-                return pairs
-            suppressed_commits: set[tuple[str, int]] = set()
-            for evt in suppressed_events_records:
-                suppressed_commits.update(_committed_props_at(evt))
-            surviving_commits: set[tuple[str, int]] = set()
-            for evt in merged.events:
-                surviving_commits.update(_committed_props_at(evt))
-            to_drop = suppressed_commits - surviving_commits
-            if to_drop:
-                drop_by_prop: Dict[str, set[int]] = {}
-                for pid, ft in to_drop:
-                    drop_by_prop.setdefault(pid, set()).add(ft)
-                dropped_n = 0
-                for prop in _all_proposition_records():
-                    fts = drop_by_prop.get(prop.proposition_id)
-                    if not fts:
-                        continue
-                    if not isinstance(prop.truth_at_fabula, dict):
-                        continue
-                    before_t = len(prop.truth_at_fabula)
-                    prop.truth_at_fabula = {
-                        int(k): v
-                        for k, v in prop.truth_at_fabula.items()
-                        if int(k) not in fts
-                    }
-                    dropped_n += before_t - len(prop.truth_at_fabula)
-                if dropped_n:
-                    logger.info(
-                        "[merge\u00b7shadow-suppress] Dropped %d "
-                        "Proposition.truth_at_fabula entr%s with "
-                        "suppressed-event provenance "
-                        "(no surviving commit at same fabula_time).",
-                        dropped_n, "y" if dropped_n == 1 else "ies",
-                    )
+        # Provenance cascade — trim state_timeline / beliefs /
+        # truth_at_fabula entries whose ``triggered_by`` /
+        # ``acquired_via_event_id`` provenance points at a suppressed
+        # event. Shared with the hard-delete branch via
+        # ``_cascade_trim_provenance``; see that helper for the full
+        # rationale (closure-expansion drift on shadow-clone sidecars,
+        # disjunctive provenance rule on truth_at_fabula commits).
+        _cascade_trim_provenance(
+            sup, suppressed_events_records, source="shadow-suppress",
+        )
 
     # --- Causal edges (explicit keys)
     if topology.removed_causal_edge_keys:

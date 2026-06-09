@@ -135,7 +135,15 @@ class TestPreventedEventConstraints:
         assert "PREVENTED EVENTS (HARD)" in b.instruction
         assert "EVT_PREV" in b.instruction
         assert "EVT_REAL" not in b.instruction
-        assert b.evidence == {"prevented_event_ids": ["EVT_PREV"]}
+        # 2026-05-30 audit: the evidence dict now also carries
+        # ``pruned_via_closure_event_ids`` and
+        # ``pruned_utterance_event_ids`` so the auditor's deterministic
+        # checks have a single source-of-truth payload. Assert the
+        # primary key still matches and the auxiliary keys are present
+        # but empty (no closure prune set was passed here).
+        assert b.evidence["prevented_event_ids"] == ["EVT_PREV"]
+        assert b.evidence.get("pruned_via_closure_event_ids") == []
+        assert b.evidence.get("pruned_utterance_event_ids") == []
 
     def test_no_block_when_world_has_no_prevented_events(self):
         evt = SimpleNamespace(
