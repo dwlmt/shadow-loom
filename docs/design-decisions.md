@@ -633,28 +633,36 @@ for the full derivation.
 
 ---
 
-## D19. Bayesian-style geometric prior pull, not additive
+## D19. Beta-Bernoulli conjugate posterior, not a geometric or additive pull
 
-**Decision.** When updating a per-trait Bernoulli prior with a
-revealed causal edge of weight $w$, the surprise scorer applies the
-*geometric* pull
-$q \mathrel{+}= w\,(\mathrm{actual} - q)$
-clipped to $[\varepsilon, 1-\varepsilon]$, rather than the additive
-$q \mathrel{+}= w\,(\mathrm{actual} - q_0)$ that uses the original
-base prior.
+**Decision.** A per-trait Bernoulli prior is updated as a
+**Beta-Bernoulli conjugate posterior**. The base prior $q_0$ seeds a
+weak Beta anchor with pseudo-count $s$ ($\alpha_0 = s\,q_0$,
+$\beta_0 = s\,(1-q_0)$); each revealed causal edge of weight $w$ then
+contributes a fractional Bernoulli observation
+($\alpha \mathrel{+}= w\,\mathrm{actual}$,
+$\beta \mathrel{+}= w\,(1-\mathrm{actual})$, with source-side edges
+down-weighted), and the prior used by the surprise KL is the posterior
+mean $q = \alpha / (\alpha + \beta)$, clipped to
+$[\varepsilon, 1-\varepsilon]$.
 
-**Alternative.** The additive form is what a naive linear interpolation
-suggests; it is also what a "weighted majority" reading of the
-evidence would imply.
+**Alternative.** Two ad-hoc updates were used in earlier revisions: the
+*geometric* pull $q \mathrel{+}= w\,(\mathrm{actual} - q)$ and the
+*additive* $q \mathrel{+}= w\,(\mathrm{actual} - q_0)$ off the original
+base prior. The additive form is the naive linear-interpolation /
+"weighted majority" reading of the evidence.
 
-**Tradeoff.** The geometric form costs an extra subtraction per edge.
-In return it *asymptotes on* the truth: each new piece of evidence
-moves $q$ a fraction of the remaining gap. The additive form
-**summits past** the actual value once $\sum w > 1$, producing a
+**Tradeoff.** The conjugate posterior is the principled Bayesian update
+and, being a convex combination of the anchor and the evidence, it
+**asymptotes on** the truth — each new edge moves $q$ a fraction of the
+remaining gap and $q$ can never cross $\mathrm{actual}$. The additive
+form **summits past** the actual value once $\sum w > 1$, producing a
 non-monotonic surprise curve that contradicts the
-"more-revealed → less-surprise" semantics the cumulative form (D18)
-is built around. This was a silent bug in an earlier revision; the
-fix is recorded in
+"more-revealed → less-surprise" semantics the cumulative form (D18) is
+built around; the bare geometric pull avoids that overshoot but has no
+distributional justification and no notion of evidence accumulation
+(pseudo-count). The conjugate form costs one division per trait. The
+full derivation is recorded in
 [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence).
 
 **Invariant.** $q$ is monotone in the direction of the truth across a

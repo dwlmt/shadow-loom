@@ -43,7 +43,7 @@ OAUTH_PROVIDERS: list[dict] = _settings.oauth.oauth_providers
 # route to anonymous traffic (round-3 audit).
 if AUTH_REQUIRED and not AUTH_ENABLED:
     raise RuntimeError(
-        "SHADOW_LOOM_OAUTH__AUTH_REQUIRED is set but no OAuth provider "
+        "AUTH_REQUIRED is set but no OAuth provider "
         "is configured (github/google/discord/microsoft/apple). Refusing "
         "to start; configure a provider or unset auth_required."
     )

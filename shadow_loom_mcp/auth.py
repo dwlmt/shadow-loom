@@ -100,7 +100,7 @@ def _open_mode_enabled() -> bool:
     honest while still falling back to the cached settings value when
     the env var is unset.
 
-    R20-H6: when ``SHADOW_LOOM_OAUTH__AUTH_REQUIRED=true`` (the
+    R20-H6: when ``AUTH_REQUIRED=true`` (the
     documented production flag), refuse to honour open mode even if
     ``MCP_ALLOW_OPEN_MODE`` is set. This prevents a deployment that
     forgot to drop the dev env var from silently becoming an
@@ -125,7 +125,7 @@ def _open_mode_enabled() -> bool:
             if bool(getattr(get_settings().oauth, "auth_required", False)):
                 logger.warning(
                     "[MCP·auth] MCP_ALLOW_OPEN_MODE ignored: "
-                    "SHADOW_LOOM_OAUTH__AUTH_REQUIRED=true forces fail-closed."
+                    "AUTH_REQUIRED=true forces fail-closed."
                 )
                 return False
         except Exception:
@@ -166,21 +166,37 @@ def _last_cached_entry() -> Optional[dict]:
         return dict(_token_user_cache[last_token])
 
 
-def get_user_id(ctx: Context) -> Optional[int]:
-    """Resolve the authenticated user_id from the bearer token in Context.
+def _current_access_token(rc: object) -> Optional[object]:
+    """Resolve the verified bearer ``AccessToken`` for the active request.
 
-    Fail-closed in production: if the token cannot be resolved from the
-    active request context, return ``None``. In open mode (dev/test only),
-    fall back to the most recently cached token entry so MagicMock-based
-    tests can drive the tools without simulating a full transport layer.
+    fastmcp 3.x exposes the token verified by the ``TokenVerifier`` through
+    ``fastmcp.server.dependencies.get_access_token()`` (an HTTP-request /
+    contextvar lookup), *not* as an attribute on the MCP ``RequestContext``.
+    The previous ``getattr(rc, "access_token", None)`` therefore always
+    resolved to ``None`` under real HTTP transport, silently breaking bearer
+    auth. We still honour ``rc.access_token`` first so MagicMock-based test
+    doubles that set it continue to work, then fall back to the real
+    accessor.
     """
+    token_info = getattr(rc, "access_token", None)
+    if token_info is not None:
+        return token_info
+    try:
+        from fastmcp.server.dependencies import get_access_token
+
+        return get_access_token()
+    except Exception:
+        return None
+
+
+def _resolve_cache_entry(ctx: Context) -> Optional[dict]:
+    """Shared bearer-token → cached-user-info resolution for the helpers below."""
     rc = ctx.request_context
     if rc is None:
         if _open_mode_enabled():
-            entry = _last_cached_entry()
-            return entry["user_id"] if entry else None
+            return _last_cached_entry()
         return None
-    token_info = getattr(rc, "access_token", None)
+    token_info = _current_access_token(rc)
     if token_info is None:
         return None
     raw_token = getattr(token_info, "claims", {}).get("token")
@@ -189,6 +205,18 @@ def get_user_id(ctx: Context) -> Optional[int]:
     # R20-H7: atomic get under the cache lock.
     with _token_user_cache_lock:
         entry = _token_user_cache.get(raw_token)
+    return dict(entry) if entry else None
+
+
+def get_user_id(ctx: Context) -> Optional[int]:
+    """Resolve the authenticated user_id from the bearer token in Context.
+
+    Fail-closed in production: if the token cannot be resolved from the
+    active request context, return ``None``. In open mode (dev/test only),
+    fall back to the most recently cached token entry so MagicMock-based
+    tests can drive the tools without simulating a full transport layer.
+    """
+    entry = _resolve_cache_entry(ctx)
     return entry["user_id"] if entry else None
 
 
@@ -198,21 +226,7 @@ def get_scopes(ctx: Context) -> set[str]:
     In open mode (dev/test only), fall back to the most recently cached
     token entry's scopes — see ``get_user_id`` for rationale.
     """
-    rc = ctx.request_context
-    if rc is None:
-        if _open_mode_enabled():
-            entry = _last_cached_entry()
-            return set(entry["scopes"]) if entry else set()
-        return set()
-    token_info = getattr(rc, "access_token", None)
-    if token_info is None:
-        return set()
-    raw_token = getattr(token_info, "claims", {}).get("token")
-    if not raw_token:
-        return set()
-    # R20-H7: atomic get under the cache lock.
-    with _token_user_cache_lock:
-        entry = _token_user_cache.get(raw_token)
+    entry = _resolve_cache_entry(ctx)
     return set(entry["scopes"]) if entry else set()
 
 

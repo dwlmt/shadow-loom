@@ -1032,7 +1032,19 @@ class DirectiveAssemblySettings(BaseSettings):
         default=0.3,
         description=(
             "Convex weight on the plan-based anachrony component "
-            "(Bae & Young 2008). Must sum to 1.0 with trait-KL weight."
+            "(Bae & Young 2008). Sums to 1.0 with trait-KL weight to form "
+            "the calibrated convex pair; the belief-KL booster below is "
+            "added on top (the raw sum is then clamped to [0, 1])."
+        ),
+    )
+    surprise_belief_kl_weight: float = Field(
+        default=0.4,
+        description=(
+            "Additive weight on the audience-belief-revision KL component "
+            "(Itti & Baldi 2009 surprise on the unified Proposition "
+            "substrate). Unlike the trait/anachrony pair this is an "
+            "*additive booster*, not part of the convex split, so the "
+            "combined score is clamped to [0, 1]."
         ),
     )
     surprise_default_trait_salience: float = Field(
@@ -1240,7 +1252,7 @@ class OAuthSettings(BaseSettings):
     # flag, an accidental misconfiguration (provider env vars missing
     # in production) silently flips ``auth_enabled`` to False and
     # opens every route to anonymous traffic. Set
-    # ``SHADOW_LOOM_OAUTH__AUTH_REQUIRED=true`` in non-dev environments.
+    # ``AUTH_REQUIRED=true`` in non-dev environments.
     auth_required: bool = Field(default=False)
     github_client_id: str = Field(default="")
     github_client_secret: str = Field(default="")

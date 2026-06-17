@@ -388,9 +388,9 @@ does not yet contain) is structurally closer to dramatic irony
 (reader knows things the characters do not) than to a hope/threat
 ledger, and motivates the irony scorer in
 App.~\ref{app:narrative} rather than the suspense scorer. Surprise
-follows \citet{ittibaldi2009surprise} with a geometric prior update
-over a leave-one-out corpus marginal; emotional arc analytics owe
-to \citet{reagan2016arcs}.
+follows \citet{ittibaldi2009surprise} with a Beta-Bernoulli prior update
+over a leave-one-out corpus marginal (App.~\ref{app:narrative}); emotional
+arc analytics owe to \citet{reagan2016arcs}.
 
 \paragraph{Information-theoretic and epistemic substrate
 \citep{shannon1948mathematical,fagin1995reasoning,
@@ -519,7 +519,7 @@ latent state replaced by an explicit causal-graphical schema.
 
 \paragraph{Specific small constructions.} The
 ``Impact $>$ Inertia'' propagation rule (Eq.~\ref{eq:impact}) and
-the geometric prior update inside the surprise scorer
+the Beta-Bernoulli prior update inside the surprise scorer
 (Eq.~\ref{eq:surprise}) are introduced here as deliberately simple
 choices that keep both physics monotonic in useful ways
 (App.~\ref{app:narrative}). The two-axis fabula/syuzhet sampling
@@ -1676,10 +1676,13 @@ $w^{(k)}_{\mathrm{threat}} > 0$ and
 $w^{(k)}_{\mathrm{hope}} > 0$. The per-kind saturation
 constants $K_k$ rise with kind salience so existential threats
 saturate slowly while social ones saturate fast:
-$K_{\mathrm{existential}}=4.0$, $K_{\mathrm{physical}}=3.0$,
-$K_{\mathrm{betrayal}}=2.5$, $K_{\mathrm{psychological}}=2.0$,
-$K_{\mathrm{emotional}}=2.0$, $K_{\mathrm{social}}=1.5$,
-$K_{\mathrm{epistemic}}=1.5$. The dominant kind and per-kind
+$K_{\mathrm{existential}}=2.0$, $K_{\mathrm{physical}}=1.5$,
+$K_{\mathrm{betrayal}}=1.25$, $K_{\mathrm{psychological}}=1.0$,
+$K_{\mathrm{emotional}}=1.0$, $K_{\mathrm{social}}=0.75$,
+$K_{\mathrm{epistemic}}=K_{\mathrm{informational}}=0.75$ (halved from an
+earlier $4.0/3.0/2.5/2.0/2.0/1.5/1.5$ calibration once the unified
+suspense filter was broadened to all uncommitted propositions, which had
+been crushing the score). The dominant kind and per-kind
 sub-totals are surfaced alongside the scalar so downstream
 directive consumers can target the dominant beat
 (\emph{footsteps closing in} vs.\ \emph{the lie about to surface}
@@ -1766,16 +1769,24 @@ flashbacks that reframe earlier events, openers in medias res:
 where $\mathcal{E}_t$ is the set of relevant focal events
 (cumulative mode: all revealed at $t_s$; local mode: only those
 newly revealed at $t_s$, mirroring the per-step Itti-Baldi
-spike). The aggregator is a convex split
+spike). The aggregator is a convex split between trait-KL and anachrony plus
+an additive audience-belief-revision booster, clamped to $[0,1]$:
 \begin{equation}
-\mathrm{Sur} = w_t \cdot \mathrm{Sur}_{\mathrm{KL}} + w_a \cdot \mathrm{Sur}_{\mathrm{ana}}, \qquad w_t = 0.7,\ w_a = 0.3,
+\mathrm{Sur} = \mathrm{clip}_{[0,1]}\!\big(w_t \cdot \mathrm{Sur}_{\mathrm{KL}} + w_a \cdot \mathrm{Sur}_{\mathrm{ana}} + w_b \cdot \mathrm{Sur}_{\mathrm{bel}}\big), \quad w_t = 0.7,\ w_a = 0.3,\ w_b = 0.4,
 \end{equation}
-which preserves the existing test-contract dominance of trait
+where $w_t,w_a$ form the calibrated convex pair ($w_t+w_a=1$) and
+$\mathrm{Sur}_{\mathrm{bel}}$ is the Itti-Baldi KL on the audience's
+confidence-over-time across uncommitted propositions (the same unified
+Proposition substrate the suspense scorer reads), added as a responsive
+event-driven channel with weight $w_b$ on top of the convex pair --- so
+the raw sum can exceed $1$ when every component saturates and is clipped
+back. This preserves the existing test-contract dominance of trait
 shifts on linear tellings (anachrony $\to 0$) while letting the
 non-linear example fixtures (Reservoir Dogs, Gone Girl, Tinker
 Tailor) accrue the additional anachrony-driven contribution
 that \citet{bissell2025surprise} flag as the most important
-missing dimension in KL-only narrative-surprise models. With no
+missing dimension in KL-only narrative-surprise models. All three
+weights are exposed as tunable settings. With no
 syuzhet anchor the reader is assumed omniscient and
 $\mathrm{Sur} = 0$.
 

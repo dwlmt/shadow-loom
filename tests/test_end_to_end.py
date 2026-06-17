@@ -315,22 +315,16 @@ class TestRung3EndToEnd:
         # Current is a fresh fork (last fork), but we added a node to it
         assert vg.version == 3
 
-    @pytest.mark.xfail(
-        reason=(
-            "Pre-existing fixture-mutation issue (predates round-7/round-8): "
-            "DirectiveAssembler / _build_sandbox attaches synthetic entities "
-            "(e.g. ENT_AUDIENCE) onto the shared module-level gone_girl_ws, "
-            "so the immutability snapshot diverges. Tracked separately from "
-            "the auditor/UI/MCP work."
-        ),
-        strict=False,
-    )
     @patch("shadow_loom.auditor.run_audit")
     @patch("shadow_loom.auditor._build_generation_agent")
     def test_rung3_feedback_loop_with_merge(self, mock_gen_agent, mock_run_audit):
         """Full rung-3 pipeline: physics → brief → audit → merge with versioning."""
-        ws = gone_girl_ws
-        snap_before = _deep_snapshot(ws)
+        # Deep-copy the shared module-level fixture: the affect layer
+        # idempotently seeds the reserved ``ENT_AUDIENCE`` substrate into
+        # ``world.entities`` (see affect_unification.synthesise_audience_entity),
+        # so operating on the imported fixture directly would leak that
+        # synthetic entity into every other test that imports gone_girl_ws.
+        ws = copy.deepcopy(gone_girl_ws)
         focus_ids = list(ws.entities.keys())[:2]
         sandbox, ego_dump = _build_sandbox(ws, focus_ids)
 
@@ -355,7 +349,11 @@ class TestRung3EndToEnd:
         )
         assert result.converged is True
 
-        # Now merge extracted topology
+        # Snapshot after the affect layer has seeded ENT_AUDIENCE (an
+        # intended substrate rebuild). The invariant under test here is
+        # that ``merge_topology`` returns a new world and does not mutate
+        # its input ``ws``.
+        snap_before = _deep_snapshot(ws)
         topology = _mock_topology(ws)
         merged = merge_topology(ws, topology)
         assert len(merged.events) > len(ws.events)

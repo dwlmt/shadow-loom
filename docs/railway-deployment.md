@@ -107,12 +107,13 @@ For Apple specifically:
 DEFAULT_MODEL=openrouter:qwen/qwen3.6-35b-a3b
 # Per-stage overrides are optional — every stage inherits DEFAULT_MODEL
 # when the corresponding *_MODEL env var is unset or blank. Override
-# only when you want a stage to differ, e.g.:
-#   GENERATION_MODEL=openrouter:anthropic/claude-3.5-sonnet
-#   QUERY_PARSING_MODEL=openrouter:anthropic/claude-3.5-haiku
-#   AUDITOR_MODEL=openrouter:anthropic/claude-3.5-sonnet
-#   AUDITOR_GENERATION_MODEL=openrouter:anthropic/claude-3.5-sonnet
-#   EXTRACTION_MODEL=openrouter:google/gemini-2.5-pro
+# only when you want a stage to differ, e.g. (staying inside the
+# qwen3.6 / kimi-k2 / glm-4.6 family the prompts are tuned for):
+#   GENERATION_MODEL=openrouter:moonshotai/kimi-k2
+#   QUERY_PARSING_MODEL=openrouter:qwen/qwen3.6-35b-a3b
+#   AUDITOR_MODEL=openrouter:qwen/qwen3.6-35b-a3b
+#   AUDITOR_GENERATION_MODEL=openrouter:moonshotai/kimi-k2
+#   EXTRACTION_MODEL=openrouter:z-ai/glm-4.6
 
 # Output-token caps tuned for Qwen3.6-35B-A3B (262K native context).
 GENERATION_MAX_TOKENS=64000
@@ -128,8 +129,8 @@ for live pricing (~$0.15/M in, $1/M out at the time of writing) and
 provider routing. Pick any other model from
 <https://openrouter.ai/models>; the `openrouter:` prefix is parsed
 by PydanticAI and everything after the colon is the OpenRouter model
-id verbatim. **If you swap to a short-output model** (Claude 3.5
-Sonnet caps at ~8K, GPT-4o at ~16K) drop the `*_MAX_TOKENS` knobs to
+id verbatim. **If you swap to a short-output model** (many chat
+models cap output at ~8–16K tokens) drop the `*_MAX_TOKENS` knobs to
 match — the defaults assume Qwen3.6's full 262K window. See
 [settings.md §3](settings.md#3-generation-step-10--prose-rendering)
 for the full list of stage-specific model knobs.

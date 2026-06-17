@@ -3338,6 +3338,7 @@ class DirectiveAssembler:
         # Surprise
         self._SURPRISE_TRAIT_KL_WEIGHT = float(s.surprise_trait_kl_weight)
         self._SURPRISE_ANACHRONY_WEIGHT = float(s.surprise_anachrony_weight)
+        self._SURPRISE_BELIEF_KL_WEIGHT = float(s.surprise_belief_kl_weight)
         self._DEFAULT_TRAIT_SALIENCE = float(s.surprise_default_trait_salience)
         self._SURPRISE_SOURCE_EDGE_WEIGHT = float(s.surprise_source_edge_weight)
         self._SURPRISE_PRIOR_PSEUDOCOUNT = float(s.surprise_prior_pseudocount)
@@ -5994,8 +5995,8 @@ class DirectiveAssembler:
     # anachrony move the gauge where it should (Reservoir Dogs, Gone
     # Girl, Tinker Tailor) without overwhelming worlds with linear
     # tellings.
-    _SURPRISE_TRAIT_KL_WEIGHT: float = 0.4
-    _SURPRISE_ANACHRONY_WEIGHT: float = 0.2
+    _SURPRISE_TRAIT_KL_WEIGHT: float = 0.7
+    _SURPRISE_ANACHRONY_WEIGHT: float = 0.3
     # Audience belief-revision component (Itti & Baldi 2009 Bayesian
     # surprise on the audience's posterior over event propositions).
     # The trait-KL form is mathematically correct but produces a

@@ -666,13 +666,20 @@ structural-affect):
 
 | Kind | Salience $\sigma_k$ | Saturation $K_k$ | Lazarus / OCC anchor |
 |---|---:|---:|---|
-| `existential` (mortal) | 1.00 | 4.0 | OCC "irrevocable loss" — outranks all other prospects |
-| `physical` | 0.85 | 3.0 | Lazarus "physical danger" |
-| `betrayal` | 0.75 | 2.5 | Lazarus "moral transgression"; second only to mortal threat in the example corpus (Gone Girl, Reservoir Dogs, Tinker Tailor) |
-| `psychological` | 0.70 | 2.0 | OCC "distress about a self-relevant prospect" |
-| `emotional` (relational) | 0.65 | 2.0 | Lazarus "relational loss" (Wuthering Heights, Persuasion) |
-| `social` (reputational) | 0.55 | 1.5 | Lazarus "social esteem / shame" |
-| `epistemic` / `informational` | 0.45 | 1.5 | Discovery as a *prospect*; held low because cumulative-mystery (§3.2) already covers the epistemic surface |
+| `existential` (mortal) | 1.00 | 2.0 | OCC "irrevocable loss" — outranks all other prospects |
+| `physical` | 0.85 | 1.5 | Lazarus "physical danger" |
+| `betrayal` | 0.75 | 1.25 | Lazarus "moral transgression"; second only to mortal threat in the example corpus (Gone Girl, Reservoir Dogs, Tinker Tailor) |
+| `psychological` | 0.70 | 1.0 | OCC "distress about a self-relevant prospect" |
+| `emotional` (relational) | 0.65 | 1.0 | Lazarus "relational loss" (Wuthering Heights, Persuasion) |
+| `social` (reputational) | 0.55 | 0.75 | Lazarus "social esteem / shame" |
+| `epistemic` / `informational` | 0.45 | 0.75 | Discovery as a *prospect*; held low because cumulative-mystery (§3.2) already covers the epistemic surface |
+
+> **Saturation-constant calibration.** The $K_k$ values above were
+> halved from an earlier calibration ($4.0/3.0/2.5/2.0/2.0/1.5/1.5/1.5$)
+> once the unified suspense filter was broadened to *all* uncommitted
+> propositions; the previous constants were tuned for a much larger
+> ledger and crushed the score in the new regime. See
+> `DirectiveAssembler._SUSPENSE_STAKES_K_BY_KIND`.
 
 Events with no resolvable mechanism default to `physical` (the
 modal kind in the corpus and the median salience), so the gauge
@@ -880,7 +887,7 @@ mathematically distinct quantities Itti & Baldi distinguish.
 
 * **Cumulative form** (`local=False`, the default): KL between the
   reader's accumulated prior and the true posterior, $D_{\rm KL}(p
-  \| q)$ where $q$ is the geometrically-updated prior described
+  \| q)$ where $q$ is the Beta-Bernoulli posterior prior described
   above. As evidence accumulates, $q$ asymptotes toward $p$, so the
   score declines monotonically — answering *how much catching-up
   the reader still has to do*. The directive-assembly optimiser
@@ -957,11 +964,20 @@ average over the relevant event set (cumulative mode → all
 revealed events; local mode → events newly revealed at this
 anchor — mirroring the trait-KL split between integrated and
 per-step surprise), and combine with the trait-KL component via
-a convex weighting
+a convex weighting plus an additive belief-revision booster
 
-$$\text{Surprise} = w_t \cdot \text{Surp}_{\text{trait-KL}} + w_a \cdot \text{Surp}_{\text{anachrony}}$$
+$$\text{Surprise} = \operatorname{clip}_{[0,1]}\!\big(w_t \cdot \text{Surp}_{\text{trait-KL}} + w_a \cdot \text{Surp}_{\text{anachrony}} + w_b \cdot \text{Surp}_{\text{belief-KL}}\big)$$
 
-with $w_t = 0.7$, $w_a = 0.3$. Worlds with linear tellings
+with $w_t = 0.7$, $w_a = 0.3$ forming the calibrated convex pair
+($w_t + w_a = 1$) and $w_b = 0.4$ an *additive* booster on top.
+$\text{Surp}_{\text{belief-KL}}$ is the Itti–Baldi KL between the
+audience's confidence-over-time on every uncommitted proposition and
+its prior (the same Proposition substrate the unified suspense scorer
+reads), giving the gauge a responsive event-driven channel; because the
+booster is additive rather than convex the combined score is clipped
+back to $[0,1]$. All three weights are tunable via
+`DirectiveAssemblySettings.surprise_{trait_kl,anachrony,belief_kl}_weight`.
+Worlds with linear tellings
 contribute zero anachrony and degrade exactly to the previous
 trait-KL behaviour; worlds with non-linear tellings (Reservoir
 Dogs flashbacks, Gone Girl diary entries, Tinker Tailor

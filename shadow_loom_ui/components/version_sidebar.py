@@ -889,7 +889,7 @@ def _open_diff_dialog(
         # needs to verify the Pearl rung-3 intervention actually
         # mutated topology and not just prose.
         try:
-            from shadow_loom.state_v1 import WorldStateV1
+            from shadow_loom.models import WorldStateV1
 
             ws_factual = WorldStateV1.model_validate_json(
                 factual_row.world_state_json

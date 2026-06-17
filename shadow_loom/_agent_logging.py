@@ -174,21 +174,19 @@ def _log_to_langfuse(
         payload["level"] = "ERROR"
         payload["status_message"] = repr(error)
 
+    # Method name varies by langfuse major version: v3/v4 expose
+    # ``create_event`` (``trace``/``event`` were removed), while v2 has
+    # ``trace`` and ``event``. Try them in modern-first order so tracing
+    # works on whatever version is installed rather than silently no-opping.
     try:
-        trace_fn = getattr(client, "trace", None)
-        if callable(trace_fn):
-            trace = trace_fn(**payload)
-            flush_fn = getattr(client, "flush", None)
-            if callable(flush_fn):
-                flush_fn()
-            return
-
-        event_fn = getattr(client, "event", None)
-        if callable(event_fn):
-            event_fn(**payload)
-            flush_fn = getattr(client, "flush", None)
-            if callable(flush_fn):
-                flush_fn()
+        for method_name in ("create_event", "trace", "event"):
+            emit_fn = getattr(client, method_name, None)
+            if callable(emit_fn):
+                emit_fn(**payload)
+                flush_fn = getattr(client, "flush", None)
+                if callable(flush_fn):
+                    flush_fn()
+                return
     except Exception as exc:
         _LANGFUSE_LOGGER.warning("[Langfuse] Failed to emit trace: %s", exc)
 
@@ -257,16 +255,16 @@ def _extract_model_info(agent: Agent) -> tuple[Optional[str], Optional[str]]:
     try:
         model = getattr(agent, 'model', None)
         if model:
-            # Try to get provider from model name (e.g., "openai:gpt-4o")
-            if hasattr(model, 'name'):
-                model_name = model.name
-                if ':' in model_name:
-                    provider, name = model_name.split(':', 1)
-                    return provider, name
-                else:
-                    return "unknown", model_name
-            elif hasattr(model, 'model_name'):
-                return "unknown", model.model_name
+            # Legacy combined "provider:model" string (older pydantic-ai).
+            combined = getattr(model, 'name', None)
+            if isinstance(combined, str) and ':' in combined:
+                provider, name = combined.split(':', 1)
+                return provider, name
+            # pydantic-ai 1.x: provider lives on `.system` (e.g. "openai"),
+            # model on `.model_name` (e.g. "gpt-4o"). There is no `.name`.
+            name = getattr(model, 'model_name', None) or combined
+            if name:
+                return getattr(model, 'system', None) or "unknown", name
     except Exception:
         pass
     return None, None
@@ -274,23 +272,28 @@ def _extract_model_info(agent: Agent) -> tuple[Optional[str], Optional[str]]:
 
 def _extract_token_usage(result: Any) -> Optional[Dict[str, int]]:
     """Extract token usage information from agent result."""
+    def _read(obj: Any) -> Dict[str, Optional[int]]:
+        # pydantic-ai 1.x RunUsage exposes input_tokens / output_tokens
+        # (older versions used prompt_tokens / completion_tokens). Read the
+        # new names first, falling back to the legacy ones, so cost tracking
+        # works across versions instead of silently recording None/0.
+        prompt = getattr(obj, 'input_tokens', None)
+        if prompt is None:
+            prompt = getattr(obj, 'prompt_tokens', None)
+        completion = getattr(obj, 'output_tokens', None)
+        if completion is None:
+            completion = getattr(obj, 'completion_tokens', None)
+        return {
+            'prompt_tokens': prompt,
+            'completion_tokens': completion,
+            'total_tokens': getattr(obj, 'total_tokens', None),
+        }
+
     try:
-        # Check if result has usage information
         if hasattr(result, 'usage'):
-            usage = result.usage
-            return {
-                'prompt_tokens': getattr(usage, 'prompt_tokens', None),
-                'completion_tokens': getattr(usage, 'completion_tokens', None),
-                'total_tokens': getattr(usage, 'total_tokens', None)
-            }
+            return _read(result.usage)
         elif hasattr(result, 'cost'):
-            # Alternative location for usage stats
-            cost = result.cost
-            return {
-                'prompt_tokens': getattr(cost, 'input_tokens', None),
-                'completion_tokens': getattr(cost, 'output_tokens', None), 
-                'total_tokens': getattr(cost, 'total_tokens', None)
-            }
+            return _read(result.cost)
     except Exception:
         pass
     return None

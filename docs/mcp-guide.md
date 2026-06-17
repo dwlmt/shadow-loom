@@ -19,7 +19,17 @@ pip install -e .
 
 # Run the server (stdio transport, FastMCP default)
 python -m shadow_loom_mcp
+
+# Run over HTTP (required for Bearer-token auth to take effect)
+MCP_TRANSPORT=http MCP_PORT=8000 python -m shadow_loom_mcp
 ```
+
+> **Transport vs. auth.** The Bearer-token scheme in §2 only runs over an
+> HTTP transport, because stdio has no HTTP `Authorization` header. Under
+> the default **stdio** transport `access_token` is always `None`, so every
+> authenticated tool fails closed unless `MCP_ALLOW_OPEN_MODE=true` (trusted
+> local use, e.g. Claude Desktop). For any networked / multi-user
+> deployment set `MCP_TRANSPORT=http` so the token verifier actually runs.
 
 The server reads its configuration from `config.env` /
 [`shadow_loom/settings.py`](../shadow_loom/settings.py). Key settings:
@@ -27,6 +37,7 @@ The server reads its configuration from `config.env` /
 | Env var | Purpose |
 |---|---|
 | `DATABASE_URL` | SQLite / Postgres URL backing the version store. |
+| `MCP_TRANSPORT` | `stdio` (default, local/Claude Desktop) or `http` (networked; required for Bearer auth). Honours `MCP_HOST` / `MCP_PORT`. |
 | `MCP_ALLOW_OPEN_MODE` | If `true`, falls back to the most-recently-cached token when a request arrives without an active context (dev/test only — fail-open). Default `false`. |
 | `MCP_SKIP_AUDIT` | Default value of the `skip_audit` flag on `narrate` / `direct`. |
 | `MCP_INGEST_FABULA_TIME_SPACING` | Spacing for fabula ticks during `ingest` (default 1000). |
@@ -245,6 +256,7 @@ integrations can migrate one call at a time.
 | `direct(target_effect, entity_ids=…, intensity=0.8, temporal_anchor=None, syuzhet_anchor=None, anchor_after_event_id=None, …)` | write | Builds a `DirectiveQuery` directly (no NL parse) and runs the affective optimisation pipeline. The optional anchor arguments override `PipelineConfig.temporal_anchor` / `syuzhet_anchor` for a single call. |
 | `write(prose, description="")` | write | Manual edit — supplies user prose, runs prose → topology re-extraction, merges into a new version (skips physics + LLM rendering). |
 | `ingest(text, project_name, label=None)` | write | Creates a brand new project and runs the 5-step ingestion to produce v0. If the v0 save fails the freshly-created project row is rolled back so failed ingests do not leave orphan projects with zero versions. |
+| `patch_world_state(patch, project_id=None, project_name=None, version=None, description="")` | write | Applies a structured `WorldStatePatch` dict directly to the world model, bypassing the prose re-extraction round-trip when the change is already known structurally (e.g. backfilling `Belief.proposition_id`, committing a proposition truth, renaming a channel, dropping/adding causal/social/spatial edges, fixing a miswired event field). Loads via `load_world_state_with_branch` so branch identity is preserved, then creates a new version on success. Returns `{new_version, changes: [...]}` or `{error}` if the patch fails to validate or apply. |
 
 `narrate`, `direct`, and `ingest` emit FastMCP `progress_notifications` so an
 MCP client can show a progress bar.

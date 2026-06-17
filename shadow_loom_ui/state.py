@@ -840,6 +840,23 @@ class AppState:
         to the DB if the project context still matches, and emits
         ``WORLD_STATE_CHANGED`` so panels refresh.
         """
+        # Capture the UI event loop now (we are still on it). The worker
+        # runs on a daemon thread, and ``emit`` fans out to listeners that
+        # mutate NiceGUI elements — those mutations must be marshalled back
+        # onto the loop or they are not reliably flushed to the browser
+        # (and can raise). Degrade to a direct call only if no loop is
+        # running (e.g. unit tests driving this synchronously).
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        def _emit_on_loop(event: "StateEvent", **kwargs) -> None:
+            if loop is not None:
+                loop.call_soon_threadsafe(lambda: self.emit(event, **kwargs))
+            else:
+                self.emit(event, **kwargs)
+
         def _worker() -> None:
             # Re-activate the user's model overrides inside this daemon
             # thread (threading.Thread does not propagate ContextVars).
@@ -888,7 +905,7 @@ class AppState:
                     self.versioned_model = pipeline_result.world_model
                     self.world_state = pipeline_result.world_model.current
                     self._reproject_world_state_to_vwm_head()
-                self.emit(StateEvent.WORLD_STATE_CHANGED)
+                _emit_on_loop(StateEvent.WORLD_STATE_CHANGED)
                 # Persist the now-advanced version, mirroring the
                 # synchronous-flow gating (skip readonly / failed /
                 # short-circuit cases).
@@ -933,7 +950,7 @@ class AppState:
                 pipeline_result=pipeline_result,
                 summary=summary_text,
             )
-            self.emit(StateEvent.PIPELINE_RESULT, result=deferred_result)
+            _emit_on_loop(StateEvent.PIPELINE_RESULT, result=deferred_result)
 
         # Round-11 R11-02: register the deferred worker on the state
         # so ``teardown`` can join it during session eviction. Without

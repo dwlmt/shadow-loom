@@ -125,15 +125,18 @@ pipeline stage inherits it. Add per-stage overrides only when you want
 them to differ:
 
 ```
-DEFAULT_MODEL=openrouter:google/gemini-2.5-flash
-GENERATION_MODEL=openrouter:anthropic/claude-3.5-sonnet
-AUDITOR_MODEL=openrouter:anthropic/claude-3.5-sonnet
-EXTRACTION_MODEL=openrouter:google/gemini-2.5-pro
-QUERY_PARSING_MODEL=openrouter:anthropic/claude-3.5-haiku
+DEFAULT_MODEL=openrouter:qwen/qwen3.6-35b-a3b
+GENERATION_MODEL=openrouter:moonshotai/kimi-k2
+AUDITOR_MODEL=openrouter:qwen/qwen3.6-35b-a3b
+EXTRACTION_MODEL=openrouter:z-ai/glm-4.6
+QUERY_PARSING_MODEL=openrouter:qwen/qwen3.6-35b-a3b
 ```
 
-If you swap to a short-output model (Claude 3.5 Sonnet caps at ~8K
-output, GPT-4o at ~16K) **also lower the `*_MAX_TOKENS` env vars** —
+The per-stage overrides above stay inside the qwen3.6 / kimi-k2 /
+glm-4.6 family the prompts are tuned for (see
+[`settings.py`](../shadow_loom/settings.py)). If you swap in a
+short-output model (many chat models cap output at ~8–16K tokens)
+**also lower the `*_MAX_TOKENS` env vars** —
 the blueprint defaults (64000 / 16000 / 64000 / 16000) assume
 Qwen3.6's full 262K window. See
 [settings.md § 3](settings.md#3-generation-step-10--prose-rendering)

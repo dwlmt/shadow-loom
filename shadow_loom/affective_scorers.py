@@ -75,7 +75,7 @@ def compute_affective_scorers(
     if world_state is None:
         return {
             "mystery": 0.0, "irony": 0.0, "suspense": 0.0,
-            "surprise": 0.0, "tension": 0.0,
+            "surprise": 0.0, "tension": 0.0, "ambivalence": 0.0,
         }
 
     # R19-L7: pull previously-hardcoded tunables from
