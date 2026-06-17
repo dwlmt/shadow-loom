@@ -9,6 +9,7 @@ ui.run(
     port=_ui_settings.port,
     title=_ui_settings.title,
     storage_secret=config.STORAGE_SECRET,
+    session_middleware_kwargs=config.SESSION_MIDDLEWARE_KWARGS,
     dark=_ui_settings.dark_mode,
     reload=_ui_settings.reload,
 )

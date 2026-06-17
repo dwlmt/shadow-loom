@@ -238,6 +238,11 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
             )
 
             async def _do_work():
+                # Roll back a freshly-created project if the initial
+                # save_version fails, so a validation/save error does not
+                # leave a permanent version-less orphan project row (the
+                # MCP ingest path guards this the same way).
+                created_proj_id = None
                 try:
                     with capture_logs_to_task(state, task):
                         # Use the async pipeline so chunk extraction runs
@@ -258,6 +263,7 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                         description=(project_desc.value or None),
                         owner_id=state.user_id,
                     )
+                    created_proj_id = proj.id
                     db.save_version(
                         project_id=proj.id,
                         world_state_json=ws.model_dump_json(),
@@ -267,6 +273,8 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                         user_id=state.user_id,
                         actor_id=state.user_id,
                     )
+                    # v0 committed — the project is no longer an orphan.
+                    created_proj_id = None
                     state.load_project(
                         project_id=proj.id,
                         project_name=proj.name,
@@ -315,6 +323,14 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                     # goes to the server log via ``logger.exception``
                     # above for diagnosis.
                     logger.exception("Ingestion failed")
+                    if created_proj_id is not None:
+                        try:
+                            db.delete_project(created_proj_id, state.user_id)
+                        except Exception:
+                            logger.exception(
+                                "Failed to roll back orphan project %s",
+                                created_proj_id,
+                            )
                     state.finish_task(
                         task,
                         error="Ingestion failed — see server logs for details.",

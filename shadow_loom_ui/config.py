@@ -38,6 +38,16 @@ AUTH_ENABLED: bool = _settings.oauth.auth_enabled
 AUTH_REQUIRED: bool = _settings.oauth.auth_required
 OAUTH_PROVIDERS: list[dict] = _settings.oauth.oauth_providers
 
+# Session-cookie hardening passed to ui.run(session_middleware_kwargs=...).
+# ``same_site=lax`` is required so the OAuth redirect (a top-level
+# navigation) still carries the session cookie. ``https_only`` marks the
+# cookie Secure so it is never sent over plain HTTP — but that would break
+# local HTTP dev, so it is only forced in hosted mode (AUTH_REQUIRED).
+SESSION_MIDDLEWARE_KWARGS: dict = {
+    "same_site": "lax",
+    "https_only": bool(AUTH_REQUIRED),
+}
+
 # Hard fail-closed: if AUTH_REQUIRED is set but no provider is
 # configured, refuse to start rather than silently opening every
 # route to anonymous traffic (round-3 audit).

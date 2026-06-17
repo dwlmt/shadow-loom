@@ -1274,8 +1274,23 @@ class OAuthSettings(BaseSettings):
 
     @property
     def resolved_storage_secret(self) -> str:
-        """Return the configured secret, or generate one if blank."""
-        return self.storage_secret or secrets.token_urlsafe(32)
+        """Return the configured secret, or an ephemeral one in dev only.
+
+        In hosted mode (``auth_required``) a blank secret is fatal: an
+        ephemeral per-process secret invalidates every session on
+        restart and cannot be shared across workers, so signed session
+        cookies become unstable and trivially forgeable-by-restart.
+        Fail closed rather than silently minting one.
+        """
+        if self.storage_secret:
+            return self.storage_secret
+        if self.auth_required:
+            raise RuntimeError(
+                "STORAGE_SECRET is empty but AUTH_REQUIRED is set. Refusing "
+                "to start with an ephemeral session secret in hosted mode; "
+                "set STORAGE_SECRET to a stable random value."
+            )
+        return secrets.token_urlsafe(32)
 
     @property
     def auth_enabled(self) -> bool:

@@ -2854,7 +2854,7 @@ async def ingest(
             proj.id,
         )
         try:
-            db_delete_project(proj.id)
+            db_delete_project(proj.id, user_row_id)
         except Exception:
             logger.exception("Failed to roll back orphan project %s", proj.id)
         return _sanitised_error("ingest", e)

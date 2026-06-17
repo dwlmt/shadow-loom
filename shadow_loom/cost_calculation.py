@@ -459,7 +459,7 @@ class UsageSummaryCalculator:
             WHERE agent_stats.call_count > 0 OR api_stats.call_count > 0
         """)
         
-        results = self.session.exec(user_stats_query, {
+        results = self.session.exec(user_stats_query, params={
             "period_start": period_start,
             "period_end": period_end
         }).all()
@@ -589,7 +589,7 @@ class UsageSummaryCalculator:
             WHERE agent_stats.call_count > 0 OR api_stats.call_count > 0 OR version_stats.version_count > 0
         """)
         
-        results = self.session.exec(project_stats_query, {
+        results = self.session.exec(project_stats_query, params={
             "period_start": period_start,
             "period_end": period_end
         }).all()

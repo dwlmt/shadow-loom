@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import logging
+import threading
 from typing import Any, Callable, Iterable, Optional
 
 from shadow_loom.models import (
@@ -3322,6 +3323,13 @@ def ws_to_sunburst_data(ws: WorldStateV1) -> dict:
 # mutations that forget to emit ``WORLD_STATE_CHANGED`` will still
 # return stale data, but at least re-loading a different project into
 # the same memory slot can't.
+# Guards FIFO eviction + clear across every module cache below. The
+# snapshot/affect/physics compute functions run inside ``asyncio.to_thread``
+# worker threads, so two threads can race on ``pop(next(iter(d)))`` →
+# "dictionary changed size during iteration"/KeyError. ``.get`` reads stay
+# unlocked (atomic in CPython); only the mutating sections are guarded.
+_CACHE_LOCK = threading.Lock()
+
 _SNAPSHOT_CACHE: "dict[tuple[int, int, int], WorldStateV1]" = {}
 _SNAPSHOT_CACHE_MAX = 64
 _SNAPSHOT_REVISION: int = 0
@@ -3342,11 +3350,12 @@ def _snapshot_cache_get(ws: WorldStateV1, t: int) -> Optional[WorldStateV1]:
 
 
 def _snapshot_cache_put(ws: WorldStateV1, t: int, snap: WorldStateV1) -> None:
-    if len(_SNAPSHOT_CACHE) >= _SNAPSHOT_CACHE_MAX:
-        # Drop an arbitrary entry — slider scrubbing is sequential so the
-        # working set is small and FIFO eviction is fine.
-        _SNAPSHOT_CACHE.pop(next(iter(_SNAPSHOT_CACHE)))
-    _SNAPSHOT_CACHE[(id(ws), _SNAPSHOT_REVISION, t)] = snap
+    with _CACHE_LOCK:
+        if len(_SNAPSHOT_CACHE) >= _SNAPSHOT_CACHE_MAX:
+            # Drop an arbitrary entry — slider scrubbing is sequential so the
+            # working set is small and FIFO eviction is fine.
+            _SNAPSHOT_CACHE.pop(next(iter(_SNAPSHOT_CACHE)))
+        _SNAPSHOT_CACHE[(id(ws), _SNAPSHOT_REVISION, t)] = snap
 
 
 def invalidate_snapshot_cache() -> None:
@@ -3360,17 +3369,18 @@ def invalidate_snapshot_cache() -> None:
     cache and recompute against the live data.
     """
     global _SNAPSHOT_REVISION
-    _SNAPSHOT_CACHE.clear()
-    _SNAPSHOT_REVISION += 1
-    # The affect caches are keyed on the same revision, so bumping the
-    # revision logically invalidates them. We also clear them to keep
-    # memory predictable when projects are swapped frequently.
-    _AFFECT_SCORE_CACHE.clear()
-    _AFFECT_TIMESERIES_CACHE.clear()
-    try:
-        _CHAR_EMOTION_CACHE.clear()
-    except NameError:
-        pass
+    with _CACHE_LOCK:
+        _SNAPSHOT_CACHE.clear()
+        _SNAPSHOT_REVISION += 1
+        # The affect caches are keyed on the same revision, so bumping the
+        # revision logically invalidates them. We also clear them to keep
+        # memory predictable when projects are swapped frequently.
+        _AFFECT_SCORE_CACHE.clear()
+        _AFFECT_TIMESERIES_CACHE.clear()
+        try:
+            _CHAR_EMOTION_CACHE.clear()
+        except NameError:
+            pass
 
 
 def fabula_time_bounds(ws: WorldStateV1) -> tuple[int, int]:
@@ -3605,9 +3615,10 @@ def snapshot_world_at_syuzhet(ws: WorldStateV1, s: int) -> WorldStateV1:
         return cached
     new = ws.model_copy(deep=False)
     new.events = [evt for evt in ws.events if evt.syuzhet_index <= s]
-    if len(_SNAPSHOT_CACHE) >= _SNAPSHOT_CACHE_MAX:
-        _SNAPSHOT_CACHE.pop(next(iter(_SNAPSHOT_CACHE)))
-    _SNAPSHOT_CACHE[cache_key] = new
+    with _CACHE_LOCK:
+        if len(_SNAPSHOT_CACHE) >= _SNAPSHOT_CACHE_MAX:
+            _SNAPSHOT_CACHE.pop(next(iter(_SNAPSHOT_CACHE)))
+        _SNAPSHOT_CACHE[cache_key] = new
     return new
 
 
@@ -4284,9 +4295,10 @@ def compute_affective_scores(
         surprise_local=surprise_local,
         fabula_anchor=fabula_anchor,
     )
-    if len(_AFFECT_SCORE_CACHE) >= _AFFECT_CACHE_MAX:
-        _AFFECT_SCORE_CACHE.pop(next(iter(_AFFECT_SCORE_CACHE)))
-    _AFFECT_SCORE_CACHE[cache_key] = dict(result)
+    with _CACHE_LOCK:
+        if len(_AFFECT_SCORE_CACHE) >= _AFFECT_CACHE_MAX:
+            _AFFECT_SCORE_CACHE.pop(next(iter(_AFFECT_SCORE_CACHE)))
+        _AFFECT_SCORE_CACHE[cache_key] = dict(result)
     return result
 
 
@@ -4670,9 +4682,10 @@ def compute_character_emotion_grid(
             row["love"] = 0.0
         grid[eid] = row
 
-    if len(_CHAR_EMOTION_CACHE) >= _AFFECT_CACHE_MAX:
-        _CHAR_EMOTION_CACHE.pop(next(iter(_CHAR_EMOTION_CACHE)))
-    _CHAR_EMOTION_CACHE[key] = {e: dict(d) for e, d in grid.items()}
+    with _CACHE_LOCK:
+        if len(_CHAR_EMOTION_CACHE) >= _AFFECT_CACHE_MAX:
+            _CHAR_EMOTION_CACHE.pop(next(iter(_CHAR_EMOTION_CACHE)))
+        _CHAR_EMOTION_CACHE[key] = {e: dict(d) for e, d in grid.items()}
     return grid
 
 
@@ -4753,11 +4766,12 @@ def affective_timeseries(
         # all lists stay length i+1.
         for k in series:
             series[k].append(round(float(scores.get(k, 0.0)), 3))
-    if len(_AFFECT_TIMESERIES_CACHE) >= _AFFECT_CACHE_MAX:
-        _AFFECT_TIMESERIES_CACHE.pop(next(iter(_AFFECT_TIMESERIES_CACHE)))
-    _AFFECT_TIMESERIES_CACHE[cache_key] = (
-        list(times), {k: list(v) for k, v in series.items()},
-    )
+    with _CACHE_LOCK:
+        if len(_AFFECT_TIMESERIES_CACHE) >= _AFFECT_CACHE_MAX:
+            _AFFECT_TIMESERIES_CACHE.pop(next(iter(_AFFECT_TIMESERIES_CACHE)))
+        _AFFECT_TIMESERIES_CACHE[cache_key] = (
+            list(times), {k: list(v) for k, v in series.items()},
+        )
     return times, series
 
 
@@ -4843,11 +4857,12 @@ def affective_timeseries_syuzhet(
                 series[k] = [0.0] * i
         for k in series:
             series[k].append(round(float(scores.get(k, 0.0)), 3))
-    if len(_AFFECT_TIMESERIES_CACHE) >= _AFFECT_CACHE_MAX:
-        _AFFECT_TIMESERIES_CACHE.pop(next(iter(_AFFECT_TIMESERIES_CACHE)))
-    _AFFECT_TIMESERIES_CACHE[cache_key] = (
-        list(indices), {k: list(v) for k, v in series.items()},
-    )
+    with _CACHE_LOCK:
+        if len(_AFFECT_TIMESERIES_CACHE) >= _AFFECT_CACHE_MAX:
+            _AFFECT_TIMESERIES_CACHE.pop(next(iter(_AFFECT_TIMESERIES_CACHE)))
+        _AFFECT_TIMESERIES_CACHE[cache_key] = (
+            list(indices), {k: list(v) for k, v in series.items()},
+        )
     return indices, series
 
 
@@ -5977,9 +5992,10 @@ def physics_trajectory(
             result.get("physics_state", {}) or {}
         )
         out = ([tmin], {k: [v] for k, v in metrics.items()})
-        if len(_PHYSICS_TRAJECTORY_CACHE) >= _PHYSICS_TRAJECTORY_CACHE_MAX:
-            _PHYSICS_TRAJECTORY_CACHE.pop(next(iter(_PHYSICS_TRAJECTORY_CACHE)))
-        _PHYSICS_TRAJECTORY_CACHE[cache_key] = out
+        with _CACHE_LOCK:
+            if len(_PHYSICS_TRAJECTORY_CACHE) >= _PHYSICS_TRAJECTORY_CACHE_MAX:
+                _PHYSICS_TRAJECTORY_CACHE.pop(next(iter(_PHYSICS_TRAJECTORY_CACHE)))
+            _PHYSICS_TRAJECTORY_CACHE[cache_key] = out
         return out
 
     step = max(1, (tmax - tmin) // (samples - 1))
@@ -5998,9 +6014,10 @@ def physics_trajectory(
         for k in series:
             series[k].append(round(float(metrics.get(k, 0.0)), 3))
     out = (times, series)
-    if len(_PHYSICS_TRAJECTORY_CACHE) >= _PHYSICS_TRAJECTORY_CACHE_MAX:
-        _PHYSICS_TRAJECTORY_CACHE.pop(next(iter(_PHYSICS_TRAJECTORY_CACHE)))
-    _PHYSICS_TRAJECTORY_CACHE[cache_key] = out
+    with _CACHE_LOCK:
+        if len(_PHYSICS_TRAJECTORY_CACHE) >= _PHYSICS_TRAJECTORY_CACHE_MAX:
+            _PHYSICS_TRAJECTORY_CACHE.pop(next(iter(_PHYSICS_TRAJECTORY_CACHE)))
+        _PHYSICS_TRAJECTORY_CACHE[cache_key] = out
     return out
 
 
@@ -6013,7 +6030,8 @@ _PHYSICS_TRAJECTORY_CACHE_MAX = 16
 
 def invalidate_physics_trajectory_cache() -> None:
     """Drop all cached physics trajectories."""
-    _PHYSICS_TRAJECTORY_CACHE.clear()
+    with _CACHE_LOCK:
+        _PHYSICS_TRAJECTORY_CACHE.clear()
 
 
 # =====================================================================

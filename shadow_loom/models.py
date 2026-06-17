@@ -2704,18 +2704,32 @@ class WorldStateV1(BaseModel):
     def _backfill_node_ids_from_keys(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        for field_name in ("locations", "objects", "entities"):
-            mapping = data.get(field_name)
-            if not isinstance(mapping, dict):
-                continue
+
+        # Copy-on-write so this validator never mutates the caller's input
+        # dict (or its nested dicts) in place — constructing a WorldStateV1
+        # from a shared plot/fixture dict must not splice ``id`` keys back
+        # into that caller's dict. Copies happen only when an id is actually
+        # missing (hand-authored input), so the hot model_dump ->
+        # model_validate round-trip — where every nested dict already
+        # carries ``id`` — pays nothing.
+        result = data
+
+        def _backfill_mapping(mapping: dict, label: str) -> dict:
+            # Return the (possibly copied) mapping with ids backfilled.
+            new_mapping = mapping
             for key, value in list(mapping.items()):
                 if isinstance(value, dict):
-                    if not value.get("id"):
-                        value["id"] = key
-                    elif value["id"] != key:
+                    vid = value.get("id")
+                    if not vid:
+                        if new_mapping is mapping:
+                            new_mapping = dict(mapping)
+                        new_value = dict(value)
+                        new_value["id"] = key
+                        new_mapping[key] = new_value
+                    elif vid != key:
                         raise ValueError(
-                            f"WorldStateV1.{field_name}: dict key {key!r} "
-                            f"does not match nested id {value['id']!r}"
+                            f"{label}: dict key {key!r} does not match "
+                            f"nested id {vid!r}"
                         )
                 else:
                     existing = getattr(value, "id", None)
@@ -2726,9 +2740,21 @@ class WorldStateV1(BaseModel):
                             pass
                     elif existing != key:
                         raise ValueError(
-                            f"WorldStateV1.{field_name}: dict key {key!r} "
-                            f"does not match nested id {existing!r}"
+                            f"{label}: dict key {key!r} does not match "
+                            f"nested id {existing!r}"
                         )
+            return new_mapping
+
+        for field_name in ("locations", "objects", "entities"):
+            mapping = result.get(field_name)
+            if not isinstance(mapping, dict):
+                continue
+            new_mapping = _backfill_mapping(mapping, f"WorldStateV1.{field_name}")
+            if new_mapping is not mapping:
+                if result is data:
+                    result = dict(data)
+                result[field_name] = new_mapping
+
         # Audit R18-21: also backfill / validate the per-branch
         # shadow sidecars. Pre-fix the validator only touched the
         # top-level ``entities`` / ``objects`` / ``locations``
@@ -2736,36 +2762,26 @@ class WorldStateV1(BaseModel):
         # nested ``id`` field round-tripped as ``id=""`` and broke
         # every projected id-lookup downstream.
         for sidecar_name in ("shadow_entities", "shadow_objects", "shadow_locations"):
-            sidecar = data.get(sidecar_name)
+            sidecar = result.get(sidecar_name)
             if not isinstance(sidecar, dict):
                 continue
+            new_sidecar = sidecar
             for branch_label, mapping in list(sidecar.items()):
                 if not isinstance(mapping, dict):
                     continue
-                for key, value in list(mapping.items()):
-                    if isinstance(value, dict):
-                        if not value.get("id"):
-                            value["id"] = key
-                        elif value["id"] != key:
-                            raise ValueError(
-                                f"WorldStateV1.{sidecar_name}[{branch_label!r}]: "
-                                f"dict key {key!r} does not match nested id "
-                                f"{value['id']!r}"
-                            )
-                    else:
-                        existing = getattr(value, "id", None)
-                        if not existing:
-                            try:
-                                value.id = key  # type: ignore[attr-defined]
-                            except Exception:
-                                pass
-                        elif existing != key:
-                            raise ValueError(
-                                f"WorldStateV1.{sidecar_name}[{branch_label!r}]: "
-                                f"dict key {key!r} does not match nested id "
-                                f"{existing!r}"
-                            )
-        return data
+                new_mapping = _backfill_mapping(
+                    mapping, f"WorldStateV1.{sidecar_name}[{branch_label!r}]"
+                )
+                if new_mapping is not mapping:
+                    if new_sidecar is sidecar:
+                        new_sidecar = dict(sidecar)
+                    new_sidecar[branch_label] = new_mapping
+            if new_sidecar is not sidecar:
+                if result is data:
+                    result = dict(data)
+                result[sidecar_name] = new_sidecar
+
+        return result
     shadow_entities: Dict[str, Dict[str, Entity]] = Field(
         default_factory=dict,
         description=(
