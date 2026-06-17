@@ -228,6 +228,56 @@ def _user_custom_provider(prefix: str) -> Optional[dict]:
     return None
 
 
+def _assert_safe_base_url(base_url: str) -> None:
+    """Reject a *user-supplied* provider ``base_url`` that resolves to a
+    private / loopback / link-local / reserved / multicast address when
+    running in hosted (multi-user) mode.
+
+    Without this guard a user could point a custom provider at the cloud
+    metadata endpoint (``169.254.169.254``) or an internal service and
+    have the server make the request on their behalf — a classic SSRF.
+    Only user-configured endpoints are validated; operator-set env /
+    default endpoints (which may legitimately be internal) are trusted.
+    In single-user mode, or when the host cannot be resolved, the URL is
+    allowed (best-effort — we never block on a transient DNS failure).
+    """
+    try:
+        if not get_settings().oauth.auth_required:
+            return
+    except Exception:
+        return
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    host = urlparse(base_url).hostname
+    if not host:
+        return
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr.split("%")[0])
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise ValueError(
+                f"Refusing to use base_url '{base_url}': host '{host}' "
+                f"resolves to a private/internal address ({ip}). Custom "
+                f"provider endpoints must be publicly routable in hosted mode."
+            )
+
+
 # ── Discover config.env next to this file's package root ──────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _CONFIG_ENV = _PROJECT_ROOT / "config.env"
@@ -1743,8 +1793,14 @@ def resolve_model(model_str: str, *, stage: Optional[str] = None):
                         f"models. Set it in config.env, .env, an environment "
                         f"variable, or Settings → Models & Providers."
                     )
+            user_base_url = (user_prov or {}).get("base_url", "").strip()
+            # SSRF guard: validate only the user-configured endpoint.
+            # Operator env / built-in defaults are trusted and may
+            # legitimately target internal hosts.
+            if user_base_url:
+                _assert_safe_base_url(user_base_url)
             base_url = (
-                (user_prov or {}).get("base_url", "").strip()
+                user_base_url
                 or os.environ.get(f"{env_prefix}_BASE_URL", "").strip()
                 or providers[prefix_lc]
             )

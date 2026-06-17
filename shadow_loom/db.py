@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlmodel import (
@@ -837,6 +837,19 @@ def _init_db_locked(database_url: str) -> None:
             max_overflow=10,
             pool_recycle=1800,
         )
+    elif database_url.startswith("sqlite"):
+        # The UI/MCP layers run DB calls inside ``asyncio.to_thread``
+        # workers, so a file-backed connection from the default
+        # ``QueuePool`` can be checked out on a different thread than the
+        # one that opened it. pysqlite forbids that by default
+        # (``check_same_thread=True``) → intermittent
+        # ``sqlite3.ProgrammingError`` under concurrency. Allow
+        # cross-thread use. We deliberately leave ``poolclass`` at its
+        # SQLAlchemy default (QueuePool for files, SingletonThreadPool
+        # for in-memory): pinning a single shared StaticPool connection
+        # would serialise onto one cursor and corrupt under concurrent
+        # writes.
+        engine_kwargs["connect_args"] = {"check_same_thread": False}
 
     _engine = create_engine(database_url, **engine_kwargs)
     # Enable SQLite foreign-key enforcement so the schema's FK
@@ -888,6 +901,14 @@ def _init_db_locked(database_url: str) -> None:
     _record_schema_versions(_engine, max_version=partition_max_version)
     ensure_example_user()
     ensure_default_cost_rule()
+    try:
+        removed = purge_mcp_idempotency()
+        if removed:
+            logger.info(
+                "[DB] Purged %s stale mcp_idempotency rows on startup.", removed
+            )
+    except Exception:
+        logger.debug("[DB] mcp_idempotency purge skipped", exc_info=True)
     # Redact credentials from the DSN before logging \u2014 Postgres
     # connection strings carry ``user:password@host`` which would
     # leak to shared log aggregators (round-3 audit).
@@ -1693,6 +1714,21 @@ def list_example_projects() -> list[dict]:
 _ROLE_RANK = {"viewer": 0, "editor": 1, "admin": 2}
 
 
+def _auth_required() -> bool:
+    """True when the deployment runs in hosted (multi-user) mode.
+
+    In hosted mode an ``actor_id is None`` authorization call is a
+    programming error (every external surface authenticates a user), so
+    the authorization helpers fail closed instead of skipping. Local /
+    single-user mode keeps the lenient legacy behaviour.
+    """
+    try:
+        from shadow_loom.settings import get_settings
+        return bool(get_settings().oauth.auth_required)
+    except Exception:
+        return False
+
+
 def _resolve_project_role(
     s: "Session", project_id: int, actor_id: int
 ) -> str | None:
@@ -1730,6 +1766,11 @@ def _authorize_project_action(
     ``actor_id`` explicitly from any UI / MCP / external caller.
     """
     if actor_id is None:
+        if _auth_required():
+            raise PermissionError(
+                f"{operation}: actor_id is required in hosted mode "
+                f"(project {project_id})."
+            )
         logger.warning(
             "[db.%s] called without actor_id on project %s — "
             "authorization skipped (legacy call site).",
@@ -1763,6 +1804,11 @@ def _authorize_project_read(
     Skips the check with a warning when ``actor_id`` is ``None``.
     """
     if actor_id is None:
+        if _auth_required():
+            raise PermissionError(
+                f"{operation}: actor_id is required in hosted mode "
+                f"(project {project_id})."
+            )
         logger.warning(
             "[db.%s] called without actor_id on project %s — "
             "read authorization skipped (legacy call site).",
@@ -1866,6 +1912,14 @@ def fork_project(
         ).first()
         if latest is None:
             return None
+
+        # R19-H5: validate the source payload *before* creating the
+        # project shell. The fork carries the source world_state
+        # verbatim through save_version below, but the model may have
+        # drifted since the source was persisted. Catching that here
+        # avoids leaving an orphaned v-less ProjectRow that the
+        # post-failure cleanup would otherwise have to mop up.
+        _assert_world_state_persistable(latest.world_state_json)
 
         forked = ProjectRow(
             name=new_name or f"{source.name} (fork)",
@@ -2058,7 +2112,23 @@ def add_project_member(
             return existing
         row = ProjectMemberRow(project_id=project_id, user_id=user_id, role=role)
         s.add(row)
-        s.commit()
+        try:
+            s.commit()
+        except IntegrityError:
+            # Concurrent add of the same (project_id, user_id) member.
+            # Reconcile to the row the other writer created and apply the
+            # requested role rather than crashing on the unique key.
+            s.rollback()
+            row = s.exec(
+                select(ProjectMemberRow).where(
+                    ProjectMemberRow.project_id == project_id,
+                    ProjectMemberRow.user_id == user_id,
+                )
+            ).first()
+            if row is None:
+                raise
+            row.role = role
+            s.commit()
         s.refresh(row)
         return row
 
@@ -2131,6 +2201,8 @@ def get_user_project_role(project_id: int, user_id: int) -> str | None:
 
 def toggle_star(project_id: int, user_id: int) -> bool:
     """Toggle a star on a project. Returns True if now starred, False if unstarred."""
+    from sqlmodel import func
+
     with get_session() as s:
         existing = s.exec(
             select(ProjectStarRow).where(
@@ -2138,19 +2210,41 @@ def toggle_star(project_id: int, user_id: int) -> bool:
                 ProjectStarRow.user_id == user_id,
             )
         ).first()
-        proj = s.get(ProjectRow, project_id)
         if existing:
             s.delete(existing)
-            if proj:
-                proj.star_count = max(0, proj.star_count - 1)
-            s.commit()
-            return False
+            now_starred = False
         else:
             s.add(ProjectStarRow(project_id=project_id, user_id=user_id))
-            if proj:
-                proj.star_count = proj.star_count + 1
-            s.commit()
-            return True
+            now_starred = True
+        try:
+            s.flush()
+        except IntegrityError:
+            s.rollback()
+            concurrent_row = s.exec(
+                select(ProjectStarRow).where(
+                    ProjectStarRow.project_id == project_id,
+                    ProjectStarRow.user_id == user_id,
+                )
+            ).first()
+            if not now_starred or concurrent_row is None:
+                # Not the unique-star insert race (e.g. an FK violation on
+                # a bogus user/project) — surface the real error instead
+                # of silently reporting an incorrect star state.
+                raise
+            # A concurrent toggle already inserted this star; treat it as
+            # starred and just reconcile the counter below.
+            now_starred = True
+        # Derive the denormalised counter from the authoritative row
+        # count so a raced toggle can't double-count or under-count it.
+        proj = s.get(ProjectRow, project_id)
+        if proj is not None:
+            proj.star_count = s.exec(
+                select(func.count())
+                .select_from(ProjectStarRow)
+                .where(ProjectStarRow.project_id == project_id)
+            ).one()
+        s.commit()
+        return now_starred
 
 
 def is_starred(project_id: int, user_id: int) -> bool:
@@ -2427,6 +2521,48 @@ def _mcp_idempotency_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _mcp_idempotency_ttl_days() -> int:
+    """Days after which a cached idempotency row is considered stale.
+
+    ``<= 0`` disables expiry/purge (keep rows forever). Overridable via
+    ``SHADOW_LOOM_MCP_IDEMPOTENCY_TTL_DAYS``.
+    """
+    import os
+    try:
+        return int(os.environ.get("SHADOW_LOOM_MCP_IDEMPOTENCY_TTL_DAYS", "30"))
+    except (TypeError, ValueError):
+        return 30
+
+
+def _as_naive_utc(dt: datetime) -> datetime:
+    """Drop tzinfo so SQLite (tz-naive) and aware datetimes compare."""
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+def purge_mcp_idempotency(older_than_days: int | None = None) -> int:
+    """Delete idempotency rows older than the TTL. Returns rows removed.
+
+    The table accretes one full response-envelope blob per idempotent
+    MCP write and is never otherwise pruned, so without this it grows
+    unbounded on long-lived deployments. Called best-effort on startup.
+    """
+    ttl = older_than_days if older_than_days is not None else _mcp_idempotency_ttl_days()
+    if ttl <= 0:
+        return 0
+    cutoff = _as_naive_utc(datetime.now(timezone.utc)) - timedelta(days=ttl)
+    with get_session() as s:
+        stale = s.exec(
+            select(McpIdempotencyRow).where(
+                McpIdempotencyRow.created_at.is_not(None),
+                McpIdempotencyRow.created_at < cutoff,
+            )
+        ).all()
+        for row in stale:
+            s.delete(row)
+        s.commit()
+        return len(stale)
+
+
 def get_mcp_idempotent_response(
     project_id: int,
     ancestor_id: int | None,
@@ -2443,6 +2579,13 @@ def get_mcp_idempotent_response(
         row = s.get(McpIdempotencyRow, key_hash)
         if row is None:
             return None
+        # Expired rows are a miss: don't replay a response old enough that
+        # the purge would have removed it (and may be slated for removal).
+        ttl = _mcp_idempotency_ttl_days()
+        if ttl > 0 and row.created_at is not None:
+            cutoff = _as_naive_utc(datetime.now(timezone.utc)) - timedelta(days=ttl)
+            if _as_naive_utc(row.created_at) < cutoff:
+                return None
         try:
             return json.loads(row.response_json)
         except (TypeError, ValueError):
@@ -2489,6 +2632,40 @@ def save_mcp_idempotent_response(
                 response_json=response_json,
             ))
         s.commit()
+
+
+def _assert_world_state_persistable(
+    world_state_json: str, *, accept_partial: bool = False
+) -> None:
+    """Validate a ``world_state_json`` payload at the persistence boundary.
+
+    Strict by default (audit R18-20): a payload that fails WorldStateV1
+    validation raises ``ValueError`` so a typed field drift cannot
+    silently poison project history. Callers persisting a known-partial
+    payload opt out with ``accept_partial=True``; the
+    ``SHADOW_LOOM_STRICT_PERSIST`` kill-switch set to a falsey value
+    downgrades the failure back to a warning for emergency use.
+    """
+    if accept_partial:
+        return
+    try:
+        from shadow_loom.models import WorldStateV1
+        WorldStateV1.model_validate_json(world_state_json)
+    except Exception as exc:
+        import os as _os
+        env_val = _os.environ.get("SHADOW_LOOM_STRICT_PERSIST", "").lower()
+        soft = env_val in {"0", "false", "no", "off"}
+        msg = (
+            f"world_state_json failed WorldStateV1 validation at "
+            f"persistence boundary: {exc}"
+        )
+        if soft:
+            logger.warning(msg + " (SHADOW_LOOM_STRICT_PERSIST disabled.)")
+        else:
+            raise ValueError(
+                msg + " (pass accept_partial=True to bypass, or set "
+                "SHADOW_LOOM_STRICT_PERSIST=0 to soften.)"
+            ) from exc
 
 
 def save_version(
@@ -2555,25 +2732,7 @@ def save_version(
     # as a kill-switch in the opposite direction: setting it to
     # ``"0"`` / ``"false"`` downgrades the failure back to a warning
     # for emergency operational use.
-    if not accept_partial:
-        try:
-            from shadow_loom.models import WorldStateV1
-            WorldStateV1.model_validate_json(world_state_json)
-        except Exception as exc:
-            import os as _os
-            env_val = _os.environ.get("SHADOW_LOOM_STRICT_PERSIST", "").lower()
-            soft = env_val in {"0", "false", "no", "off"}
-            msg = (
-                f"save_version: world_state_json failed WorldStateV1 "
-                f"validation at persistence boundary: {exc}"
-            )
-            if soft:
-                logger.warning(msg + " (SHADOW_LOOM_STRICT_PERSIST disabled.)")
-            else:
-                raise ValueError(
-                    msg + " (pass accept_partial=True to bypass, or set "
-                    "SHADOW_LOOM_STRICT_PERSIST=0 to soften.)"
-                ) from exc
+    _assert_world_state_persistable(world_state_json, accept_partial=accept_partial)
     # When an explicit version is supplied we honour it (single attempt).
     max_attempts = 1 if version is not None else 5
     last_err: Exception | None = None

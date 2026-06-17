@@ -20,7 +20,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
 
 from shadow_loom_ui import config
-from shadow_loom_ui.db import upsert_user, validate_api_key
+from shadow_loom_ui.db import upsert_user
 
 logger = logging.getLogger(__name__)
 
@@ -141,14 +141,15 @@ if config.APPLE_CLIENT_ID and _mint_apple_client_secret():
 
 
 # =====================================================================
-# Middleware: require auth on pages, support bearer tokens on /api/*
+# Middleware: require auth on NiceGUI page routes (session-based)
 # =====================================================================
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Redirect unauthenticated users to login page.
+    """Redirect unauthenticated users to the login page.
 
-    Only active when AUTH_ENABLED is True.
-    API requests with a valid Bearer token are always allowed.
+    Only active when AUTH_ENABLED is True. Guards the NiceGUI page
+    surface via session state; bearer / API-key auth is handled by the
+    MCP server, not here.
     """
 
     OPEN_PREFIXES = ("/auth/", "/_nicegui/", "/static/", "/favicon")
@@ -160,30 +161,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if any(path.startswith(p) for p in self.OPEN_PREFIXES):
             return await call_next(request)
 
-        # Bearer token auth for API / MCP requests ONLY. Round-10
-        # R10-02: previously a valid bearer satisfied auth for *any*
-        # route (including page routes), which short-circuited the
-        # session/CSRF flow that pages rely on and let an API key
-        # holder reach UI routes that were never meant to be machine
-        # surfaces. Restrict bearer validation to ``/api/*`` so page
-        # routes always go through the session-based path below.
-        is_api_path = path.startswith("/api/")
-        auth_header = request.headers.get("authorization", "")
-        if is_api_path and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-            # validate_api_key hits the DB synchronously \u2014 offload so we
-            # do not stall the event loop under concurrent API traffic.
-            import asyncio as _asyncio
-            key_row = await _asyncio.to_thread(validate_api_key, token)
-            if key_row is not None:
-                # Attach user info to request state for downstream use
-                request.state.api_user_id = key_row.user_id
-                request.state.api_key_scopes = key_row.scopes.split(",")
-                return await call_next(request)
-            # Invalid token on API routes → 401
-            return JSONResponse(
-                {"error": "Invalid or expired API key"}, status_code=401
-            )
+        # NOTE: this middleware guards the NiceGUI page surface only.
+        # The UI app registers no ``/api/*`` routes, so every request
+        # below goes through the session-based path. Bearer / API-key
+        # auth lives entirely in the MCP server (``shadow_loom_mcp``),
+        # which validates tokens on its own transport. A prior
+        # ``/api/*`` bearer branch here was dead code (no API routes,
+        # no consumers of the request.state it set) and was removed.
 
         if not config.AUTH_ENABLED:
             # When AUTH_REQUIRED is set but no provider could be loaded

@@ -483,9 +483,15 @@ class AppState:
                     logger.debug(
                         "[AppState] teardown: cancel failed", exc_info=True,
                     )
-        # Join deferred re-extraction threads best-effort.
-        per_thread = max(0.05, thread_timeout / max(1, len(self._deferred_threads)))
-        for h in list(self._deferred_threads):
+        # Join deferred re-extraction threads best-effort. Snapshot the
+        # handle list under the query lock (the spawn site mutates it
+        # under the same lock), but join OUTSIDE the lock: ``_worker``
+        # acquires ``_query_lock`` itself, so holding it across join()
+        # would deadlock against an in-flight worker.
+        with self._query_lock:
+            pending = list(self._deferred_threads)
+        per_thread = max(0.05, thread_timeout / max(1, len(pending)))
+        for h in pending:
             if h.is_alive():
                 try:
                     h.join(timeout=per_thread)
@@ -494,9 +500,10 @@ class AppState:
                         "[AppState] teardown: thread join failed",
                         exc_info=True,
                     )
-        self._deferred_threads = [
-            h for h in self._deferred_threads if h.is_alive()
-        ]
+        with self._query_lock:
+            self._deferred_threads = [
+                h for h in self._deferred_threads if h.is_alive()
+            ]
 
     # ---- Session setup ----
 
@@ -959,15 +966,20 @@ class AppState:
         # (racing GC of the popped AppState). Trim already-finished
         # handles first so the list stays bounded for long-lived
         # sessions that fire many deferred re-extractions.
-        self._deferred_threads = [
-            h for h in self._deferred_threads if h.is_alive()
-        ]
         t = threading.Thread(
             target=_worker,
             name="deferred-reextraction",
             daemon=True,
         )
-        self._deferred_threads.append(t)
+        # Trim finished handles and register the new one under the
+        # query lock so teardown's snapshot can't race this mutation.
+        # ``start()`` stays outside the lock — the worker grabs
+        # ``_query_lock`` on entry.
+        with self._query_lock:
+            self._deferred_threads = [
+                h for h in self._deferred_threads if h.is_alive()
+            ]
+            self._deferred_threads.append(t)
         t.start()
 
     async def run_nl_query_async(

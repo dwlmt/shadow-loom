@@ -43,6 +43,7 @@ import json
 import functools
 import inspect as _inspect
 import logging
+import math
 from difflib import SequenceMatcher
 from typing import Any, List, Optional
 
@@ -137,6 +138,21 @@ from shadow_loom_mcp.helpers import (
 from shadow_loom.settings import get_settings as _get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _finite_score(v: Any, default: float = 0.0) -> float:
+    """Coerce an affect/physics score to a JSON-safe finite float.
+
+    Mirrors the UI's ``viz_helpers._finite``: a scorer can in principle
+    return NaN/inf, which serialises to a bare ``NaN`` token (invalid
+    JSON) and breaks strict MCP clients. Sanitise at this boundary too.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
 
 # ── Settings ──────────────────────────────────────────────────────
 
@@ -2030,19 +2046,19 @@ def compute_tension(
             "at_time": fabula_anchor,
             "scores": {
                 "mystery": round(
-                    assembler.compute_mystery_score(entity_ids, syuzhet_anchor), 3
+                    _finite_score(assembler.compute_mystery_score(entity_ids, syuzhet_anchor)), 3
                 ),
                 "dramatic_irony": round(
-                    assembler.compute_dramatic_irony_score(entity_ids, syuzhet_anchor), 3
+                    _finite_score(assembler.compute_dramatic_irony_score(entity_ids, syuzhet_anchor)), 3
                 ),
                 "suspense": round(
-                    assembler.compute_suspense_score(entity_ids, syuzhet_anchor), 3
+                    _finite_score(assembler.compute_suspense_score(entity_ids, syuzhet_anchor)), 3
                 ),
                 "surprise": round(
-                    assembler.compute_surprise_score(entity_ids, syuzhet_anchor), 3
+                    _finite_score(assembler.compute_surprise_score(entity_ids, syuzhet_anchor)), 3
                 ),
                 "narrative_tension": round(
-                    assembler.compute_tension_score(entity_ids, syuzhet_anchor), 3
+                    _finite_score(assembler.compute_tension_score(entity_ids, syuzhet_anchor)), 3
                 ),
             },
             # B4 (eleventh-pass audit): thread ``syuzhet_anchor`` into
