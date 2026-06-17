@@ -999,6 +999,13 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
 
     new = ws.model_copy(deep=True)
 
+    # A factual point-in-time snapshot must not carry the counterfactual
+    # shadow sidecars: the slicing below only time-filters the factual
+    # surface, so un-sliced shadows would leak the full (future- and
+    # branch-bearing) counterfactual world into a past factual snapshot.
+    # Mirror ``filter_world_state_for_pov``'s stance and drop them.
+    _strip_shadow_sidecars(new)
+
     # Local import to avoid a top-level cycle.
     from shadow_loom.models import Belief, TraitVector
 

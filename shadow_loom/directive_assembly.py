@@ -3960,7 +3960,7 @@ class DirectiveAssembler:
                 )
                 if rel_es is not None:
                     evidence_w = min(evidence_w, _STRENGTH_W.get(rel_es, 0.5))
-            force_scale = ce.causal_force / _scaling
+            force_scale = ce.causal_force / _scaling if _scaling else 0.0
             w = evidence_w * force_scale
             # MultiDiGraph: each call adds a *new* parallel edge keyed
             # by an auto-incremented int; mechanism / causality_type

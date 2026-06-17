@@ -936,7 +936,11 @@ def compute_mystery_unified(
     for evt in bs.world.events:
         g.add_node(evt.id)
     for ce in bs.world.causal_topology:
-        g.add_edge(ce.source_id, ce.target_id, weight=ce.causal_force)
+        # Clamp non-negative: causal_force is documented 0..10 but the model
+        # field is unconstrained. A negative weight makes the mystery path
+        # ``strength`` product negative, producing negative "probabilities"
+        # and a nonsensical negative Shannon entropy.
+        g.add_edge(ce.source_id, ce.target_id, weight=max(0.0, ce.causal_force))
 
     audience_known = bs.known_propositions(AUDIENCE_ID, fabula_t, threshold)
     # Map proposition -> referent event id (we synth one prop per evt,
@@ -1482,7 +1486,11 @@ def compute_mystery_breakdown(
     for evt in bs.world.events:
         g.add_node(evt.id)
     for ce in bs.world.causal_topology:
-        g.add_edge(ce.source_id, ce.target_id, weight=ce.causal_force)
+        # Clamp non-negative: causal_force is documented 0..10 but the model
+        # field is unconstrained. A negative weight makes the mystery path
+        # ``strength`` product negative, producing negative "probabilities"
+        # and a nonsensical negative Shannon entropy.
+        g.add_edge(ce.source_id, ce.target_id, weight=max(0.0, ce.causal_force))
 
     governing_id: Optional[str] = None
     governing_desc: Optional[str] = None

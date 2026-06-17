@@ -1971,6 +1971,23 @@ def delete_project(project_id: int, user_id: int) -> bool:
             select(ProjectMemberRow).where(ProjectMemberRow.project_id == project_id)
         ).all():
             s.delete(mem)
+        # Dependent rows that carry an FK to projects.id / versions.id must
+        # be removed before the versions and project row, otherwise the
+        # final DELETEs raise FOREIGN KEY constraint failed under SQLite
+        # ``PRAGMA foreign_keys=ON`` (every project that ran the pipeline
+        # has agent/api call logs, and most have settings/usage rows).
+        for dep_model in (
+            WorldFactRow,
+            ProjectSettingsRow,
+            AgentCallLogRow,
+            ApiCallLogRow,
+            ProjectUsageSummaryRow,
+            McpIdempotencyRow,
+        ):
+            for dep in s.exec(
+                select(dep_model).where(dep_model.project_id == project_id)
+            ).all():
+                s.delete(dep)
         s.flush()
         # Versions: deepest-first so each delete sees no descendant FK
         # still pointing at it via ancestor_id.
@@ -3536,6 +3553,27 @@ def delete_version(
             ).all()
             for act in stale_acts:
                 act.version_id = None
+            # Same for the call-log / idempotency rows that FK versions.id;
+            # these are historical records, so null the version ref rather
+            # than delete them, mirroring the activity handling above.
+            for log in s.exec(
+                select(AgentCallLogRow).where(
+                    AgentCallLogRow.version_id.in_(descendants)
+                )
+            ).all():
+                log.version_id = None
+            for log in s.exec(
+                select(ApiCallLogRow).where(
+                    ApiCallLogRow.version_id.in_(descendants)
+                )
+            ).all():
+                log.version_id = None
+            for idem in s.exec(
+                select(McpIdempotencyRow).where(
+                    McpIdempotencyRow.version_row_id.in_(descendants)
+                )
+            ).all():
+                idem.version_row_id = None
             s.flush()
             # Delete in true depth order (leaves first) to satisfy the
             # self-FK on ``ancestor_id`` regardless of row insertion
@@ -3613,6 +3651,26 @@ def delete_version(
         ).all()
         for act in stale_acts:
             act.version_id = None
+        # Null the call-log / idempotency rows that FK this version too,
+        # else the s.delete(row) below trips the versions.id FK.
+        for log in s.exec(
+            select(AgentCallLogRow).where(
+                AgentCallLogRow.version_id == version_row_id
+            )
+        ).all():
+            log.version_id = None
+        for log in s.exec(
+            select(ApiCallLogRow).where(
+                ApiCallLogRow.version_id == version_row_id
+            )
+        ).all():
+            log.version_id = None
+        for idem in s.exec(
+            select(McpIdempotencyRow).where(
+                McpIdempotencyRow.version_row_id == version_row_id
+            )
+        ).all():
+            idem.version_row_id = None
         s.flush()
 
         s.delete(row)
@@ -4324,12 +4382,15 @@ def _encrypt_api_key(plain: str) -> str:
         return plain
     try:
         token = f.encrypt(plain.encode("utf-8")).decode("ascii")
-    except Exception:
-        logger.exception(
-            "[DB] Failed to encrypt api_key; storing plaintext as "
-            "fallback so the user's settings save still succeeds."
-        )
-        return plain
+    except Exception as exc:
+        # A Fernet instance exists, so the operator expects at-rest
+        # encryption. Silently storing plaintext would defeat the
+        # R13-04 fail-closed contract and leak a secret indistinguishably
+        # from a legacy row. Fail the save instead.
+        logger.exception("[DB] Failed to encrypt api_key; refusing plaintext fallback.")
+        raise InvalidSecretKeyError(
+            "Failed to encrypt api_key for at-rest storage"
+        ) from exc
     return _ENC_PREFIX + token
 
 

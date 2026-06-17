@@ -1573,7 +1573,10 @@ def _apply_abduction(
                         mult = evidence_strength_multiplier.get(
                             ce.evidence_strength, physics_settings.strength_moderate
                         )
-                        force_scale = ce.causal_force / physics_settings.causal_force_scaling
+                        force_scale = (
+                            ce.causal_force / physics_settings.causal_force_scaling
+                            if physics_settings.causal_force_scaling else 0.0
+                        )
                         target_node = sandbox.nodes.get(ce.target_id)
                         if target_node and target_node.get("node_type") == "Entity":
                             traits = target_node.get("traits", {})
@@ -1653,7 +1656,8 @@ def _apply_forward_cascade(
             if target_ft < ce.fabula_time + ce.propagation_delay:
                 continue
         evidence_w = strength_mult.get(ce.evidence_strength, 0.5)
-        force_scale = ce.causal_force / get_settings().physics.causal_force_scaling
+        _scaling = get_settings().physics.causal_force_scaling
+        force_scale = ce.causal_force / _scaling if _scaling else 0.0
         weight = evidence_w * force_scale
         key = (src, tgt)
         if causal_graph.has_edge(src, tgt):
@@ -1898,7 +1902,8 @@ def _apply_social_cascade(
 
         # Scale delta
         evidence_w = strength_mult.get(ce.evidence_strength, 0.5)
-        force_scale = ce.causal_force / get_settings().physics.causal_force_scaling
+        _scaling = get_settings().physics.causal_force_scaling
+        force_scale = ce.causal_force / _scaling if _scaling else 0.0
         scaled_delta = raw_delta * evidence_w * force_scale
 
         # Find the relationship edge target_id → counterpart_id

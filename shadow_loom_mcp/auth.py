@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 
 _token_user_cache: dict[str, dict] = {}
 _token_user_cache_lock = threading.Lock()
+# Bound the cache so a client churning through many distinct bearer
+# tokens can't grow it without limit. Eviction just forces a DB
+# re-validation on the next use of an evicted token — correctness is
+# unaffected, only a cache miss.
+_TOKEN_CACHE_MAX = 1024
 
 
 def invalidate_token_cache(*, key_id: int | None = None, user_id: int | None = None) -> int:
@@ -74,6 +79,11 @@ def _validate_bearer_token(token: str) -> bool:
     if key_row is None:
         return False
     with _token_user_cache_lock:
+        if (
+            len(_token_user_cache) >= _TOKEN_CACHE_MAX
+            and token not in _token_user_cache
+        ):
+            _token_user_cache.pop(next(iter(_token_user_cache)), None)
         _token_user_cache[token] = {
             "user_id": key_row.user_id,
             "scopes": set(key_row.scopes.split(",")) if key_row.scopes else set(),
@@ -318,6 +328,20 @@ from threading import Lock as _Lock
 
 _rate_buckets: dict[tuple[str, int | None], _deque] = {}
 _rate_lock = _Lock()
+# Above this many live buckets, opportunistically drop buckets that have
+# fully aged out so per-identity keys for users who never call again
+# don't accumulate forever.
+_RATE_BUCKET_SWEEP_THRESHOLD = 512
+
+
+def _sweep_rate_buckets(now: float, window: float) -> None:
+    """Drop empty/aged-out rate buckets. Caller must hold ``_rate_lock``."""
+    for k in list(_rate_buckets.keys()):
+        b = _rate_buckets[k]
+        while b and (now - b[0]) > window:
+            b.popleft()
+        if not b:
+            del _rate_buckets[k]
 
 
 def _rate_limit_per_minute() -> int:
@@ -347,6 +371,8 @@ def check_rate_limit(ctx: Context, kind: str) -> Optional[str]:
     now = _time.monotonic()
     window = 60.0
     with _rate_lock:
+        if len(_rate_buckets) > _RATE_BUCKET_SWEEP_THRESHOLD:
+            _sweep_rate_buckets(now, window)
         bucket = _rate_buckets.get(key)
         if bucket is None:
             bucket = _deque()

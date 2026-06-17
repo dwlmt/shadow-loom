@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import logging
+import math
 import threading
 from typing import Any, Callable, Iterable, Optional
 
@@ -3330,6 +3331,21 @@ def ws_to_sunburst_data(ws: WorldStateV1) -> dict:
 # unlocked (atomic in CPython); only the mutating sections are guarded.
 _CACHE_LOCK = threading.Lock()
 
+
+def _finite(v: Any, default: float = 0.0) -> float:
+    """Coerce *v* to a JSON-safe finite float.
+
+    Affect/physics scorers can return NaN/inf (e.g. unbounded KL or a
+    degenerate division). orjson serialises those to JSON ``null``,
+    which ECharts renders as a silent gap/broken curve, so sanitise to
+    ``default`` before the values reach a chart option dict.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
 _SNAPSHOT_CACHE: "dict[tuple[int, int, int], WorldStateV1]" = {}
 _SNAPSHOT_CACHE_MAX = 64
 _SNAPSHOT_REVISION: int = 0
@@ -4722,7 +4738,7 @@ def affective_timeseries(
         scores = compute_affective_scores(
             ws, entity_ids=entity_ids, surprise_local=True,
         )
-        return [tmin], {k: [v] for k, v in scores.items()}
+        return [tmin], {k: [_finite(v)] for k, v in scores.items()}
 
     samples = max(2, int(samples))
     step = max(1, (tmax - tmin) // (samples - 1))
@@ -4765,7 +4781,7 @@ def affective_timeseries(
         # Append this sample's value (or 0.0) to every active series so
         # all lists stay length i+1.
         for k in series:
-            series[k].append(round(float(scores.get(k, 0.0)), 3))
+            series[k].append(round(_finite(scores.get(k, 0.0)), 3))
     with _CACHE_LOCK:
         if len(_AFFECT_TIMESERIES_CACHE) >= _AFFECT_CACHE_MAX:
             _AFFECT_TIMESERIES_CACHE.pop(next(iter(_AFFECT_TIMESERIES_CACHE)))
@@ -4817,7 +4833,7 @@ def affective_timeseries_syuzhet(
             ws, entity_ids=entity_ids, syuzhet_anchor=smin,
             surprise_local=True,
         )
-        return [smin], {k: [v] for k, v in scores.items()}
+        return [smin], {k: [_finite(v)] for k, v in scores.items()}
 
     samples = max(2, int(samples))
     step = max(1, (smax - smin) // (samples - 1))
@@ -4856,7 +4872,7 @@ def affective_timeseries_syuzhet(
             if k not in series:
                 series[k] = [0.0] * i
         for k in series:
-            series[k].append(round(float(scores.get(k, 0.0)), 3))
+            series[k].append(round(_finite(scores.get(k, 0.0)), 3))
     with _CACHE_LOCK:
         if len(_AFFECT_TIMESERIES_CACHE) >= _AFFECT_CACHE_MAX:
             _AFFECT_TIMESERIES_CACHE.pop(next(iter(_AFFECT_TIMESERIES_CACHE)))
@@ -5991,7 +6007,7 @@ def physics_trajectory(
         metrics = _physics_metrics_from_payload(
             result.get("physics_state", {}) or {}
         )
-        out = ([tmin], {k: [v] for k, v in metrics.items()})
+        out = ([tmin], {k: [_finite(v)] for k, v in metrics.items()})
         with _CACHE_LOCK:
             if len(_PHYSICS_TRAJECTORY_CACHE) >= _PHYSICS_TRAJECTORY_CACHE_MAX:
                 _PHYSICS_TRAJECTORY_CACHE.pop(next(iter(_PHYSICS_TRAJECTORY_CACHE)))
@@ -6012,7 +6028,7 @@ def physics_trajectory(
             result.get("physics_state", {}) or {}
         )
         for k in series:
-            series[k].append(round(float(metrics.get(k, 0.0)), 3))
+            series[k].append(round(_finite(metrics.get(k, 0.0)), 3))
     out = (times, series)
     with _CACHE_LOCK:
         if len(_PHYSICS_TRAJECTORY_CACHE) >= _PHYSICS_TRAJECTORY_CACHE_MAX:
