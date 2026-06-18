@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import dataclass, field
 from typing import Optional
 
 from fastmcp import Context
@@ -93,6 +94,54 @@ def _validate_bearer_token(token: str) -> bool:
 
 
 verifier = DebugTokenVerifier(validate=_validate_bearer_token)
+
+
+# ── Transport-neutral principal (REST / non-MCP transports) ──────
+#
+# The MCP tools resolve identity from a FastMCP ``Context`` carried on
+# the active request. Other transports (the REST adapter in
+# ``shadow_loom_rest``) have no such context, so they construct a
+# ``Principal`` and pass it into the very same ``ctx`` parameter slot.
+# Every auth/helper/tool path funnels identity through
+# ``_resolve_cache_entry`` / :func:`get_user_id` / :func:`get_scopes`,
+# each of which short-circuits on a ``Principal`` — so scope checks,
+# project-access checks, rate limits, project resolution, world-state
+# loading, and the tool bodies themselves are shared verbatim across
+# both transports with no duplicated logic.
+
+@dataclass
+class Principal:
+    """An authenticated identity decoupled from any transport context.
+
+    ``report_progress`` is an async no-op so the generation tools
+    (``narrate`` / ``direct`` / ``ingest``) can ``await
+    ctx.report_progress(...)`` unchanged when driven over REST.
+    """
+
+    user_id: Optional[int] = None
+    scopes: set[str] = field(default_factory=set)
+
+    async def report_progress(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+def resolve_principal(token: Optional[str]) -> Optional[Principal]:
+    """Resolve a bearer token to a :class:`Principal`, or ``None``.
+
+    Reuses the same DB-backed API-key validation, scope set, and token
+    cache that the MCP server's :data:`verifier` uses, so REST and MCP
+    share one authentication path. Returns ``None`` when the token is
+    absent or invalid.
+    """
+    if not token:
+        return None
+    if not _validate_bearer_token(token):
+        return None
+    with _token_user_cache_lock:
+        entry = _token_user_cache.get(token)
+    if not entry:
+        return None
+    return Principal(user_id=entry["user_id"], scopes=set(entry["scopes"]))
 
 
 # ── User resolution from Context ─────────────────────────────────
@@ -201,6 +250,10 @@ def _current_access_token(rc: object) -> Optional[object]:
 
 def _resolve_cache_entry(ctx: Context) -> Optional[dict]:
     """Shared bearer-token → cached-user-info resolution for the helpers below."""
+    # Non-MCP transports pass a :class:`Principal` in the ``ctx`` slot;
+    # identity is already resolved, so skip the request-context lookup.
+    if isinstance(ctx, Principal):
+        return {"user_id": ctx.user_id, "scopes": set(ctx.scopes), "key_id": None}
     rc = ctx.request_context
     if rc is None:
         if _open_mode_enabled():

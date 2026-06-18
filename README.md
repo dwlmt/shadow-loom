@@ -68,6 +68,7 @@ Every doc has a **See also** footer cross-linking its closest neighbours.
 | [docs/model-examples.md](docs/model-examples.md) | Worked examples on real bundled plots (Macbeth, Death on the Nile, Reservoir Dogs, …) showing each pipeline stage and feature in action. |
 | [docs/query-and-cycles.md](docs/query-and-cycles.md) | The eight query types, how natural language is parsed into them, and how each is realised in a pipeline cycle. |
 | [docs/mcp-guide.md](docs/mcp-guide.md) | The `shadow_loom_mcp` server — 41 tools (4 coarse-grained dispatchers + the granular surface they wrap), 5 resources, auth, scopes, versioning contract, agent workflow. |
+| [docs/rest-api.md](docs/rest-api.md) | The `shadow_loom_rest` FastAPI adapter — HTTP/JSON mirror of the MCP tools, shared API keys and tool bodies, error mapping, endpoints. |
 | [docs/ui-guide.md](docs/ui-guide.md) | NiceGUI workspace walkthrough, including the manual-editing **Editor** tab. |
 | [docs/testing.md](docs/testing.md) | Test-suite organisation, what each file covers, how to run the live-LLM tier. |
 | [docs/use-cases.md](docs/use-cases.md) | What the system is *for* — author tooling, AI-assisted fiction, narrative QA, simulation research. |

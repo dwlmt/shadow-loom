@@ -482,6 +482,7 @@ python -m pytest tests/test_mcp_server.py -q
 
 ## See also
 
+* [rest-api.md](rest-api.md) — the `shadow_loom_rest` FastAPI adapter that exposes these same 42 tools over plain HTTP/JSON, reusing the same tool bodies and API keys.
 * [pipeline-walkthrough.md](pipeline-walkthrough.md) — what happens **inside** a `narrate` / `direct` / `write` / `ingest` call once `run_and_save` invokes the pipeline.
 * [query-and-cycles.md](query-and-cycles.md) — the eight typed queries `narrate` parses NL into, and the per-type cycle each runs.
 * [architecture.md §10](architecture.md) — the conceptual summary of the MCP surface plus links into the rest of the engine.

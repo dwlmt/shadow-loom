@@ -60,6 +60,7 @@ packages = [
     "shadow_loom_ui",
     "shadow_loom_ui.components",
     "shadow_loom_mcp",
+    "shadow_loom_rest",
     "example_worlds",
     "sample_plots",
 ]
