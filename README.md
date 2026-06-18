@@ -62,7 +62,7 @@ Every doc has a **See also** footer cross-linking its closest neighbours.
 
 | Document | Purpose |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | Deep technical walkthrough of the 8-step pipeline, data model, modules, and runtime flow. |
+| [docs/architecture.md](docs/architecture.md) | Deep technical walkthrough of the 12-step pipeline, data model, modules, and runtime flow. |
 | [docs/pipeline-walkthrough.md](docs/pipeline-walkthrough.md) | End-to-end code-level tour of one pipeline run — ingestion, physics, generation, audit, re-extraction, merge. |
 | [docs/pipeline-by-example.md](docs/pipeline-by-example.md) | Data-anchored walkthrough — every stage of the pipeline (world model, AMWN, Pearl rungs 1–3, propagation, suspense / surprise / mystery / dramatic-irony / emotion scoring, directive assembly, generation, audit, merge) illustrated with verbatim values from the bundled fixtures. |
 | [docs/model-examples.md](docs/model-examples.md) | Worked examples on real bundled plots (Macbeth, Death on the Nile, Reservoir Dogs, …) showing each pipeline stage and feature in action. |
@@ -240,7 +240,7 @@ ollama pull qwen3.6:35b              # if using Ollama (default)
 python -m shadow_loom_ui              # NiceGUI workspace → http://localhost:7860
 python -m shadow_loom_mcp             # MCP server (stdio)
 python run_pipeline.py                # end-to-end demo
-python -m pytest tests/ --ignore=tests/test_live_e2e.py -q   # ~978 tests
+python -m pytest tests/ --ignore=tests/test_live_e2e.py -q   # ~2660 tests
 ```
 
 ### Option C — Docker Compose (Postgres included)
@@ -334,7 +334,7 @@ shadow_loom_mcp/            # FastMCP server (41 tools, 5 resources)
 shadow_loom_ui/             # NiceGUI workspace (8 tabs)
 example_worlds/             # 16 scripted worlds for tests + demos
 sample_plots/               # raw plot summaries for ingestion demos
-tests/                      # ~978 pytest tests — see docs/testing.md
+tests/                      # ~2660 pytest tests — see docs/testing.md
 docs/                       # long-form documentation
 ```
 

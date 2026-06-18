@@ -1715,7 +1715,7 @@ graph-read tools listed in [mcp-guide.md](mcp-guide.md).
 
 ## See also
 
-* [architecture.md](architecture.md) — the conceptual map of the data model and the 8-step pipeline.
+* [architecture.md](architecture.md) — the conceptual map of the data model and the 12-step pipeline.
 * [pipeline-walkthrough.md](pipeline-walkthrough.md) — code-level tour of one pipeline run.
 * [query-and-cycles.md](query-and-cycles.md) — per-query-type mechanics.
 * [academic-foundations.md](academic-foundations.md) — Pearl, Genette, Greimas, Sternberg, Halpern, Wilmot — the literature behind every named concept here.

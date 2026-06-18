@@ -1315,7 +1315,7 @@ closed.
 
 ## See also
 
-* [architecture.md](architecture.md) — conceptual map and 8-step
+* [architecture.md](architecture.md) — conceptual map and 12-step
   pipeline overview.
 * [pipeline-walkthrough.md](pipeline-walkthrough.md) — code-level tour
   with no specific fixture.

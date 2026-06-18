@@ -2,7 +2,7 @@
 
 Every runtime knob in Shadow-Loom lives in one place:
 [`shadow_loom/settings.py`](../shadow_loom/settings.py). The defaults baked
-into that file are mirrored in [`config.env`](../config.env) — copy that
+into that file are mirrored in [`.env.example`](../.env.example) — copy that
 file to `.env` (or export the variables) to override them.
 
 Settings are loaded once per process via `get_settings()` (cached). Each
@@ -16,7 +16,7 @@ environment overrides `GenerationSettings.max_tokens`.
 
 ```mermaid
 flowchart TD
-    ENV["config.env / shell env"] --> S["shadow_loom/settings.py<br/>single source of truth"]
+    ENV[".env / shell env"] --> S["shadow_loom/settings.py<br/>single source of truth"]
     S --> GROUP
     GROUP --> B["*_config_kwargs() builders<br/>hand the right slice to each module"]
     B --> CFG["GenerationConfig · AuditorConfig · ExtractionConfig · QueryParsingConfig<br/>per-module Pydantic dataclasses with the same defaults"]
@@ -50,7 +50,7 @@ Shadow-Loom understands three families of LLM providers:
 
 1. **Ollama** — local-first default, addressed via `ollama:<model-id>`.
 2. **OpenAI-compatible HTTP endpoints** — addressed via
-   `<prefix>:<model-id>`. The built-in registry covers 23 providers:
+   `<prefix>:<model-id>`. The built-in registry covers 24 providers:
 
    | Group  | Prefixes |
    |---|---|
@@ -75,7 +75,7 @@ Shadow-Loom understands three families of LLM providers:
 | `DATABASE_URL` | `sqlite:///shadow_loom.db` | SQLModel connection string. Swap for Postgres in production. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1/` | Ollama OpenAI-compatible endpoint. |
 | `OLLAMA_NUM_CTX` | `262144` | Context-window size (in tokens) requested for every `ollama:` model call. Ollama's OpenAI-compat endpoint defaults to **2 048 tokens** and silently truncates anything larger, producing empty/malformed JSON. This value is forwarded as `extra_body={"options": {"num_ctx": <N>}}` on every request; Ollama ≥0.6.x honours it at model-load time. Defaults to 256K to match the reference qwen3.6:35b model — lower it on smaller models (e.g. `32768` for an 8B model). Set `0` to disable forwarding. **Cloud providers (OpenAI, OpenRouter, Anthropic, …) are completely unaffected** — the `extra_body` is only set on the `ollama:` provider branch. See the [Local Ollama context size](#local-ollama-context-size) section below for belt-and-braces fallbacks on older Ollama versions. |
-| `<PREFIX>_BASE_URL` | *(provider-specific default)* | Override the HTTP endpoint for any built-in provider. |
+| `<PREFIX>_BASE_URL` | *(provider-specific default)* | Override the HTTP endpoint for any built-in provider. **In hosted (multi-user) mode, a *user-supplied* base URL that resolves to a private, loopback, link-local, reserved, or multicast address is rejected (SSRF guard).** Operator-set env/default endpoints are trusted, and single-user mode allows internal endpoints so local llama.cpp/Ollama keep working. |
 | `<PREFIX>_API_KEY` | *(empty)* | Required when any model string uses that prefix (cloud only). |
 | `SHADOW_LOOM_PROVIDERS` | *(empty)* | Comma-separated `prefix=base_url` pairs to extend the built-in registry without touching code. |
 | `LANGFUSE_*` | *(public demo keys)* | Optional tracing — replace with your own project keys or blank to disable. |
@@ -364,6 +364,7 @@ from JSON strings):
 | `MCP_INGEST_FABULA_TIME_SPACING` | `1000` | Initial gap between fabula-time stamps for MCP ingest (matches the pipeline default; leaves room for flashbacks/inserts). |
 | `MCP_INGEST_MAX_CORRECTION_RETRIES` | `5` | Validation-repair passes during MCP ingest. |
 | `MCP_ALLOW_OPEN_MODE` | `false` | **Production must keep this false.** When true, scope checks pass when no scopes are resolved (dev/local mode only). |
+| `SHADOW_LOOM_MCP_IDEMPOTENCY_TTL_DAYS` | `30` | Retention window for stored MCP idempotency responses. A cached response older than this reads as a miss, and `purge_mcp_idempotency()` deletes rows past the TTL. |
 
 Full MCP tool/resource catalogue and auth flow:
 [mcp-guide.md](mcp-guide.md).
@@ -414,6 +415,18 @@ To enable an OAuth provider, set its client id + secret pair (and provide
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth credentials. |
 | `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` | Discord OAuth credentials. |
 | `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET` | Microsoft OAuth credentials. |
+
+---
+
+## 12a. Security & persistence toggles
+
+These are read directly from the environment (not part of a pydantic
+settings group) by [`shadow_loom/db.py`](../shadow_loom/db.py).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SHADOW_LOOM_API_KEY_PEPPER` | *(empty)* | Server-side pepper mixed into the hash of stored API keys. Falls back to `SECRET_KEY`, then to no pepper. **Set this (and keep it stable) in production**; rotating it invalidates existing key hashes. |
+| `SHADOW_LOOM_STRICT_PERSIST` | *(strict)* | When unset, a world-state payload that fails `WorldStateV1` validation is refused at the persistence boundary. Set to a falsey value (`0`/`false`/`no`/`off`) to downgrade the failure to a warning for emergency use. |
 
 ---
 
@@ -501,8 +514,8 @@ under "Setting the context size".
 ## See also
 
 * [`shadow_loom/settings.py`](../shadow_loom/settings.py) — the canonical source for every default value.
-* [`config.env`](../config.env) — copy-pasteable environment template.
-* [architecture.md](architecture.md) — how each setting flows into the 8-step pipeline.
+* [`.env.example`](../.env.example) — copy-pasteable environment template.
+* [architecture.md](architecture.md) — how each setting flows into the 12-step pipeline.
 * [pipeline-walkthrough.md](pipeline-walkthrough.md) — code-level walkthrough showing where each `*Config` is consumed.
 * [academic-foundations.md](academic-foundations.md) — the literature behind the threshold defaults (Wilmot suspense, Halpern actual causality, Pearl ladder, AMWN).
 * [mcp-guide.md](mcp-guide.md) — MCP-specific overrides and scope rules.

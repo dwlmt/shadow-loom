@@ -212,7 +212,8 @@ fixtures.
 \section{Pipeline overview}
 \label{sec:pipeline}
 
-The pipeline is an 8-step loop (Steps 0--7) over a versioned world model.
+The pipeline is a twelve-step loop, grouped into five phases (Steps
+1--12), over a versioned world model.
 Every version is ancestor-linked, so a counterfactual fork is
 literally a sibling row in a directed acyclic version tree, not a
 mutation of canon. Figure~\ref{fig:pipeline} sketches the loop.
@@ -242,28 +243,35 @@ for definitions of each stage.}
 \label{fig:pipeline}
 \end{figure}
 
-The 8 steps correspond to the pipeline implementation in \texttt{pipeline.py}:
-\textbf{Steps 0--4 (Ingestion)} run LLM agents to extract a typed
-\texttt{GlobalRegister}, then concurrent specialist agents
+The twelve steps correspond to the pipeline implementation in
+\texttt{pipeline.py}:
+\textbf{Phase~1 --- World state \& initialisation (Steps 1--5)} runs LLM
+agents to extract a typed \texttt{GlobalRegister} via a five-pass
+ontology ingestion, then concurrent specialist agents
 (physics, social, consequences) per chunk to extract events,
 relationships, channels, and entity-state deltas, with a
-programmatic validation and auto-repair loop.
-\textbf{Step 5 (Causal physics)} forks an Ancestral Multi-World Network
-sandbox, applies a do-operator for interventions, runs abduction for
-counterfactuals, and propagates effects through a topological sort
-of the causal sub-graph subject to inertia and affordance gating.
-\textbf{Step 6 (Narrative physics / affective calculus)} scores each
-candidate sandbox against five structural information-state
-functionals (mystery, dramatic irony, suspense, surprise, tension)
-and six trait-trajectory emotional functionals (fear, joy, grief, rage, regret, love).
-\textbf{Step 7 (Generation)} packages the highest-scoring candidate as a
-\texttt{CreativeBrief} of typed \texttt{ConstraintBlock}s and hands
-\emph{only} the brief to a creative LLM.
-\textbf{Step 8 (Audit and feedback)} runs an LLM-as-judge over the prose,
-detects ``miracle steps'' (state changes with no licensing edge in
-the brief), and either accepts the version or re-runs generation
-with the auditor's feedback appended, up to a configurable retry
-budget.
+programmatic validation and auto-repair loop, followed by
+epistemic synchronisation, director-intent resolution, and
+ego-graph extraction.
+\textbf{Phase~2 --- Mathematical simulation (Steps 6--8)} forks an
+Ancestral Multi-World Network sandbox, applies a do-operator for
+interventions, runs abduction for counterfactuals, and propagates
+effects through a topological sort of the causal sub-graph subject
+to inertia and affordance gating, then scores each candidate sandbox
+against five structural information-state functionals (mystery,
+dramatic irony, suspense, surprise, tension) and six trait-trajectory
+emotional functionals (fear, joy, grief, rage, regret, love).
+\textbf{Phase~3 --- Generative constraint (Step 9)} packages the
+highest-scoring candidate as a \texttt{CreativeBrief} of typed
+\texttt{ConstraintBlock}s.
+\textbf{Phase~4 --- Prose generation (Step 10)} hands \emph{only} the
+brief to a creative LLM.
+\textbf{Phase~5 --- Audit \& refinement (Steps 11--12)} runs an
+LLM-as-judge over the prose, detects ``miracle steps'' (state changes
+with no licensing edge in the brief), and either accepts the version
+or re-runs generation with the auditor's feedback appended (up to a
+configurable retry budget), then re-extracts the accepted prose and
+merges it back into the graph.
 
 The entire loop is exposed both through a NiceGUI authoring
 workspace (nine cross-linked tabs over a versioned project DAG;
@@ -274,7 +282,7 @@ shadow-branch creation, scoring, and promotion programmatically.
 The LLM substrate is deliberately pluggable. PydanticAI's
 \texttt{<provider>:<model-id>} strings let any pipeline stage
 target any OpenAI-compatible endpoint; the runtime ships with a
-registry of twenty-three providers spanning cloud SaaS (e.g.\
+registry of twenty-four providers spanning cloud SaaS (e.g.\
 OpenRouter, OpenAI, Fireworks, Mistral, Groq, Cerebras) and
 locally-hosted runtimes (Ollama, llama.cpp, vLLM, LM~Studio,
 LocalAI, Unsloth~Studio). Operators may register additional

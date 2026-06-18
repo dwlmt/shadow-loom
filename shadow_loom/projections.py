@@ -498,20 +498,30 @@ def trace_information_flow(
                     "kind": "carried_utterance",
                 })
 
+    upstream_visited: set[str] = set()
     if direction in ("upstream", "both"):
         _walk(node_id, depth, downstream=False)
+        # Preserve the upstream-reached nodes: the downstream pass below
+        # resets ``visited`` to re-enter the root, but the edges it
+        # collected upstream stay in ``edges``. Without this snapshot the
+        # returned ``nodes`` would omit upstream-only ids, leaving those
+        # edges dangling in a ``both`` query.
+        upstream_visited = set(visited)
     if direction in ("downstream", "both"):
-        # Reset visited so the downstream walk can re-enter the root.
-        for v in list(visited):
-            visited.discard(v)
-        visited.add(node_id)
+        # Reset visited *entirely* so the downstream walk re-enters the
+        # root and actually traverses. Pre-adding the root here (the old
+        # behaviour) tripped ``_walk``'s ``nid in visited`` guard on the
+        # very first call, so the whole downstream pass was silently a
+        # no-op — a "downstream"/"both" trace returned only the root's
+        # upstream side.
+        visited.clear()
         _walk(node_id, depth, downstream=True)
 
     return {
         "root": node_id,
         "direction": direction,
         "depth": depth,
-        "nodes": sorted(visited | {node_id}),
+        "nodes": sorted(upstream_visited | visited | {node_id}),
         "edges": edges,
     }
 

@@ -1,7 +1,7 @@
 # Architecture
 
 This document is the technical reference for Shadow-Loom. It covers the data
-model, the 8-step pipeline in implementation detail, the runtime modules, the
+model, the 12-step pipeline in implementation detail, the runtime modules, the
 persistence layer, and the integration surfaces (UI + MCP).
 
 For the conceptual / theoretical grounding of the ideas described here, see

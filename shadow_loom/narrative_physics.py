@@ -2468,7 +2468,18 @@ def find_pod(
             int(fabula_anchor) if fabula_anchor is not None
             else int(max((e.fabula_time for e in global_world_state.events), default=0))
         )
-        truth_keys = sorted(int(k) for k in (prop.truth_at_fabula or {}).keys() if int(k) <= horizon)
+        # Coerce truth keys defensively: a stored key may be a string
+        # (``"1000"``) after a DB/JSON roundtrip on legacy data. A bad
+        # key should be skipped, not abort point-of-divergence planning.
+        truth_keys = []
+        for k in (prop.truth_at_fabula or {}).keys():
+            try:
+                ik = int(k)
+            except (TypeError, ValueError):
+                continue
+            if ik <= horizon:
+                truth_keys.append(ik)
+        truth_keys.sort()
         anchor_ft = truth_keys[-1] if truth_keys else 0
         # Candidate events: any event touching one of the proposition's referents
         # before the anchor.

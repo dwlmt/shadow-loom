@@ -31,7 +31,7 @@ MCP_TRANSPORT=http MCP_PORT=8000 python -m shadow_loom_mcp
 > local use, e.g. Claude Desktop). For any networked / multi-user
 > deployment set `MCP_TRANSPORT=http` so the token verifier actually runs.
 
-The server reads its configuration from `config.env` /
+The server reads its configuration from `.env` /
 [`shadow_loom/settings.py`](../shadow_loom/settings.py). Key settings:
 
 | Env var | Purpose |
