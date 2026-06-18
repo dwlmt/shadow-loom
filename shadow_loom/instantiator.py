@@ -618,7 +618,11 @@ class AMWNInstantiator:
             logger.log(_surgery_log_level(logging.WARNING), "Malformed relationship path: %s. Expected 'relationships.<target>.<metric>'.", path)
             return
         _, target_id, metric = parts
-        
+
+        if not isinstance(new_value, (int, float)):
+            logger.log(_surgery_log_level(logging.WARNING), "[Surgery] Non-numeric relationship value %r for %s->%s %s. Skipping.", new_value, source_id, target_id, metric)
+            return
+
         if not sandbox.has_node(target_id):
             logger.log(_surgery_log_level(logging.WARNING), "[Surgery] Relationship target %s not in sandbox. Skipping.", target_id)
             return

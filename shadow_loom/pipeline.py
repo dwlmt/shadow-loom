@@ -36,6 +36,7 @@ The pipeline is flexible:
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import threading
 from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
@@ -901,6 +902,31 @@ _PRECEDING_PROSE_BUDGET_CHARS = 8000
 # same LLM raw-text ingestion uses, never ``GENERATION_MODEL`` /
 # ``AUDITOR_MODEL``.
 
+def _rewrite_head_with_corrected_ws(
+    vwm_next: "VersionedWorldModel",
+    corrected_ws: "WorldStateV1",
+) -> "VersionedWorldModel":
+    """Return a copy of ``vwm_next`` whose ``current`` *and* head snapshot
+    reflect ``corrected_ws``.
+
+    The merge that produced ``vwm_next`` deep-copies ``current`` into a
+    head ``WorldSnapshot`` (version == ``vwm_next.version``). Rewriting
+    only ``current`` would leave that snapshot mirroring the pre-correction
+    world, breaking the invariant that ``snapshots[version]`` mirrors
+    ``current`` (and any later rollback/inspection of the head version).
+    """
+    head_version = vwm_next.version
+    new_snapshots = [
+        snap.model_copy(update={"world_state": copy.deepcopy(corrected_ws)})
+        if snap.version == head_version
+        else snap
+        for snap in vwm_next.snapshots
+    ]
+    return vwm_next.model_copy(
+        update={"current": corrected_ws, "snapshots": new_snapshots}
+    )
+
+
 def _run_continuation_quality_bridge_sync(
     vwm_next: "VersionedWorldModel",
     cfg: "PipelineConfig",
@@ -934,7 +960,7 @@ def _run_continuation_quality_bridge_sync(
     result.continuation_quarantined = not report.is_valid
     if corrected_ws is vwm_next.current:
         return vwm_next
-    return vwm_next.model_copy(update={"current": corrected_ws})
+    return _rewrite_head_with_corrected_ws(vwm_next, corrected_ws)
 
 
 async def _run_continuation_quality_bridge_async(
@@ -964,7 +990,7 @@ async def _run_continuation_quality_bridge_async(
     result.continuation_quarantined = not report.is_valid
     if corrected_ws is vwm_next.current:
         return vwm_next
-    return vwm_next.model_copy(update={"current": corrected_ws})
+    return _rewrite_head_with_corrected_ws(vwm_next, corrected_ws)
 
 
 def _gather_preceding_prose(

@@ -501,10 +501,16 @@ def lookup_and_persist_topic(
     key = cache_key(config.research_provider, config.research_provider_model, topic)
     cached = get_cached_research(user_id=user_id, key=key)
     if cached is not None:
+        snippets = []
         try:
-            snippets = [ResearchSnippet(**s) for s in _json.loads(cached.snippets_json)]
+            _raw_snips = _json.loads(cached.snippets_json)
         except Exception:
-            snippets = []
+            _raw_snips = []
+        for _s in _raw_snips:
+            try:
+                snippets.append(ResearchSnippet(**_s))
+            except Exception:
+                logger.warning("Skipping malformed cached research snippet for key=%s.", key)
     else:
         try:
             prov = build_provider(

@@ -36,17 +36,35 @@ class _FakeReport(SimpleNamespace):
         super().__init__(is_valid=is_valid, **kw)
 
 
+class _FakeSnap:
+    """Duck-typed ``WorldSnapshot`` (``version`` + ``world_state``)."""
+
+    def __init__(self, version: int, world_state: Any) -> None:
+        self.version = version
+        self.world_state = world_state
+
+    def model_copy(self, *, update: dict[str, Any]) -> "_FakeSnap":
+        snap = _FakeSnap(self.version, self.world_state)
+        for k, v in (update or {}).items():
+            setattr(snap, k, v)
+        return snap
+
+
 class _FakeVWM:
     """Duck-typed ``VersionedWorldModel`` for bridge tests.
 
-    The bridge only reads ``self.current`` and calls ``self.model_copy``.
+    Models the fields the bridge touches: ``current``, ``version``,
+    ``snapshots`` (with a head snapshot mirroring ``current``), and
+    ``model_copy``.
     """
 
-    def __init__(self, current: Any) -> None:
+    def __init__(self, current: Any, version: int = 1) -> None:
         self.current = current
+        self.version = version
+        self.snapshots = [_FakeSnap(version, current)]
 
     def model_copy(self, *, update: dict[str, Any]) -> "_FakeVWM":
-        copy = _FakeVWM(self.current)
+        copy = _FakeVWM(self.current, self.version)
         for k, v in (update or {}).items():
             setattr(copy, k, v)
         return copy
@@ -88,6 +106,9 @@ def test_sync_bridge_records_valid_report(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.continuation_quality_report is report
     assert result.continuation_quarantined is False
     assert out.current is sentinel_ws
+    # Head snapshot must mirror the corrected current, not the pre-merge world.
+    head = next(s for s in out.snapshots if s.version == out.version)
+    assert head.world_state.tag == "clean"
 
 
 def test_sync_bridge_quarantines_on_invalid_report(
@@ -180,6 +201,9 @@ def test_async_bridge_records_valid_report(
     assert result.continuation_quality_report is report
     assert result.continuation_quarantined is False
     assert out.current is sentinel_ws
+    # Head snapshot must mirror the corrected current, not the pre-merge world.
+    head = next(s for s in out.snapshots if s.version == out.version)
+    assert head.world_state.tag == "clean-async"
 
 
 def test_async_bridge_quarantines_on_invalid_report(
