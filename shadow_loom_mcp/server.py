@@ -2828,6 +2828,13 @@ async def ingest(
     if err:
         return {"error": err}
 
+    # ingest runs the full LLM extraction pass — the most expensive
+    # operation in the system — so it gets the same per-identity cap as
+    # narrate/direct to prevent cost-amplification abuse.
+    rate_err = check_rate_limit(ctx, "ingest")
+    if rate_err:
+        return {"error": rate_err, "code": "RATE_LIMITED"}
+
     over = _enforce_word_cap(text, field="text")
     if over:
         return over
@@ -4281,6 +4288,8 @@ def manage(
         vrid, err = _coerce_int(p("version_row_id"), field="version_row_id")
         if err:
             return err
+        if vrid is None:
+            return {"error": "manage(action='delete_version') requires payload.version_row_id"}
         return delete_version(
             ctx=ctx,
             version_row_id=vrid,

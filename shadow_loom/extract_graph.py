@@ -580,11 +580,15 @@ def extract_ego_graph_from_memory(
             continue
         prop_data = prop.model_dump()
         if temporal_anchor is not None and isinstance(prop_data.get("truth_at_fabula"), dict):
-            prop_data["truth_at_fabula"] = {
-                int(t): v
-                for t, v in prop_data["truth_at_fabula"].items()
-                if int(t) <= temporal_anchor
-            }
+            _trimmed: Dict[int, Any] = {}
+            for t, v in prop_data["truth_at_fabula"].items():
+                try:
+                    ti = int(t)
+                except (TypeError, ValueError):
+                    continue
+                if ti <= temporal_anchor:
+                    _trimmed[ti] = v
+            prop_data["truth_at_fabula"] = _trimmed
         relevant_propositions.append(prop_data)
 
     payload = EgoGraphPayload(

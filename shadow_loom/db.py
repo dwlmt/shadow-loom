@@ -2381,7 +2381,7 @@ def validate_api_key(raw_key: str) -> Optional[ApiKeyRow]:
         ).first()
         if row is None:
             return None
-        if row.expires_at and row.expires_at < datetime.now(timezone.utc):
+        if row.expires_at and _as_naive_utc(row.expires_at) < _as_naive_utc(datetime.now(timezone.utc)):
             return None
         row.last_used_at = datetime.now(timezone.utc)
         s.commit()
