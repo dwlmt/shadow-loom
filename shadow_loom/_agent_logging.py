@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
@@ -39,6 +40,7 @@ _DEFAULT_MAX_CHARS = 4000
 _LANGFUSE_LOGGER = logging.getLogger(__name__)
 _LANGFUSE_CLIENT: Any | None = None
 _LANGFUSE_DISABLED = False
+_LANGFUSE_INIT_LOCK = threading.Lock()
 _INSTRUMENTED = False
 
 # ---------------------------------------------------------------------
@@ -123,33 +125,42 @@ def _safe_prompt_preview(prompt: Any, max_chars: int = 1000) -> str:
 
 def _get_langfuse_client() -> Any | None:
     global _LANGFUSE_CLIENT, _LANGFUSE_DISABLED
+    # Lock-free fast path for the common already-resolved case.
     if _LANGFUSE_DISABLED:
         return None
     if _LANGFUSE_CLIENT is not None:
         return _LANGFUSE_CLIENT
 
-    core = get_settings().core
-    if not core.langfuse_public_key or not core.langfuse_secret_key:
-        _LANGFUSE_DISABLED = True
-        return None
+    # Lazy init runs from both async and sync agent wrappers; serialize so
+    # we don't construct the client twice or race the disabled flag.
+    with _LANGFUSE_INIT_LOCK:
+        if _LANGFUSE_DISABLED:
+            return None
+        if _LANGFUSE_CLIENT is not None:
+            return _LANGFUSE_CLIENT
 
-    try:
-        from langfuse import Langfuse
+        core = get_settings().core
+        if not core.langfuse_public_key or not core.langfuse_secret_key:
+            _LANGFUSE_DISABLED = True
+            return None
 
-        kwargs: dict[str, Any] = {
-            "public_key": core.langfuse_public_key,
-            "secret_key": core.langfuse_secret_key,
-        }
-        if core.langfuse_base_url:
-            kwargs["host"] = core.langfuse_base_url
-        _LANGFUSE_CLIENT = Langfuse(**kwargs)
-        return _LANGFUSE_CLIENT
-    except Exception as exc:
-        _LANGFUSE_DISABLED = True
-        _LANGFUSE_LOGGER.warning(
-            "[Langfuse] Failed to initialize client: %s", exc,
-        )
-        return None
+        try:
+            from langfuse import Langfuse
+
+            kwargs: dict[str, Any] = {
+                "public_key": core.langfuse_public_key,
+                "secret_key": core.langfuse_secret_key,
+            }
+            if core.langfuse_base_url:
+                kwargs["host"] = core.langfuse_base_url
+            _LANGFUSE_CLIENT = Langfuse(**kwargs)
+            return _LANGFUSE_CLIENT
+        except Exception as exc:
+            _LANGFUSE_DISABLED = True
+            _LANGFUSE_LOGGER.warning(
+                "[Langfuse] Failed to initialize client: %s", exc,
+            )
+            return None
 
 
 def _log_to_langfuse(

@@ -182,48 +182,53 @@ class CostCalculator:
     ) -> Optional[CostRuleRow]:
         """Get applicable cost rule for a service."""
         self._refresh_cost_rules_cache()
-        
+
         cache_key = f"{provider}:{service_type}:{model_name or ''}"
-        
-        if cache_key not in self._cost_rules_cache:
-            # Try to find exact model match first
-            query = select(CostRuleRow).where(
-                CostRuleRow.provider == provider,
+
+        if cache_key in self._cost_rules_cache:
+            return self._cost_rules_cache[cache_key]
+
+        # Try to find exact model match first
+        query = select(CostRuleRow).where(
+            CostRuleRow.provider == provider,
+            CostRuleRow.service_type == service_type,
+            (CostRuleRow.effective_from.is_(None) |
+             (CostRuleRow.effective_from <= datetime.now(timezone.utc))),
+            (CostRuleRow.effective_to.is_(None) |
+             (CostRuleRow.effective_to > datetime.now(timezone.utc)))
+        ).order_by(CostRuleRow.created_at.desc())
+
+        if model_name:
+            model_query = query.where(CostRuleRow.model_name == model_name)
+            rule = self.session.exec(model_query).first()
+            if rule:
+                self._cost_rules_cache[cache_key] = rule
+                return rule
+
+        # Fall back to generic rule for provider/service
+        generic_query = query.where(CostRuleRow.model_name.is_(None))
+        rule = self.session.exec(generic_query).first()
+        if rule is None and provider != DEFAULT_COST_RULE_PROVIDER:
+            # Final fallback: the catch-all ``provider="default"``
+            # row seeded by ``ensure_default_cost_rule()`` on
+            # ``init_db()``. Without this every (provider, model)
+            # pair without an explicit cost rule was priced at $0
+            # \u2014 the per-user / per-project rollups in
+            # ``UserUsageSummaryRow`` then summed to zero too,
+            # which is exactly the "no costs ever logged" symptom
+            # the hookup task fixed.
+            default_query = select(CostRuleRow).where(
+                CostRuleRow.provider == DEFAULT_COST_RULE_PROVIDER,
                 CostRuleRow.service_type == service_type,
-                (CostRuleRow.effective_from.is_(None) | 
-                 (CostRuleRow.effective_from <= datetime.now(timezone.utc))),
-                (CostRuleRow.effective_to.is_(None) | 
-                 (CostRuleRow.effective_to > datetime.now(timezone.utc)))
+                CostRuleRow.model_name.is_(None),
             ).order_by(CostRuleRow.created_at.desc())
-            
-            if model_name:
-                model_query = query.where(CostRuleRow.model_name == model_name)
-                rule = self.session.exec(model_query).first()
-                if rule:
-                    self._cost_rules_cache[cache_key] = rule
-                    return rule
-            
-            # Fall back to generic rule for provider/service
-            generic_query = query.where(CostRuleRow.model_name.is_(None))
-            rule = self.session.exec(generic_query).first()
-            if rule is None and provider != DEFAULT_COST_RULE_PROVIDER:
-                # Final fallback: the catch-all ``provider="default"``
-                # row seeded by ``ensure_default_cost_rule()`` on
-                # ``init_db()``. Without this every (provider, model)
-                # pair without an explicit cost rule was priced at $0
-                # \u2014 the per-user / per-project rollups in
-                # ``UserUsageSummaryRow`` then summed to zero too,
-                # which is exactly the "no costs ever logged" symptom
-                # the hookup task fixed.
-                default_query = select(CostRuleRow).where(
-                    CostRuleRow.provider == DEFAULT_COST_RULE_PROVIDER,
-                    CostRuleRow.service_type == service_type,
-                    CostRuleRow.model_name.is_(None),
-                ).order_by(CostRuleRow.created_at.desc())
-                rule = self.session.exec(default_query).first()
+            rule = self.session.exec(default_query).first()
+        # Only cache positive hits: caching a None would mask a cost rule
+        # seeded after this (provider, model) was first queried, pricing
+        # calls at $0 until the 15-min TTL lapses.
+        if rule is not None:
             self._cost_rules_cache[cache_key] = rule
-            
-        return self._cost_rules_cache[cache_key]
+        return rule
     
     def calculate_agent_call_cost(self, log_entry: AgentCallLogRow) -> float:
         """Calculate cost for an agent call based on token usage."""
