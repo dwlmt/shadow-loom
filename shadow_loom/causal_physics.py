@@ -36,6 +36,7 @@ from shadow_loom.causal_closure import (
     expand_chain_reaction_closure,
 )
 from shadow_loom.instantiator import AMWNInstantiator
+from shadow_loom.interrogate_posterior import _module_has_negation
 from shadow_loom.models import (
     WorldStateV1,
     default_relationship_metrics_dict,
@@ -1818,8 +1819,12 @@ class CausalPhysicsEngine:
         polarity = belief.get("polarity") or belief.get("affirms")
         if isinstance(polarity, bool):
             return polarity == truth
-        ps = (belief.get("perceived_state") or "").lower()
-        if any(k in ps for k in ("not ", "no ", "false", "denies", "rejects")):
+        ps = belief.get("perceived_state") or ""
+        # Reuse the canonical word-boundary negation detector so this
+        # engine-side resolver cannot drift from interrogate_posterior's
+        # (unanchored substrings here previously misfired on words like
+        # "casino"/"falsehood", flipping the cascade direction).
+        if _module_has_negation(ps):
             return (not truth)
         return bool(truth)
 

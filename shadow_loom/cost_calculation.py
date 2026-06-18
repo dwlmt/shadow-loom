@@ -17,6 +17,7 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Tuple
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select, text
 
 from shadow_loom.db import (
@@ -108,13 +109,24 @@ def increment_user_lifetime_usage(
     the first lifetime row); the *counters* increment monotonically
     on every call by design.
     """
-    row = session.exec(
-        select(UserUsageSummaryRow).where(
-            UserUsageSummaryRow.user_id == user_id,
-            UserUsageSummaryRow.period_type == "lifetime",
-            UserUsageSummaryRow.period_start == _LIFETIME_PERIOD_START,
-        )
-    ).first()
+    def _lifetime_row() -> Optional[UserUsageSummaryRow]:
+        return session.exec(
+            select(UserUsageSummaryRow).where(
+                UserUsageSummaryRow.user_id == user_id,
+                UserUsageSummaryRow.period_type == "lifetime",
+                UserUsageSummaryRow.period_start == _LIFETIME_PERIOD_START,
+            )
+        ).first()
+
+    def _apply_deltas(r: UserUsageSummaryRow) -> None:
+        r.total_agent_calls = int(r.total_agent_calls or 0) + int(agent_calls)
+        r.total_agent_tokens = int(r.total_agent_tokens or 0) + int(agent_tokens)
+        r.total_agent_cost_usd = float(r.total_agent_cost_usd or 0.0) + float(agent_cost_usd)
+        r.total_api_calls = int(r.total_api_calls or 0) + int(api_calls)
+        r.total_api_cost_usd = float(r.total_api_cost_usd or 0.0) + float(api_cost_usd)
+        r.updated_at = datetime.now(timezone.utc)
+
+    row = _lifetime_row()
     if row is None:
         row = UserUsageSummaryRow(
             user_id=user_id,
@@ -128,14 +140,21 @@ def increment_user_lifetime_usage(
             total_api_cost_usd=float(api_cost_usd),
         )
         session.add(row)
+        try:
+            session.commit()
+        except IntegrityError:
+            # A concurrent first-call inserted the lifetime row between
+            # our SELECT and INSERT (uq_user_period). Fold our increment
+            # into the existing row instead of silently dropping it.
+            session.rollback()
+            row = _lifetime_row()
+            if row is None:
+                raise
+            _apply_deltas(row)
+            session.commit()
     else:
-        row.total_agent_calls = int(row.total_agent_calls or 0) + int(agent_calls)
-        row.total_agent_tokens = int(row.total_agent_tokens or 0) + int(agent_tokens)
-        row.total_agent_cost_usd = float(row.total_agent_cost_usd or 0.0) + float(agent_cost_usd)
-        row.total_api_calls = int(row.total_api_calls or 0) + int(api_calls)
-        row.total_api_cost_usd = float(row.total_api_cost_usd or 0.0) + float(api_cost_usd)
-        row.updated_at = datetime.now(timezone.utc)
-    session.commit()
+        _apply_deltas(row)
+        session.commit()
     session.refresh(row)
     return row
 

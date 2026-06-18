@@ -3503,7 +3503,7 @@ def _normalise_omniscient_to_ego_shape(
         ) or 0,
         reverse=True,
     )
-    bounded = raw_events[:recent_event_limit]
+    bounded = [e for e in raw_events[:recent_event_limit] if isinstance(e, dict)]
     recent_memory = [e for e in bounded if e.get("event_type") != "utterance"]
     utterances = [e for e in bounded if e.get("event_type") == "utterance"]
 
@@ -5695,7 +5695,7 @@ def _do_target_to_dotted_kv(t: Any) -> Optional[Tuple[str, Any]]:
         return (f"{t.proposition_id}.truth", t.truth)
     if kind == "event":
         return (f"{t.event_id}.event_type", "occurred" if t.occurred else "averted")
-    if kind == "narrative_object":
+    if kind == "object":
         if getattr(t, "new_location_id", None) is not None:
             return (f"{t.object_id}.location_id", t.new_location_id)
         if getattr(t, "new_owner_id", None) is not None:
