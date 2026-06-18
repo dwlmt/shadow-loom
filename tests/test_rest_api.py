@@ -24,20 +24,31 @@ def client(monkeypatch):
     db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
     url = f"sqlite:///{db_file}"
     monkeypatch.setenv("DATABASE_URL", url)
-    # Production fail-closed: no anonymous open-mode fallback.
+    # Production fail-closed: no anonymous open-mode fallback. Another
+    # test module (test_session_refactor_coverage) sets
+    # MCP_ALLOW_OPEN_MODE=true at import time, which freezes the
+    # @lru_cache'd settings with open-mode on. Deleting the env var is
+    # not enough: _open_mode_enabled falls back to the cached settings
+    # when the var is unset, so we must invalidate that cache too — both
+    # on setup (read our fail-closed env) and teardown (don't leak ours).
+    from shadow_loom.settings import reset_settings_cache
     monkeypatch.delenv("MCP_ALLOW_OPEN_MODE", raising=False)
+    reset_settings_cache()
     import shadow_loom.db as _db
     monkeypatch.setattr(_db, "_engine", None)
     _db.init_db(url)
 
     from shadow_loom_rest.app import create_app
-    with TestClient(create_app()) as c:
-        c._db = _db  # type: ignore[attr-defined]
-        yield c
     try:
-        os.unlink(db_file)
-    except FileNotFoundError:
-        pass
+        with TestClient(create_app()) as c:
+            c._db = _db  # type: ignore[attr-defined]
+            yield c
+    finally:
+        reset_settings_cache()
+        try:
+            os.unlink(db_file)
+        except FileNotFoundError:
+            pass
 
 
 def _user_with_key(db, scopes="read,write,admin", suffix="1"):
