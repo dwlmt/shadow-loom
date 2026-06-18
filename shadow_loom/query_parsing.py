@@ -288,7 +288,8 @@ class ValidationError(BaseModel):
 class FallbackInfo(BaseModel):
     """Records what fallback strategy was applied and why."""
     strategy: Literal[
-        "fuzzy_id_resolution", "general_fallback", "none",
+        "fuzzy_id_resolution", "general_fallback",
+        "observation_to_interrogate", "none",
     ] = Field(description="Which fallback strategy was used.")
     reason: str = Field(description="Human-readable explanation of the fallback.")
     original_query_type: Optional[str] = Field(
@@ -1515,9 +1516,16 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                 if not eid:
                     continue
                 new_ft_raw = data.get("new_fabula_time")
+                # An explicit ``"occurred": null`` from the LLM yields
+                # ``None`` (the default only applies for an absent key),
+                # which would fail DoEvent validation and silently drop
+                # the whole surgery via the except below. Treat a null
+                # the same as an omitted key: the do-operator asserts the
+                # event occurred unless explicitly negated.
+                occ = data.get("occurred")
                 kwargs_e: Dict[str, Any] = {
                     "event_id": eid,
-                    "occurred": data.get("occurred", True),
+                    "occurred": True if occ is None else bool(occ),
                     "new_at_location_id": data.get("new_at_location_id"),
                 }
                 if new_ft_raw is not None:

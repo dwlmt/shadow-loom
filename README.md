@@ -67,7 +67,7 @@ Every doc has a **See also** footer cross-linking its closest neighbours.
 | [docs/pipeline-by-example.md](docs/pipeline-by-example.md) | Data-anchored walkthrough — every stage of the pipeline (world model, AMWN, Pearl rungs 1–3, propagation, suspense / surprise / mystery / dramatic-irony / emotion scoring, directive assembly, generation, audit, merge) illustrated with verbatim values from the bundled fixtures. |
 | [docs/model-examples.md](docs/model-examples.md) | Worked examples on real bundled plots (Macbeth, Death on the Nile, Reservoir Dogs, …) showing each pipeline stage and feature in action. |
 | [docs/query-and-cycles.md](docs/query-and-cycles.md) | The eight query types, how natural language is parsed into them, and how each is realised in a pipeline cycle. |
-| [docs/mcp-guide.md](docs/mcp-guide.md) | The `shadow_loom_mcp` server — 41 tools (4 coarse-grained dispatchers + the granular surface they wrap), 5 resources, auth, scopes, versioning contract, agent workflow. |
+| [docs/mcp-guide.md](docs/mcp-guide.md) | The `shadow_loom_mcp` server — 42 tools (4 coarse-grained dispatchers + the granular surface they wrap), 5 resources, auth, scopes, versioning contract, agent workflow. |
 | [docs/rest-api.md](docs/rest-api.md) | The `shadow_loom_rest` FastAPI adapter — HTTP/JSON mirror of the MCP tools, shared API keys and tool bodies, error mapping, endpoints. |
 | [docs/ui-guide.md](docs/ui-guide.md) | NiceGUI workspace walkthrough, including the manual-editing **Editor** tab. |
 | [docs/testing.md](docs/testing.md) | Test-suite organisation, what each file covers, how to run the live-LLM tier. |
@@ -331,7 +331,7 @@ shadow_loom/                # core engine
   db.py                     # SQLModel persistence + version tree
   settings.py               # config loader
 
-shadow_loom_mcp/            # FastMCP server (41 tools, 5 resources)
+shadow_loom_mcp/            # FastMCP server (42 tools, 5 resources)
 shadow_loom_ui/             # NiceGUI workspace (8 tabs)
 example_worlds/             # 16 scripted worlds for tests + demos
 sample_plots/               # raw plot summaries for ingestion demos

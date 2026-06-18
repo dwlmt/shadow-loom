@@ -6622,6 +6622,7 @@ def run_feedback_loop(
     #     authoritative).
     #   * Skip when the scene is a generation_error placeholder.
     terminal_audit_appended = False
+    terminal_converged = False
     if (
         not correction_error
         and not current_scene.generation_error
@@ -6665,6 +6666,19 @@ def run_feedback_loop(
                 engine_threshold_failures=list(final_engine_failures or []),
             ))
             terminal_audit_appended = True
+            # The post-refinement draft was never judged before this
+            # terminal pass, so its verdict — not the stale
+            # "exhausted iterations" assumption — decides convergence.
+            # Mirror the in-loop gate (line ~6275): the draft converges
+            # when the audit passed and the engine does not block,
+            # applying the same invariant carve-out as the loop body.
+            terminal_engine_blocks = (
+                final_engine_passed is False
+                and not (engine_invariant and baseline_engine_passed is False)
+            )
+            terminal_converged = (
+                terminal_audit.passed and not terminal_engine_blocks
+            )
         except Exception:
             logger.exception(
                 "[FeedbackLoop] Terminal audit FAILED; returning the "
@@ -6675,7 +6689,7 @@ def run_feedback_loop(
 
     return FeedbackLoopResult(
         final_scene=current_scene,
-        converged=False,
+        converged=terminal_converged,
         # Round-9 A2: ``iterations`` counts *audit/refine cycles*, not
         # snapshots. The terminal audit appended above shares the
         # iteration index of the final loop pass (it re-audits the

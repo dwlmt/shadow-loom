@@ -238,7 +238,17 @@ def create_app() -> FastAPI:
         else:
             result = fn(principal, **args)
 
-        if isinstance(result, dict) and isinstance(result.get("error"), str):
+        # Some successful tool results carry an ``error`` string purely as
+        # human-readable context alongside a real payload — e.g. the
+        # causal-/window-gated ``inspect`` reconstructions ("not_yet_occurred",
+        # "outside_availability_window") return a ``reconstruction`` key plus an
+        # explanatory ``error``. Those are 200s, not failures; only a dict whose
+        # sole signal is ``error`` maps to an HTTP error status.
+        if (
+            isinstance(result, dict)
+            and isinstance(result.get("error"), str)
+            and "reconstruction" not in result
+        ):
             return JSONResponse(
                 status_code=_status_for_error(result["error"]),
                 content=result,

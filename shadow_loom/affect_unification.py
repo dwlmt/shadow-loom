@@ -1844,6 +1844,16 @@ def compute_joy_appraisal(
                 # P1-26: Gloating uses focal's belief that the other's fear realized
                 base = prob_focal * stakes * _concern_salience_at(c, fabula_t)
                 gloating += base
+            elif aff < -0.3 and _pol == "desire":
+                # Schadenfreude's other face: joy that a disliked other's
+                # *desire* went unfulfilled. Symmetric to the fear branch
+                # above but keyed on the desire NOT being realized, so the
+                # weight rises as focal's belief in the desired outcome
+                # falls (1 - prob_focal). Without this, gloating only fires
+                # on enemies' fears coming true and misses their hopes
+                # being dashed.
+                base = (1.0 - prob_focal) * stakes * _concern_salience_at(c, fabula_t)
+                gloating += base
 
     relief = 0.0
     if prior_fabula_t is not None:

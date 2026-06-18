@@ -177,6 +177,24 @@ def _coerce_sandbox_to_world_shape(
     }
 
 
+def _sorted_truth_items(truth_map: Dict[Any, Any]) -> List[tuple[int, bool]]:
+    """Sort a ``truth_at_fabula`` commit log into ``(fabula_t, value)`` pairs.
+
+    Keys arrive as ints or numeric strings, but a malformed snapshot can
+    carry a non-numeric key; skip those rather than crashing the whole
+    answer-context build (matches the guard at the other commit-log call
+    sites in models.py / projections.py / narrative_physics.py).
+    """
+    items: List[tuple[int, bool]] = []
+    for t, v in truth_map.items():
+        try:
+            items.append((int(t), bool(v)))
+        except (TypeError, ValueError):
+            continue
+    items.sort(key=lambda kv: kv[0])
+    return items
+
+
 def _compress_world_state(
     physics_state: Dict[str, Any] | None,
     *,
@@ -575,10 +593,7 @@ def _compress_world_state(
                     desc = desc[:137] + "…"
                 truth_map = p.get("truth_at_fabula") or {}
                 if truth_map:
-                    items = sorted(
-                        ((int(t), bool(v)) for t, v in truth_map.items()),
-                        key=lambda kv: kv[0],
-                    )
+                    items = _sorted_truth_items(truth_map)
                     truth_str = ", ".join(
                         f"T={t}:{'TRUE' if v else 'FALSE'}" for t, v in items
                     )
@@ -618,10 +633,7 @@ def _compress_world_state(
             truth_map = p.get("truth_at_fabula") or {}
             if not truth_map:
                 continue
-            items = sorted(
-                ((int(t), bool(v)) for t, v in truth_map.items()),
-                key=lambda kv: kv[0],
-            )
+            items = _sorted_truth_items(truth_map)
             if items and items[-1][1] is False:
                 pid = p.get("id") or p.get("proposition_id") or "?"
                 desc = (p.get("description") or "").strip().replace("\n", " ")
