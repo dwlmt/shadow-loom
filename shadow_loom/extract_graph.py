@@ -4215,11 +4215,18 @@ class VersionedWorldModel(BaseModel):
             (s for s in snapshots if s.version != 0),
             key=lambda s: s.version,
         )
+        # The head snapshot (highest version) mirrors ``current`` and must
+        # survive trimming — otherwise ``get_snapshot(self.version)`` returns
+        # None and any rollback to the head raises KeyError. Pin it like a
+        # branch head so it's re-added below even when ``max_k`` is so small
+        # (<= len(v0)) that the early ``keep <= 0`` branch would drop it.
+        if rest:
+            branch_head_versions.add(rest[-1].version)
         # Keep the most recent (max_k - len(v0)) from rest
         keep = max_k - len(v0)
         if keep <= 0:
-            return v0[:max_k]
-        if keep >= 3 and len(rest) > keep:
+            trimmed = list(v0[:max_k])
+        elif keep >= 3 and len(rest) > keep:
             # Reserve one slot for the geometric midpoint between the
             # oldest non-v0 snapshot and the current head so rewinds
             # past the tail window aren't all-or-nothing.

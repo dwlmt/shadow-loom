@@ -5883,14 +5883,22 @@ class DirectiveAssembler:
                         # any future commit (t > cursor) keeps the
                         # proposition open even if there's a prior
                         # commit (multi-flip propositions).
-                        n_open = sum(
-                            1 for prop in ws_u.propositions
-                            if any(
-                                t > ft_u for t in prop.truth_at_fabula
-                            ) or not any(
-                                t <= ft_u for t in prop.truth_at_fabula
+                        def _open(prop) -> bool:
+                            # int-coerce keys: model_construct/model_copy can
+                            # bypass the Proposition validator and leave str
+                            # keys, and a bare ``str > int`` here would raise
+                            # and collapse the whole blend (see models.py:367).
+                            ticks = []
+                            for t in prop.truth_at_fabula:
+                                try:
+                                    ticks.append(int(t))
+                                except (TypeError, ValueError):
+                                    continue
+                            return any(t > ft_u for t in ticks) or not any(
+                                t <= ft_u for t in ticks
                             )
-                        )
+
+                        n_open = sum(1 for prop in ws_u.propositions if _open(prop))
                         if n_open > 0:
                             unified_score = min(
                                 1.0, raw_u / (n_open * math.log(2.0)),

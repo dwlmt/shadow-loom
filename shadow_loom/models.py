@@ -2490,8 +2490,15 @@ def reconstruct_concern_at(
 
     active = True
     if activation_fabula_window and len(activation_fabula_window) == 2:
-        lo, hi = activation_fabula_window
-        active = lo <= fabula_time <= hi
+        # The base ``Concern`` window is intentionally unconstrained (see
+        # ``_concern_window_at``), so a malformed/non-int/half-open window
+        # must be treated as "no window" rather than crashing the
+        # ``lo <= fabula_time <= hi`` comparison with a TypeError.
+        try:
+            lo, hi = int(activation_fabula_window[0]), int(activation_fabula_window[1])
+            active = lo <= fabula_time <= hi
+        except (TypeError, ValueError):
+            active = True
 
     return {
         "salience": salience,

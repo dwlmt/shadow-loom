@@ -1484,28 +1484,42 @@ def upsert_user(
     avatar_url: str | None = None,
     display_name: str | None = None,
 ) -> UserRow:
-    with get_session() as s:
-        row = s.exec(select(UserRow).where(UserRow.provider_id == provider_id)).first()
-        if row is None:
-            row = UserRow(
-                provider=provider,
-                provider_id=provider_id,
-                username=username,
-                email=email,
-                avatar_url=avatar_url,
-                display_name=display_name,
-            )
-            s.add(row)
-        else:
-            row.username = username
-            row.email = email
-            row.avatar_url = avatar_url
-            if display_name:
-                row.display_name = display_name
-            row.last_login_at = datetime.now(timezone.utc)
-        s.commit()
-        s.refresh(row)
-        return row
+    # ``provider_id`` is unique and this is the OAuth login hot path, so two
+    # near-simultaneous callbacks for the same provider both see ``None`` and
+    # both INSERT. Retry on IntegrityError, re-reading the now-existing row and
+    # applying the profile-update branch (mirrors ``set_active_version``).
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        with get_session() as s:
+            row = s.exec(select(UserRow).where(UserRow.provider_id == provider_id)).first()
+            if row is None:
+                row = UserRow(
+                    provider=provider,
+                    provider_id=provider_id,
+                    username=username,
+                    email=email,
+                    avatar_url=avatar_url,
+                    display_name=display_name,
+                )
+                s.add(row)
+            else:
+                row.username = username
+                row.email = email
+                row.avatar_url = avatar_url
+                if display_name:
+                    row.display_name = display_name
+                row.last_login_at = datetime.now(timezone.utc)
+            try:
+                s.commit()
+            except IntegrityError:
+                s.rollback()
+                if attempt + 1 >= max_attempts:
+                    raise
+                continue
+            s.refresh(row)
+            return row
+    # Unreachable: loop either returns or re-raises on the final attempt.
+    raise RuntimeError("upsert_user: exhausted retries without resolution")
 
 
 def get_user(user_id: int) -> Optional[UserRow]:
