@@ -1107,12 +1107,14 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
             prop.audience_default_prior = psnap["audience_default_prior"]
         if psnap.get("description") is not None:
             prop.description = psnap["description"]
-        try:
-            tmap = {
-                int(k): v for k, v in (prop.truth_at_fabula or {}).items()
-            }
-        except (TypeError, ValueError):
-            tmap = {}
+        # Coerce per-key so one malformed key drops only itself rather
+        # than wiping the whole proposition's commit ledger.
+        tmap: dict = {}
+        for k, v in (prop.truth_at_fabula or {}).items():
+            try:
+                tmap[int(k)] = v
+            except (TypeError, ValueError):
+                continue
         prop.truth_at_fabula = {k: v for k, v in tmap.items() if k <= t}
 
     for lid, loc in new.locations.items():

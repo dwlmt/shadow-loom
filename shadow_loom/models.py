@@ -2403,10 +2403,14 @@ def reconstruct_proposition_at(
     # and direct lookup with an int key silently misses. Normalize the
     # keys once before the sort+lookup so the reconstruction stays
     # correct across every serialization boundary.
-    try:
-        truth_map = {int(k): v for k, v in (prop.truth_at_fabula or {}).items()}
-    except (TypeError, ValueError):
-        truth_map = {}
+    # Coerce per-key so one malformed key drops only itself rather than
+    # discarding the whole proposition's commit ledger.
+    truth_map: Dict[int, bool] = {}
+    for k, v in (prop.truth_at_fabula or {}).items():
+        try:
+            truth_map[int(k)] = v
+        except (TypeError, ValueError):
+            continue
     for t in sorted(truth_map.keys()):
         if t > fabula_time:
             break

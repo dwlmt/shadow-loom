@@ -2568,8 +2568,20 @@ def build_dependent_state_substitution_constraints(
         h = _holder_from_affected_belief_id(b)
         if h and h.startswith("ENT_"):
             implicated.add(h)
+    # ``affected_concerns`` carries *bare* ``CCN_…`` ids (see
+    # narrative_physics._typed_target_payload, which emits
+    # ``concern_id`` only), so the holder is not recoverable by string
+    # parsing — it must be looked up from the world model. The legacy
+    # dot-joined ``holder.concern`` parse is kept as a fallback for any
+    # older payload shape.
+    concern_holder_by_id: Dict[str, str] = {}
+    for _hid, _ent in (getattr(world_state, "entities", {}) or {}).items():
+        for _c in (getattr(_ent, "concerns", None) or []):
+            _cid = getattr(_c, "concern_id", None)
+            if _cid:
+                concern_holder_by_id[_cid] = _hid
     for c in (affected_concerns or []):
-        h = _holder_from_affected_concern_id(c)
+        h = concern_holder_by_id.get(c) or _holder_from_affected_concern_id(c)
         if h and h.startswith("ENT_"):
             implicated.add(h)
     if not implicated:

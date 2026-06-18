@@ -379,11 +379,18 @@ class TavilyProvider:
             if not url:
                 continue
             content = (item.get("content", "") or "")[:_SNIPPET_CHAR_CAP]
+            # The provider payload is external/untrusted; a non-numeric
+            # score must not abort the whole result loop and lose every
+            # already-collected snippet.
+            try:
+                score = float(item.get("score", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                score = 0.0
             snippets.append(ResearchSnippet(
                 url=url,
                 title=item.get("title", "") or "",
                 content=content,
-                score=float(item.get("score", 0.0) or 0.0),
+                score=score,
                 provider=self.name,
                 provider_model=self.search_depth,
             ))

@@ -10827,7 +10827,14 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
             all_times.add(snap.fabula_time)
     for prop in ws.propositions:
         for t in prop.truth_at_fabula.keys():
-            all_times.add(int(t))
+            # Keys are normally int/numeric-string, but a proposition that
+            # bypassed _normalize_truth_keys (model_construct / raw DB-JSON
+            # round-trip) can carry a non-numeric key; skip it rather than
+            # aborting normalization for the entire world.
+            try:
+                all_times.add(int(t))
+            except (TypeError, ValueError):
+                continue
         for p_snap in prop.state_timeline:
             all_times.add(p_snap.fabula_time)
 
@@ -10992,10 +10999,14 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
     for prop in ws.propositions:
         updates: dict = {}
         if prop.truth_at_fabula:
-            updates["truth_at_fabula"] = {
-                (_map(int(t)) or int(t)): v
-                for t, v in prop.truth_at_fabula.items()
-            }
+            _remapped: dict = {}
+            for t, v in prop.truth_at_fabula.items():
+                try:
+                    it = int(t)
+                except (TypeError, ValueError):
+                    continue
+                _remapped[_map(it) or it] = v
+            updates["truth_at_fabula"] = _remapped
         if prop.state_timeline:
             updates["state_timeline"] = [
                 ps.model_copy(update={

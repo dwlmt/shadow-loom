@@ -2311,6 +2311,25 @@ def _legacy_hash_api_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
 
+def _accept_legacy_api_key_hash() -> bool:
+    """Whether ``validate_api_key`` should also accept the pre-pepper
+    plain SHA-256 hash.
+
+    Defaults to ``True`` so peppered installs keep validating keys minted
+    before the pepper rollout (the migration window). Once an operator has
+    rotated every key onto the peppered HMAC they can set
+    ``SHADOW_LOOM_API_KEY_ACCEPT_LEGACY=false`` to retire the un-peppered
+    path — so an exfiltrated ``api_keys`` snapshot can no longer be matched
+    against offline-computed plain-SHA-256 candidates. On an unpeppered
+    install this flag is moot: ``_hash_api_key`` already equals the legacy
+    hash, so the canonical candidate covers it either way.
+    """
+    raw = os.environ.get("SHADOW_LOOM_API_KEY_ACCEPT_LEGACY")
+    if raw is None:
+        return True
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def create_api_key(
     user_id: int,
     name: str,
@@ -2345,10 +2364,13 @@ def validate_api_key(raw_key: str) -> Optional[ApiKeyRow]:
     """Validate a bearer token. Returns the ApiKeyRow if valid, None otherwise."""
     candidate_hashes = {_hash_api_key(raw_key)}
     legacy = _legacy_hash_api_key(raw_key)
-    if legacy not in candidate_hashes:
+    if legacy not in candidate_hashes and _accept_legacy_api_key_hash():
         # AUDIT (post-2026-05-26): accept legacy SHA-256 hashes during
         # the migration window so users whose keys predate the pepper
         # rollout don't lose access. Re-issue + rotate on next login.
+        # Operators can retire this path via
+        # SHADOW_LOOM_API_KEY_ACCEPT_LEGACY=false once all keys are
+        # rotated onto the peppered HMAC.
         candidate_hashes.add(legacy)
     with get_session() as s:
         row = s.exec(
