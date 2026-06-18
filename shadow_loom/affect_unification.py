@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
@@ -1981,6 +1982,11 @@ def _focal_recent_choice(
     return cs[0]
 
 
+_OMISSION_MARKER_RE = re.compile(
+    r"\b(?:decline|refuse|fail to|did ?n[o']t|ignore|withhold|neglect|abstain)",
+)
+
+
 def compute_regret_appraisal(
     bs: BeliefState, focal_id: str, fabula_t: int,
 ) -> RegretAppraisal:
@@ -2009,13 +2015,12 @@ def compute_regret_appraisal(
         agentive = magnitude * closeness
         disappointment = 0.0
         # Commission vs omission heuristic: choice description containing
-        # negation/refusal markers ⇒ omission.
+        # negation/refusal markers ⇒ omission. Anchored at a left word
+        # boundary (\b) so conjugations still match (decline→declined)
+        # without misfiring mid-word the way an unanchored substring test
+        # would (e.g. "ignore" inside an unrelated longer word).
         desc = (choice.description or "").lower()
-        omission_markers = (
-            "decline", "refuse", "fail to", "did not", "didn't",
-            "ignore", "withhold", "neglect", "abstain",
-        )
-        if any(m in desc for m in omission_markers):
+        if _OMISSION_MARKER_RE.search(desc):
             mode = "omission"
             commission_score = 0.0
             omission_score = agentive
