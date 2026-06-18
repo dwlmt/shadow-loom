@@ -426,6 +426,7 @@ settings group) by [`shadow_loom/db.py`](../shadow_loom/db.py).
 | Variable | Default | Notes |
 |---|---|---|
 | `SHADOW_LOOM_API_KEY_PEPPER` | *(empty)* | Server-side pepper mixed into the hash of stored API keys. Falls back to `SECRET_KEY`, then to no pepper. **Set this (and keep it stable) in production**; rotating it invalidates existing key hashes. |
+| `SHADOW_LOOM_API_KEY_ACCEPT_LEGACY` | `true` | Also accept the pre-pepper plain SHA-256 hash when validating a key, so keys minted before the pepper rollout keep working during migration. Set to a falsey value (`0`/`false`/`no`/`off`) once all keys are rotated onto the peppered HMAC to retire the un-peppered path (an exfiltrated `api_keys` snapshot can then no longer be matched against offline plain-SHA-256 candidates). Moot on installs with no pepper configured. |
 | `SHADOW_LOOM_STRICT_PERSIST` | *(strict)* | When unset, a world-state payload that fails `WorldStateV1` validation is refused at the persistence boundary. Set to a falsey value (`0`/`false`/`no`/`off`) to downgrade the failure to a warning for emergency use. |
 
 ---
