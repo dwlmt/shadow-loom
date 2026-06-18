@@ -1387,7 +1387,17 @@ def ensure_example_user() -> UserRow:
                 is_example=True,
             )
             s.add(row)
-            s.commit()
+            try:
+                s.commit()
+            except IntegrityError:
+                # A concurrent caller seeded the row first; re-read and return it.
+                s.rollback()
+                row = s.exec(
+                    select(UserRow).where(UserRow.provider_id == EXAMPLE_USER_PROVIDER_ID)
+                ).first()
+                if row is None:
+                    raise
+                return row
             s.refresh(row)
         return row
 
@@ -1437,7 +1447,21 @@ def ensure_default_cost_rule() -> "CostRuleRow":
                 ),
             )
             s.add(row)
-            s.commit()
+            try:
+                s.commit()
+            except IntegrityError:
+                # A concurrent caller seeded the rule first; re-read and return it.
+                s.rollback()
+                row = s.exec(
+                    select(CostRuleRow).where(
+                        CostRuleRow.provider == DEFAULT_COST_RULE_PROVIDER,
+                        CostRuleRow.service_type == "llm_chat",
+                        CostRuleRow.model_name.is_(None),
+                    )
+                ).first()
+                if row is None:
+                    raise
+                return row
             s.refresh(row)
             logger.info(
                 "[DB] Seeded default cost rule: input $%g / token, output $%g / token.",
@@ -1466,7 +1490,17 @@ def ensure_local_user() -> UserRow:
                 display_name="Local User",
             )
             s.add(row)
-            s.commit()
+            try:
+                s.commit()
+            except IntegrityError:
+                # A concurrent caller seeded the row first; re-read and return it.
+                s.rollback()
+                row = s.exec(
+                    select(UserRow).where(UserRow.provider_id == LOCAL_USER_PROVIDER_ID)
+                ).first()
+                if row is None:
+                    raise
+                return row
             s.refresh(row)
         return row
 
